@@ -1,4 +1,5 @@
 import { Worker } from 'bullmq';
+import Redis from 'ioredis';
 import winston from 'winston';
 import redis from './redisClient.js';
 import { login } from './actions/login.js';

@@ -9,7 +9,8 @@ const router = Router();
 router.post('/send', authMiddleware, validateBody(Joi.object({
     accountId: Joi.string().required(),
     recipientProfileUrl: Joi.string().uri().required(),
-    message: Joi.string().min(1).max(300).required()
+    message: Joi.string().min(1).max(300).required(),
+    proxyUrl: Joi.string().uri().optional()
 })), async (req, res, next) => {
     try {
         const job = await addJob('sendMessage', req.body);
@@ -20,7 +21,8 @@ router.post('/send', authMiddleware, validateBody(Joi.object({
 });
 
 router.post('/read', authMiddleware, validateBody(Joi.object({
-    accountId: Joi.string().required()
+    accountId: Joi.string().required(),
+    proxyUrl: Joi.string().uri().optional()
 })), async (req, res, next) => {
     try {
         const job = await addJob('readMessages', req.body);
