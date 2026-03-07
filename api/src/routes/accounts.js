@@ -18,17 +18,27 @@ router.post('/:accountId/session', authMiddleware, async (req, res, next) => {
     }
 });
 
+const LIMITS = {
+    profileView: 80,
+    messagesSent: 30,
+    connectRequests: 20,
+    searchQueries: 50,
+};
+
 router.get('/:accountId/limits', authMiddleware, async (req, res, next) => {
     try {
         const { accountId } = req.params;
-        const keys = await redis.keys(`ratelimit:${accountId}:*`);
         const limits = {};
-        for (const key of keys) {
-            const current = await redis.get(key);
-            const parts = key.split(':');
-            const action = parts[2];
+        const actions = ['profileView', 'messagesSent', 'connectRequests', 'searchQueries'];
+        const dateStr = new Date().toISOString().split('T')[0];
+
+        for (const action of actions) {
+            const key = `ratelimit:${accountId}:${action}:${dateStr}`;
+            const current = parseInt(await redis.get(key) || '0', 10);
             limits[action] = {
-                current: parseInt(current, 10),
+                current,
+                limit: LIMITS[action],
+                remaining: Math.max(0, LIMITS[action] - current),
             };
         }
         res.json({ limits });

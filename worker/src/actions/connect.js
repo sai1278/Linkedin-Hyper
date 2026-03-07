@@ -40,7 +40,11 @@ export const sendConnectionRequest = async ({ accountId, profileUrl, note, proxy
             await humanType(page, 'textarea#custom-message', note.substring(0, 300));
         }
 
-        await humanClick(page, 'button[aria-label="Send now"], button[aria-label="Send invitation"]');
+        try {
+            await humanClick(page, 'button[aria-label="Send now"]');
+        } catch {
+            await humanClick(page, 'button[aria-label="Send invitation"]');
+        }
         await delay(1000, 2000);
 
         await page.reload();

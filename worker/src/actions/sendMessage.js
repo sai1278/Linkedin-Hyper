@@ -40,7 +40,6 @@ export const sendMessage = async ({ accountId, recipientProfileUrl, message, pro
         await humanClick(page, '.msg-form__send-button');
         await delay(1000, 2000);
 
-        await page.reload();
         await saveCookies(accountId, await context.cookies());
 
         return { success: true, accountId, recipientProfileUrl };

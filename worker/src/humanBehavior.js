@@ -6,14 +6,23 @@ export const delay = (minMs, maxMs) => {
 export const humanClick = async (page, selector) => {
     const element = await page.waitForSelector(selector, { timeout: 15000 });
     const box = await element.boundingBox();
-    if (!box) throw new Error('Element not visible for clicking');
+    if (!box) throw new Error('[humanClick] Element not visible: ' + selector);
 
-    const x = box.x + (box.width * 0.2) + (Math.random() * box.width * 0.6);
-    const y = box.y + (box.height * 0.2) + (Math.random() * box.height * 0.6);
+    const targetX = box.x + (box.width * 0.2) + (Math.random() * box.width * 0.6);
+    const targetY = box.y + (box.height * 0.2) + (Math.random() * box.height * 0.6);
 
-    await page.mouse.move(x, y, { steps: 12 });
+    // Move from a natural "resting" position first — not from 0,0
+    await page.mouse.move(
+        100 + Math.random() * 500,
+        100 + Math.random() * 300,
+        { steps: 6 }
+    );
+    await delay(80, 200);
+
+    // Then move to target with natural arc
+    await page.mouse.move(targetX, targetY, { steps: 12 });
     await delay(100, 300);
-    await page.mouse.click(x, y);
+    await page.mouse.click(targetX, targetY);
 };
 
 export const humanType = async (page, selector, text) => {

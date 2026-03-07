@@ -30,12 +30,17 @@ export const login = async ({ accountId, email, password, proxyUrl }) => {
         await delay(800, 1500);
 
         await humanClick(page, '[data-litms-control-urn="login-submit"]');
-        await page.waitForURL('**/feed/**', { timeout: 30000 });
 
-        const captcha = await page.$('#captcha-challenge, iframe[title*="challenge"]');
+        // Wait for page to react, then check what LinkedIn shows
+        await page.waitForTimeout(3000);
+
+        const captcha = await page.$('#captcha-challenge, iframe[title*="challenge"], .challenge-page');
         if (captcha) {
-            throw new Error('CAPTCHA detected — manual intervention required');
+            throw new Error('CAPTCHA detected — manual intervention required for account: ' + accountId);
         }
+
+        // Only proceed to feed check after confirming no CAPTCHA
+        await page.waitForURL('**/feed/**', { timeout: 30000 });
 
         await saveCookies(accountId, await context.cookies());
         return { success: true, accountId };

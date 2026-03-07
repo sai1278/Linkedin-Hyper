@@ -2,7 +2,13 @@ import crypto from 'crypto';
 import redis from './redisClient.js';
 
 const ALGORITHM = 'aes-256-gcm';
-const KEY = Buffer.from(process.env.SESSION_ENCRYPTION_KEY || '0000000000000000000000000000000000000000000000000000000000000000', 'hex');
+if (!process.env.SESSION_ENCRYPTION_KEY) {
+    throw new Error('FATAL: SESSION_ENCRYPTION_KEY environment variable is not set');
+}
+const KEY = Buffer.from(process.env.SESSION_ENCRYPTION_KEY, 'hex');
+if (KEY.length !== 32) {
+    throw new Error('FATAL: SESSION_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)');
+}
 
 export const saveCookies = async (accountId, cookies) => {
     const iv = crypto.randomBytes(16);
