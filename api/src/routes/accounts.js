@@ -57,4 +57,25 @@ router.delete('/:accountId/session', authMiddleware, async (req, res, next) => {
     }
 });
 
+router.get('/:accountId/session/status', authMiddleware, async (req, res, next) => {
+    try {
+        const { accountId } = req.params;
+        const raw = await redis.get('session:meta:' + accountId);
+        if (!raw) {
+            return res.json({ exists: false });
+        }
+        const meta = JSON.parse(raw);
+        const ageHours = (Date.now() - new Date(meta.importedAt).getTime()) / 3600000;
+        res.json({
+            exists: true,
+            accountId: meta.accountId,
+            importedAt: meta.importedAt,
+            cookieCount: meta.cookieCount,
+            ageHours: Math.round(ageHours * 10) / 10
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 export default router;

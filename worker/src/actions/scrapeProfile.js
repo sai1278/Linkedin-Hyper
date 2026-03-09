@@ -2,6 +2,7 @@ import { createBrowser, createContext } from '../browser.js';
 import { loadCookies } from '../session.js';
 import { checkAndIncrement } from '../rateLimit.js';
 import { delay, humanScroll } from '../humanBehavior.js';
+import { logProfileViewed } from '../activityLogger.js';
 import winston from 'winston';
 
 const logger = winston.createLogger({
@@ -10,16 +11,10 @@ const logger = winston.createLogger({
     transports: [new winston.transports.Console()]
 });
 
-/**
- * Scrape profile action
- * @param {Object} params
- * @returns {Object}
- */
-export const scrapeProfile = async ({ accountId, profileUrl, proxyUrl }) => {
+export const scrapeProfile = async ({ accountId, profileUrl, proxyUrl, _jobId = 'unknown' }) => {
     let browser, context;
     try {
         await checkAndIncrement(accountId, 'profileView');
-
         const cookies = await loadCookies(accountId);
         if (!cookies) throw new Error('[scrapeProfile] Cookie load failed for ' + accountId);
 
@@ -30,7 +25,6 @@ export const scrapeProfile = async ({ accountId, profileUrl, proxyUrl }) => {
 
         await page.goto(profileUrl);
         await delay(2000, 4000);
-
         await humanScroll(page, 400);
 
         const name = await page.$eval('.text-heading-xlarge', el => el.textContent.trim()).catch(() => '');
@@ -39,6 +33,7 @@ export const scrapeProfile = async ({ accountId, profileUrl, proxyUrl }) => {
         const about = await page.$eval('#about ~ div .visually-hidden, section[data-section="summary"]', el => el.textContent.trim()).catch(() => '');
         const company = await page.$eval('.inline-show-more-text--is-collapsed', el => el.textContent.trim()).catch(() => '');
 
+        await logProfileViewed(accountId, profileUrl, _jobId);
         return {
             accountId,
             profileUrl,

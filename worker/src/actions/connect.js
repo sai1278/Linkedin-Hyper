@@ -3,6 +3,7 @@ import { loadCookies, saveCookies } from '../session.js';
 import { checkAndIncrement } from '../rateLimit.js';
 import { delay, humanClick, humanType } from '../humanBehavior.js';
 import { generateConnectionNote } from '../promptGenerator.js';
+import { logConnectionSent } from '../activityLogger.js';
 import winston from 'winston';
 
 const logger = winston.createLogger({
@@ -11,7 +12,7 @@ const logger = winston.createLogger({
     transports: [new winston.transports.Console()]
 });
 
-export const sendConnectionRequest = async ({ accountId, profileUrl, note, recipientName = '', senderName = '', topic = '', proxyUrl }) => {
+export const sendConnectionRequest = async ({ accountId, profileUrl, note, recipientName = '', senderName = '', topic = '', proxyUrl, _jobId = 'unknown' }) => {
     let browser, context;
     try {
         await checkAndIncrement(accountId, 'connectRequests');
@@ -44,6 +45,7 @@ export const sendConnectionRequest = async ({ accountId, profileUrl, note, recip
         await delay(1000, 2000);
         await page.reload();
         await saveCookies(accountId, await context.cookies());
+        await logConnectionSent(accountId, profileUrl, resolvedNote, _jobId);
         return { success: true, accountId, profileUrl };
     } catch (err) {
         logger.error({ msg: 'Connect failed', accountId, error: err.message });

@@ -1,12 +1,13 @@
 import redis from './redisClient.js';
 
-export const logMessageSent = async (accountId, recipientProfileUrl, jobId) => {
+export const logMessageSent = async (accountId, recipientProfileUrl, messagePreview, jobId) => {
     try {
         const key = `activity:${accountId}:messageSent`;
         const member = {
             profileUrl: recipientProfileUrl,
-            timestamp: new Date().toISOString(),
+            preview: (messagePreview || '').substring(0, 80),
             jobId,
+            timestamp: new Date().toISOString(),
             success: true
         };
         await redis.zadd(key, Date.now(), JSON.stringify(member));
@@ -16,15 +17,15 @@ export const logMessageSent = async (accountId, recipientProfileUrl, jobId) => {
     }
 };
 
-export const logConnectionSent = async (accountId, profileUrl, jobId, note) => {
+export const logConnectionSent = async (accountId, profileUrl, notePreview, jobId) => {
     try {
         const key = `activity:${accountId}:connectionSent`;
         const member = {
             profileUrl,
-            timestamp: new Date().toISOString(),
+            preview: (notePreview || '').substring(0, 80),
             jobId,
-            success: true,
-            note: note ? note.substring(0, 100) : undefined
+            timestamp: new Date().toISOString(),
+            success: true
         };
         await redis.zadd(key, Date.now(), JSON.stringify(member));
         await redis.expire(key, 7776000);
@@ -38,8 +39,8 @@ export const logProfileViewed = async (accountId, profileUrl, jobId) => {
         const key = `activity:${accountId}:profileViewed`;
         const member = {
             profileUrl,
-            timestamp: new Date().toISOString(),
             jobId,
+            timestamp: new Date().toISOString(),
             success: true
         };
         await redis.zadd(key, Date.now(), JSON.stringify(member));

@@ -5,7 +5,8 @@ import messageRoutes from './routes/messages.js';
 import accountRoutes from './routes/accounts.js';
 import connectionRoutes from './routes/connections.js';
 import profileRoutes from './routes/profiles.js';
-import { redis } from '../queue.js'; // Ensure connection cleanly
+import statsRoutes from './routes/stats.js';
+import { redis } from '../queue.js';
 
 const logger = winston.createLogger({
   level: 'info',
@@ -24,6 +25,7 @@ app.use('/messages', messageRoutes);
 app.use('/accounts', accountRoutes);
 app.use('/connections', connectionRoutes);
 app.use('/profiles', profileRoutes);
+app.use('/stats', statsRoutes);
 
 app.use((err, req, res, next) => {
   logger.error({ msg: 'Unhandled error', error: err.message });

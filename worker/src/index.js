@@ -21,13 +21,13 @@ const worker = new Worker('linkedin-jobs', async job => {
         case 'login':
             return await login(job.data);
         case 'sendMessage':
-            return await sendMessage(job.data);
+            return await sendMessage({ ...job.data, _jobId: job.id });
         case 'readMessages':
             return await readMessages(job.data);
         case 'scrapeProfile':
-            return await scrapeProfile(job.data);
+            return await scrapeProfile({ ...job.data, _jobId: job.id });
         case 'connect':
-            return await sendConnectionRequest(job.data);
+            return await sendConnectionRequest({ ...job.data, _jobId: job.id });
         default:
             throw new Error('Unknown job: ' + job.name);
     }
@@ -44,7 +44,6 @@ worker.on('failed', (job, err) => {
     logger.error({ msg: `[worker] Job ${job?.id} failed: ${err.message}` });
 });
 
-// Separate connection required — a subscribed Redis client cannot run other commands
 const subscriber = new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
 
 subscriber.on('error', (err) => {
