@@ -50,7 +50,7 @@ router.get('/:accountId/limits', authMiddleware, async (req, res, next) => {
 router.delete('/:accountId/session', authMiddleware, async (req, res, next) => {
     try {
         const { accountId } = req.params;
-        await redis.del(`session:${accountId}`);
+        await redis.del(`session:${accountId}`, `session:meta:${accountId}`);
         res.json({ success: true });
     } catch (err) {
         next(err);

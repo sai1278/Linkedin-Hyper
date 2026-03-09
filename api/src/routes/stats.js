@@ -102,7 +102,7 @@ router.get('/:accountId/activity', authMiddleware, async (req, res, next) => {
             return res.status(400).json({ error: 'action must be one of: messageSent, connectionSent, profileViewed' });
         }
 
-        const fromMs = from ? new Date(from).getTime() : msAgo(30);
+        let fromMs = from ? new Date(from).getTime() : msAgo(30);
         if (isNaN(fromMs)) {
             fromMs = msAgo(30);
         }
