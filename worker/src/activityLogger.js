@@ -56,3 +56,19 @@ export const logProfileViewed = async (accountId, profileUrl, jobId) => {
         logger.warn({ msg: '[activityLogger] Failed to log activity', error: err.message });
     }
 };
+
+export const logMessagesRead = async (accountId, count, jobId) => {
+    try {
+        const key = `activity:${accountId}:messagesRead`;
+        const member = {
+            count,
+            jobId,
+            timestamp: new Date().toISOString(),
+            success: true
+        };
+        await redis.zadd(key, Date.now(), JSON.stringify(member));
+        await redis.expire(key, 7776000);
+    } catch (err) {
+        logger.warn({ msg: '[activityLogger] Failed to log activity', error: err.message });
+    }
+};

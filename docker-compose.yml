@@ -25,6 +25,7 @@ services:
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - API_SECRET=${API_SECRET}
+      - SESSION_ENCRYPTION_KEY=${SESSION_ENCRYPTION_KEY}
       - NODE_ENV=production
     depends_on:
       redis:

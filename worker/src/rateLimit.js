@@ -5,6 +5,7 @@ const LIMITS = {
     messagesSent: 30,
     connectRequests: 20,
     searchQueries: 50,
+    messagesRead: 100,
 };
 
 const INCR_WITH_EXPIRE_LUA = `

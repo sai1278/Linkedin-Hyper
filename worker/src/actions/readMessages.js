@@ -1,6 +1,8 @@
 import { createBrowser, createContext } from '../browser.js';
 import { loadCookies } from '../session.js';
 import { delay } from '../humanBehavior.js';
+import { checkAndIncrement } from '../rateLimit.js';
+import { logMessagesRead } from '../activityLogger.js';
 import winston from 'winston';
 
 const logger = winston.createLogger({
@@ -14,9 +16,11 @@ const logger = winston.createLogger({
  * @param {Object} params
  * @returns {Object}
  */
-export const readMessages = async ({ accountId, proxyUrl }) => {
+export const readMessages = async ({ accountId, proxyUrl, _jobId }) => {
     let browser, context;
     try {
+        await checkAndIncrement(accountId, 'messagesRead');
+
         const cookies = await loadCookies(accountId);
         if (!cookies) throw new Error('[readMessages] Cookie load failed for ' + accountId);
 
@@ -41,6 +45,8 @@ export const readMessages = async ({ accountId, proxyUrl }) => {
 
             conversations.push({ conversationId, participantName, lastMessagePreview, timestamp, isUnread });
         }
+
+        await logMessagesRead(accountId, conversations.length, _jobId);
 
         return { accountId, conversations, fetchedAt: new Date().toISOString() };
     } catch (err) {

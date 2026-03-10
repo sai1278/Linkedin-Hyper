@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { authMiddleware } from '../middleware/auth.js';
 import { redis } from '../queue.js';
+import crypto from 'crypto';
+
+const ALGORITHM = 'aes-256-gcm';
 
 const router = Router();
 
@@ -14,7 +17,28 @@ router.post('/:accountId/session', authMiddleware, async (req, res, next) => {
         if (!Array.isArray(cookies)) {
             return res.status(400).json({ error: 'cookies must be an array' });
         }
-        await redis.publish('session:import', JSON.stringify({ accountId, cookies }));
+
+        if (!process.env.SESSION_ENCRYPTION_KEY) {
+            return res.status(500).json({ error: 'Server configuration error: SESSION_ENCRYPTION_KEY missing' });
+        }
+        const KEY = Buffer.from(process.env.SESSION_ENCRYPTION_KEY, 'hex');
+
+        const iv = crypto.randomBytes(16);
+        const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
+        const jsonStr = JSON.stringify(cookies);
+        let encrypted = cipher.update(jsonStr, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const tag = cipher.getAuthTag().toString('hex');
+
+        const payload = JSON.stringify({
+            iv: iv.toString('hex'),
+            tag,
+            data: encrypted
+        });
+
+        await redis.set('session:' + accountId, payload, 'EX', 86400 * 30);
+        await redis.set('session:meta:' + accountId, JSON.stringify({ accountId, importedAt: new Date().toISOString(), cookieCount: cookies.length }), 'EX', 86400 * 30);
+
         res.json({ success: true, accountId });
     } catch (err) {
         next(err);

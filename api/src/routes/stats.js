@@ -36,7 +36,7 @@ router.get('/all/summary', authMiddleware, async (req, res, next) => {
         const keys = [];
         let cursor = '0';
         do {
-            const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', 'activity:*:messageSent', 'COUNT', 100);
+            const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', 'session:meta:*', 'COUNT', 100);
             cursor = nextCursor;
             keys.push(...batch);
         } while (cursor !== '0');
@@ -44,7 +44,7 @@ router.get('/all/summary', authMiddleware, async (req, res, next) => {
         for (const key of keys) {
             const parts = key.split(':');
             if (parts.length >= 3) {
-                accountIds.add(parts[1]);
+                accountIds.add(parts[2]);
             }
         }
 
