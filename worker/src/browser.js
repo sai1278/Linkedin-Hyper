@@ -27,6 +27,18 @@ export const createBrowser = async (proxyUrl) => {
         args: ARGS
     };
     if (proxyUrl) {
+        let hostname;
+        try {
+            hostname = new URL(proxyUrl).hostname;
+        } catch (e) {
+            throw new Error('Invalid proxy URL format');
+        }
+
+        const isInternal = /^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|169\.254\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|::1)$/i.test(hostname);
+        if (isInternal) {
+            throw new Error('SSRF Prevention: Internal proxy configurations are not permitted.');
+        }
+
         options.proxy = { server: proxyUrl };
     }
     return await chromium.launch(options);
