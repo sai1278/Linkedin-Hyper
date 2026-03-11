@@ -1,0 +1,86 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'components/**'
+      - 'lib/**'
+      - 'types/**'
+      - 'public/**'
+      - 'next.config.ts'
+      - 'tsconfig.json'
+      - 'package.json'
+      - '.github/workflows/frontend-ci.yml'
+      # Tracker frontend
+      - 'linkedin-chat-tracker/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'components/**'
+      - 'lib/**'
+      - 'types/**'
+      - 'public/**'
+      - 'next.config.ts'
+      - 'tsconfig.json'
+      - 'package.json'
+      - '.github/workflows/frontend-ci.yml'
+      - 'linkedin-chat-tracker/**'
+
+jobs:
+  # ─── Blog frontend (linkedin-automation root) ─────────────────────────────
+  blog-frontend:
+    name: Blog Frontend — Type-check & Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript — no-emit check
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx eslint . --ext .ts,.tsx --max-warnings 0
+        continue-on-error: true   # warn but don't block until lint is clean
+
+  # ─── LinkedIn Chat Tracker frontend ───────────────────────────────────────
+  tracker-frontend:
+    name: Tracker Frontend — Type-check & Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: linkedin-chat-tracker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: linkedin-chat-tracker/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript — no-emit check
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx eslint . --ext .ts,.tsx --max-warnings 0
+        continue-on-error: true   # warn but don't block until lint is clean

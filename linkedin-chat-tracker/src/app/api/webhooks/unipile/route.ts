@@ -145,10 +145,8 @@ async function handleNewMessage(accountId: string, data: NewMessageData) {
     });
   }
 
-  // In handleNewMessage, the upsert is already idempotent thanks to unipileMessageId unique constraint.
-  // Add a note for clarity:
-  console.log(`[Webhook] Processing message ${data.id} for chat ${data.chat_id}`)
-
+  // The upsert is idempotent: unipileMessageId has a unique constraint so duplicate
+  // webhook deliveries will hit the `update` branch and not create duplicate rows.
   await prisma.message.upsert({
     where: { unipileMessageId: data.id },
     create: {

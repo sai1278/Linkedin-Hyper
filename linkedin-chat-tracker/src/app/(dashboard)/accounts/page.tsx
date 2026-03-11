@@ -7,6 +7,7 @@ import { AccountCard } from '@/components/accounts/AccountCard'
 import { AccountConnectModal } from '@/components/accounts/AccountConnectModal'
 import { MessageSquare, Plus, AlertCircle, Loader2 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { toast } from 'sonner'
 
 export default function AccountsPage() {
   const [showConnectModal, setShowConnectModal] = useState(false)
@@ -15,14 +16,13 @@ export default function AccountsPage() {
   const searchParams = useSearchParams()
 
   useEffect(() => {
-    // In a real app we'd trigger a toast here
     const connected = searchParams.get('connected')
     const hasError = searchParams.get('error')
 
     if (connected === '1') {
-      console.log('Successfully connected account')
+      toast.success('LinkedIn account connected successfully')
     } else if (hasError === '1') {
-      console.error('Failed to connect account')
+      toast.error('Failed to connect LinkedIn account')
     }
   }, [searchParams])
 

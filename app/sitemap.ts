@@ -1,5 +1,6 @@
 import type { MetadataRoute } from 'next';
 import { getRecentArticles, getAuthors } from '@/lib/strapi';
+import type { StrapiData, StrapiArticleAttributes, StrapiAuthorAttributes } from '@/lib/strapi';
 
 const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://regulatethis.ai';
 
@@ -48,9 +49,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   let articleRoutes: MetadataRoute.Sitemap = [];
   try {
     const articles = await getRecentArticles(200);
-    articleRoutes = articles.map((article: any) => ({
-      url: `${BASE_URL}/article/${article.slug ?? article.attributes?.slug}`,
-      lastModified: new Date(article.updatedAt ?? article.publishDate ?? article.attributes?.updatedAt ?? article.attributes?.publishDate ?? new Date()),
+    articleRoutes = articles.map((article: StrapiData<StrapiArticleAttributes>) => ({
+      url: `${BASE_URL}/article/${article.attributes.slug}`,
+      lastModified: new Date(article.attributes?.updatedAt ?? article.attributes?.publishDate ?? new Date()),
       changeFrequency: 'weekly' as const,
       priority: 0.8,
     }));
@@ -64,9 +65,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   try {
     const authorsResponse = await getAuthors();
     const authors = authorsResponse.data ?? [];
-    authorRoutes = authors.map((author: any) => ({
-      url: `${BASE_URL}/authors/${author.slug ?? author.attributes?.slug}`,
-      lastModified: new Date(author.updatedAt ?? author.attributes?.updatedAt ?? new Date()),
+    authorRoutes = authors.map((author: StrapiData<StrapiAuthorAttributes>) => ({
+      url: `${BASE_URL}/authors/${author.attributes.slug}`,
+      lastModified: new Date(author.attributes?.updatedAt ?? new Date()),
       changeFrequency: 'monthly' as const,
       priority: 0.6,
     }));

@@ -2,8 +2,8 @@
 const nextConfig = {
   images: {
     remotePatterns: [
-      { hostname: 'media.licdn.com' },
-      { hostname: 'static.licdn.com' },
+      { protocol: 'https', hostname: 'media.licdn.com',  pathname: '/**' },
+      { protocol: 'https', hostname: 'static.licdn.com', pathname: '/**' },
     ],
   },
   async headers() {
