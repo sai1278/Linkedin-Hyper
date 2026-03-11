@@ -1,0 +1,29 @@
+# Strapi Development Dockerfile (optimized for development)
+FROM node:20-alpine
+
+# Install dependencies for native modules
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    sqlite
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files first for better caching
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Expose Strapi port
+EXPOSE 5603
+
+# Set environment variables for development
+ENV NODE_ENV=development
+ENV HOST=0.0.0.0
+ENV PORT=5603
+
+# Development command - uses volume mount for hot reload
+CMD ["npm", "run", "develop"]

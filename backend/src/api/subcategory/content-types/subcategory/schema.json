@@ -1,0 +1,48 @@
+{
+    "kind": "collectionType",
+    "collectionName": "subcategories",
+    "info": {
+        "singularName": "subcategory",
+        "pluralName": "subcategories",
+        "displayName": "Subcategory",
+        "description": "Structured subcategories with parent-child relationship to Categories"
+    },
+    "options": {
+        "draftAndPublish": false
+    },
+    "pluginOptions": {},
+    "attributes": {
+        "name": {
+            "type": "string",
+            "required": true,
+            "maxLength": 50
+        },
+        "slug": {
+            "type": "uid",
+            "targetField": "name",
+            "required": true
+        },
+        "description": {
+            "type": "text",
+            "maxLength": 250
+        },
+        "category": {
+            "type": "relation",
+            "relation": "manyToOne",
+            "target": "api::category.category",
+            "inversedBy": "subcategories"
+        },
+        "articles": {
+            "type": "relation",
+            "relation": "manyToMany",
+            "target": "api::article.article",
+            "mappedBy": "subcategories"
+        },
+        "tenant": {
+            "type": "relation",
+            "relation": "manyToOne",
+            "target": "api::tenant.tenant",
+            "inversedBy": "subcategories"
+        }
+    }
+}

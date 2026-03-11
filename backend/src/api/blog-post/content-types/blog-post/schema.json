@@ -1,0 +1,82 @@
+{
+    "kind": "collectionType",
+    "collectionName": "blog_posts",
+    "info": {
+        "singularName": "blog-post",
+        "pluralName": "blog-posts",
+        "displayName": "Blog Post",
+        "description": "Blog posts — scoped per tenant (Glynac AI, RegulateThis, Sylvan, etc.)"
+    },
+    "options": {
+        "draftAndPublish": true
+    },
+    "pluginOptions": {},
+    "attributes": {
+        "title": {
+            "type": "string",
+            "required": true,
+            "description": "Blog post title (max 70 chars recommended for SEO)"
+        },
+        "slug": {
+            "type": "uid",
+            "targetField": "title",
+            "required": true,
+            "description": "URL-friendly identifier (auto-generated from title)"
+        },
+        "excerpt": {
+            "type": "text",
+            "required": true,
+            "description": "Short description for cards and meta tags (2-3 sentences, 120-160 chars ideal for SEO)"
+        },
+        "content": {
+            "type": "richtext",
+            "required": true,
+            "description": "Main blog post content in markdown format"
+        },
+        "coverImage": {
+            "type": "media",
+            "multiple": false,
+            "required": false,
+            "allowedTypes": [
+                "images"
+            ],
+            "description": "Featured image (recommended: 1600x900px minimum, under 500KB)"
+        },
+        "category": {
+            "type": "string",
+            "required": true,
+            "description": "Post category as plain text (e.g., 'AI & Technology', 'Compliance')"
+        },
+        "tags": {
+            "type": "json",
+            "required": false,
+            "description": "Array of tags (e.g., ['AI', 'Automation', 'Compliance'])"
+        },
+        "readTime": {
+            "type": "string",
+            "required": true,
+            "description": "Estimated reading time (e.g., '5 min read', '8 min read')"
+        },
+        "author": {
+            "type": "component",
+            "component": "blog.author",
+            "repeatable": false,
+            "required": true,
+            "description": "Embedded blog post author component"
+        },
+        "tenant": {
+            "type": "relation",
+            "relation": "manyToOne",
+            "target": "api::tenant.tenant",
+            "inversedBy": "blogPosts",
+            "description": "Tenant this blog post belongs to — used for multi-tenant scoping"
+        },
+        "seo": {
+            "type": "component",
+            "component": "shared.seo",
+            "repeatable": false,
+            "required": false,
+            "description": "Per-post SEO metadata (overrides tenant-level site settings)"
+        }
+    }
+}

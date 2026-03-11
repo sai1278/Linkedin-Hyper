@@ -1,0 +1,118 @@
+{
+    "kind": "collectionType",
+    "collectionName": "tenants",
+    "info": {
+        "singularName": "tenant",
+        "pluralName": "tenants",
+        "displayName": "Tenant",
+        "description": "Multi-tenant website organizations"
+    },
+    "options": {
+        "draftAndPublish": false
+    },
+    "pluginOptions": {},
+    "attributes": {
+        "name": {
+            "type": "string",
+            "required": true,
+            "maxLength": 100
+        },
+        "slug": {
+            "type": "uid",
+            "targetField": "name",
+            "required": true
+        },
+        "domain": {
+            "type": "string",
+            "required": true,
+            "unique": true,
+            "maxLength": 255
+        },
+        "isActive": {
+            "type": "boolean",
+            "default": true,
+            "required": true
+        },
+        "logo": {
+            "type": "media",
+            "multiple": false,
+            "required": false,
+            "allowedTypes": [
+                "images"
+            ]
+        },
+        "primaryColor": {
+            "type": "string",
+            "maxLength": 7,
+            "default": "#49648C"
+        },
+        "secondaryColor": {
+            "type": "string",
+            "maxLength": 7,
+            "default": "#1a1a2e"
+        },
+        "description": {
+            "type": "text"
+        },
+        "articles": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::article.article",
+            "mappedBy": "tenant"
+        },
+        "authors": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::author.author",
+            "mappedBy": "tenant"
+        },
+        "categories": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::category.category",
+            "mappedBy": "tenant"
+        },
+        "tags": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::tag.tag",
+            "mappedBy": "tenant"
+        },
+        "subcategories": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::subcategory.subcategory",
+            "mappedBy": "tenant"
+        },
+        "pillars": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::pillar.pillar",
+            "mappedBy": "tenant"
+        },
+        "regulatethisSubscribers": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::regulatethis-subscriber.regulatethis-subscriber",
+            "mappedBy": "tenant"
+        },
+        "siteSettings": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::site-setting.site-setting",
+            "mappedBy": "tenant"
+        },
+        "sylvanRequestAccesses": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::sylvan-request-access.sylvan-request-access",
+            "mappedBy": "tenant"
+        },
+        "blogPosts": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::blog-post.blog-post",
+            "mappedBy": "tenant"
+        }
+    }
+}

@@ -1,0 +1,47 @@
+{
+    "kind": "collectionType",
+    "collectionName": "sylvan_request_accesses",
+    "info": {
+        "singularName": "sylvan-request-access",
+        "pluralName": "sylvan-request-accesses",
+        "displayName": "Sylvan Request Access",
+        "description": "Sylvan access request submissions"
+    },
+    "options": {
+        "draftAndPublish": false
+    },
+    "pluginOptions": {},
+    "attributes": {
+        "fullName": {
+            "type": "string",
+            "required": true,
+            "maxLength": 255
+        },
+        "email": {
+            "type": "email",
+            "required": true
+        },
+        "companyName": {
+            "type": "string",
+            "maxLength": 255
+        },
+        "phone": {
+            "type": "string",
+            "required": true,
+            "maxLength": 50
+        },
+        "message": {
+            "type": "text"
+        },
+        "submittedAt": {
+            "type": "datetime",
+            "required": true
+        },
+        "tenant": {
+            "type": "relation",
+            "relation": "manyToOne",
+            "target": "api::tenant.tenant",
+            "inversedBy": "sylvanRequestAccesses"
+        }
+    }
+}

@@ -1,0 +1,67 @@
+{
+    "kind": "collectionType",
+    "collectionName": "regulatethis_subscribers",
+    "info": {
+        "singularName": "regulatethis-subscriber",
+        "pluralName": "regulatethis-subscribers",
+        "displayName": "Regulatethis Subscriber",
+        "description": "Regulatethis newsletter email subscribers"
+    },
+    "options": {
+        "draftAndPublish": false
+    },
+    "pluginOptions": {},
+    "attributes": {
+        "email": {
+            "type": "email",
+            "required": true,
+            "unique": true
+        },
+        "subscribedAt": {
+            "type": "datetime",
+            "required": true
+        },
+        "subscriptionStatus": {
+            "type": "enumeration",
+            "enum": [
+                "subscribed",
+                "pending",
+                "unsubscribed"
+            ],
+            "default": "subscribed",
+            "required": true
+        },
+        "source": {
+            "type": "enumeration",
+            "enum": [
+                "Homepage",
+                "global_footer",
+                "Article_CTA",
+                "Author_CTA",
+                "Website"
+            ]
+        },
+        "unsubscribeAt": {
+            "type": "datetime"
+        },
+        "unsubscribeReason": {
+            "type": "text"
+        },
+        "subscriptionMethod": {
+            "type": "enumeration",
+            "enum": [
+                "Email",
+                "SMS",
+                "WhatsApp",
+                "PushNotification"
+            ],
+            "default": "Email"
+        },
+        "tenant": {
+            "type": "relation",
+            "relation": "manyToOne",
+            "target": "api::tenant.tenant",
+            "inversedBy": "regulatethisSubscribers"
+        }
+    }
+}

@@ -1,0 +1,15 @@
+{
+    "collectionName": "components_shared_category_details",
+    "info": {
+        "displayName": "Category Details",
+        "description": "Detail point for a category",
+        "icon": "bulletList"
+    },
+    "options": {},
+    "attributes": {
+        "detail": {
+            "type": "text",
+            "required": true
+        }
+    }
+}

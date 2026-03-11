@@ -1,0 +1,15 @@
+{
+    "collectionName": "components_blog_categories",
+    "info": {
+        "displayName": "Category",
+        "icon": "bulletList",
+        "description": ""
+    },
+    "options": {},
+    "attributes": {
+        "name": {
+            "type": "string",
+            "required": true
+        }
+    }
+}

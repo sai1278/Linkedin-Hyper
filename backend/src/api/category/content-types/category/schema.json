@@ -1,0 +1,71 @@
+{
+    "kind": "collectionType",
+    "collectionName": "categories",
+    "info": {
+        "singularName": "category",
+        "pluralName": "categories",
+        "displayName": "Category",
+        "description": "Content categories for blog organization"
+    },
+    "options": {
+        "draftAndPublish": false
+    },
+    "pluginOptions": {},
+    "attributes": {
+        "name": {
+            "type": "string",
+            "required": true,
+            "unique": true,
+            "maxLength": 100
+        },
+        "slug": {
+            "type": "uid",
+            "targetField": "name",
+            "required": true
+        },
+        "subtitle": {
+            "type": "string",
+            "required": true,
+            "maxLength": 100
+        },
+        "description": {
+            "type": "text",
+            "required": true
+        },
+        "order": {
+            "type": "integer",
+            "required": true
+        },
+        "details": {
+            "type": "component",
+            "repeatable": true,
+            "component": "shared.category-details",
+            "min": 3,
+            "max": 5
+        },
+        "articles": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::article.article",
+            "mappedBy": "category"
+        },
+        "subcategories": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::subcategory.subcategory",
+            "mappedBy": "category"
+        },
+        "blogPosts": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::blog-post.blog-post",
+            "mappedBy": "category"
+        },
+        "tenant": {
+            "type": "relation",
+            "relation": "manyToOne",
+            "target": "api::tenant.tenant",
+            "inversedBy": "categories"
+        }
+    }
+}

@@ -1,49 +1,57 @@
-# LinkedIn Automation Worker
+# Acumen Blog (Multi-Tenant)
 
-Self-hosted LinkedIn automation worker that replaces Unipile's LinkedIn feature.
+A [Next.js](https://nextjs.org) blog application with a [Strapi CMS](https://strapi.io) backend.
 
-## Prerequisites
-- Ubuntu 20.04
-- Docker & Docker Compose
-- Chrome Stable and Xvfb
+**Supported Tenants:**
+- **RegulateThis** - Features Articles and Pillars.
+- **Glynac** - Features simpler Blog Posts.
 
 ## Quick Start
-1. Clone the repository
-2. `cp .env.example .env` and fill in the values
-3. Run `docker-compose up -d`
 
-## Importing a LinkedIn Session
-Make a POST request to `/accounts/{accountId}/session` with an array of Playwright cookie objects:
-```json
-{
-  "cookies": [
-    {
-      "name": "li_at",
-      "value": "...",
-      "domain": ".linkedin.com",
-      "path": "/"
-    }
-  ]
-}
+### Prerequisites
+- Node.js 18+
+- npm or yarn
+- Docker (recommended for Windows users)
+
+### Running with Docker (Recommended)
+1. Start the Strapi backend:
+   ```bash
+   cd backend
+   docker compose up -d
+   ```
+2. Strapi will be available at [http://localhost:4002/admin](http://localhost:4002/admin).
+
+### Running Natively
+1. Start the Strapi backend:
+   ```bash
+   cd backend
+   npm run develop
+   ```
+2. In a new terminal, start the Next.js frontend:
+   ```bash
+   npm run dev
+   ```
+
+## Setup & Configuration
+After starting Strapi for the first time:
+1. Create an admin account at `http://localhost:4002/admin`.
+2. Configure **Public** role API permissions (Settings → Users & Permissions → Roles → Public):
+   - Enable `find` and `findOne` for Article, Author, Pillar, Tag (RegulateThis).
+   - Enable `find` and `findOne` for Blog Post (Glynac).
+3. The frontend needs `.env.local`:
+   ```env
+   NEXT_PUBLIC_STRAPI_URL=http://localhost:4002
+   ```
+
+## Documentation
+- **Backend Guide:** See [backend/README.md](./backend/README.md) for backend-specific details, tenant setup, and content structure.
+- **Deployment:** See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions (Render, DigitalOcean, etc.).
+
+## Project Structure
 ```
-
-## API Endpoint Reference
-| Method | Path | Description | Auth |
-|---|---|---|---|
-| GET | `/health` | Health check | No |
-| POST | `/messages/send` | Send a message | Yes |
-| POST | `/messages/read` | Read messages | Yes |
-| GET | `/messages/job/:jobId` | Get job status | Yes |
-| POST | `/accounts/:accountId/session` | Import session cookies | Yes |
-| GET | `/accounts/:accountId/limits` | Get current rate limits | Yes |
-| DELETE | `/accounts/:accountId/session` | Delete a session | Yes |
-
-## Rate Limits
-- Profile Views: 80/day
-- Messages Sent: 30/day
-- Connection Requests: 20/day
-- Search Queries: 50/day
-
-## Troubleshooting
-- **Black screen / xrdp**: Ensure Xvfb is running on `:99`.
-- **Chrome shm crash**: Ensure `shm_size: "2gb"` is set in docker-compose.yml.
+├── app/                 # Next.js pages
+├── components/          # React components
+├── lib/                 # Shared data fetching logic
+├── backend/             # Strapi CMS (v5)
+└── types/               # TypeScript types
+```
