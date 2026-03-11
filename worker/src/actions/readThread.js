@@ -1,0 +1,83 @@
+'use strict';
+
+/**
+ * Scrapes messages from a specific LinkedIn conversation thread.
+ */
+
+const { createBrowser, createContext } = require('../browser');
+const { loadCookies, saveCookies }     = require('../session');
+const { delay, humanScroll }           = require('../humanBehavior');
+
+async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
+  const browser = await createBrowser(proxyUrl);
+  const context = await createContext(browser);
+
+  try {
+    const cookies = await loadCookies(accountId);
+    if (!cookies) {
+      const err = new Error(`No session for account ${accountId}`);
+      err.code = 'NO_SESSION'; err.status = 401;
+      throw err;
+    }
+
+    await context.addCookies(cookies);
+    const page = await context.newPage();
+
+    await page.goto(`https://www.linkedin.com/messaging/thread/${chatId}/`, {
+      waitUntil: 'domcontentloaded',
+      timeout:   30000,
+    });
+
+    await delay(2000, 3500);
+
+    // Wait for message list
+    await page.waitForSelector('.msg-s-message-list, [data-view-name="messaging-message-list"]', {
+      timeout: 15000,
+    }).catch(() => null);
+
+    await humanScroll(page, -500); // scroll up to load older messages
+    await delay(1000, 2000);
+
+    const messages = await page.evaluate((maxItems) => {
+      const results = [];
+      const items   = document.querySelectorAll(
+        '.msg-s-event-listitem, [data-view-name="messaging-message-list-item"]'
+      );
+
+      for (const item of Array.from(items).slice(-maxItems)) {
+        try {
+          const bodyEl   = item.querySelector('.msg-s-event__content, .body');
+          const timeEl   = item.querySelector('time');
+          const senderEl = item.querySelector('.msg-s-message-group__profile-link, .msg-s-event__link');
+          const isSelf   = item.classList.contains('msg-s-message-list__event--own-turn') ||
+                           item.querySelector('[data-view-name="messaging-self-message"]') !== null;
+
+          if (!bodyEl) continue;
+
+          const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+          results.push({
+            id:        msgId,
+            chatId:    '',   // filled by caller
+            senderId:  isSelf ? '__self__' : (senderEl?.href?.match(/\/in\/([^/]+)/)?.[1] || 'other'),
+            text:      bodyEl.textContent?.trim() || '',
+            createdAt: timeEl?.getAttribute('datetime') || new Date().toISOString(),
+            isRead:    true,
+          });
+        } catch (_) { /* skip malformed */ }
+      }
+      return results;
+    }, limit);
+
+    messages.forEach((m) => { m.chatId = chatId; });
+
+    await saveCookies(accountId, await context.cookies());
+
+    return { items: messages, cursor: null, hasMore: false };
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
+module.exports = { readThread };
