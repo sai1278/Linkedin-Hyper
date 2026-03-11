@@ -1,0 +1,1 @@
+// TODO: Implement stub for src/app/layout.tsx\nimport "./globals.css";\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return <html lang="en"><body>{children}</body></html>;\n}\n

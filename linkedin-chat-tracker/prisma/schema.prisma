@@ -1,0 +1,124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String            @id @default(cuid())
+  email     String            @unique
+  name      String?
+  password  String?
+  createdAt DateTime          @default(now())
+  accounts  LinkedInAccount[]
+  templates MessageTemplate[]
+}
+
+model LinkedInAccount {
+  id               String         @id @default(cuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id])
+  unipileAccountId String         @unique
+  displayName      String
+  profilePicUrl    String?
+  status           AccountStatus  @default(ACTIVE)
+  connectedAt      DateTime       @default(now())
+  lastSyncAt       DateTime?
+  conversations    Conversation[]
+  activityLogs     ActivityLog[]
+  Contact          Contact[]
+}
+
+enum AccountStatus {
+  ACTIVE
+  DISCONNECTED
+  ERROR
+}
+
+model Contact {
+  id            String          @id @default(cuid())
+  linkedinId    String
+  fullName      String
+  headline      String?
+  profileUrl    String
+  avatarUrl     String?
+  accountId     String
+  account       LinkedInAccount @relation(fields: [accountId], references: [id])
+  conversations Conversation[]
+
+  @@unique([linkedinId, accountId])
+}
+
+model Conversation {
+  id            String             @id @default(cuid())
+  accountId     String
+  account       LinkedInAccount    @relation(fields: [accountId], references: [id])
+  contactId     String
+  contact       Contact            @relation(fields: [contactId], references: [id])
+  unipileChatId String             @unique
+  lastMessageAt DateTime?
+  unreadCount   Int                @default(0)
+  status        ConversationStatus @default(ACTIVE)
+  messages      Message[]
+  createdAt     DateTime           @default(now())
+}
+
+enum ConversationStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model Message {
+  id                  String           @id @default(cuid())
+  conversationId      String
+  conversation        Conversation     @relation(fields: [conversationId], references: [id])
+  direction           MessageDirection
+  body                String
+  sentAt              DateTime
+  deliveryStatus      DeliveryStatus   @default(SENT)
+  isConnectionRequest Boolean          @default(false)
+  jobId               String?
+  createdAt           DateTime         @default(now())
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum DeliveryStatus {
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+model ActivityLog {
+  id         String          @id @default(cuid())
+  accountId  String
+  account    LinkedInAccount @relation(fields: [accountId], references: [id])
+  action     String
+  metadata   Json?
+  occurredAt DateTime        @default(now())
+}
+
+model MessageTemplate {
+  id         String       @id @default(cuid())
+  userId     String
+  user       User         @relation(fields: [userId], references: [id])
+  name       String
+  type       TemplateType
+  body       String
+  variables  String[]
+  usageCount Int          @default(0)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+}
+
+enum TemplateType {
+  MESSAGE
+  CONNECTION_NOTE
+}
