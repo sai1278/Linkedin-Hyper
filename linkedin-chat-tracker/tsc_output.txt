@@ -1,0 +1,6 @@
+src/app/(dashboard)/compose/page.tsx(123,23): error TS2304: Cannot find name 'Search'.
+src/app/api/analytics/[accountId]/route.ts(127,20): error TS18047: 'conv.contact' is possibly 'null'.
+src/app/api/analytics/[accountId]/route.ts(128,15): error TS18047: 'conv.contact' is possibly 'null'.
+src/app/api/analytics/[accountId]/route.ts(129,20): error TS18047: 'conv.contact' is possibly 'null'.
+src/app/api/campaigns/bulk/route.ts(76,13): error TS2339: Property 'headline' does not exist on type '{ profileUrl: string; name?: string | undefined; company?: string | undefined; topic?: string | undefined; }'.
+src/app/api/campaigns/bulk/route.ts(76,53): error TS2339: Property 'headline' does not exist on type '{ profileUrl: string; name?: string | undefined; company?: string | undefined; topic?: string | undefined; }'.

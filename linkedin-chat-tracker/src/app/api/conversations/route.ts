@@ -32,14 +32,17 @@ export async function GET(req: NextRequest) {
 
     // Upsert Contacts & Conversations
     for (const chat of paginatedChats.items) {
+      const upsertedContactIds = new Map<string, string>();
+
       for (const participant of chat.participants) {
-        await prisma.contact.upsert({
-          where: { unipileId: participant.id },
-          update: {
-            name: participant.name,
-            headline: participant.headline,
-            avatarUrl: participant.avatar_url,
-            profileUrl: participant.profile_url,
+        // After each contact upsert, get the resulting contact record:
+        const upsertedContact = await prisma.contact.upsert({
+          where: { unipileId_accountId: { unipileId: participant.id, accountId: account.id } },
+          update: { 
+            name: participant.name, 
+            headline: participant.headline, 
+            avatarUrl: participant.avatar_url, 
+            profileUrl: participant.profile_url 
           },
           create: {
             unipileId: participant.id,
@@ -50,21 +53,28 @@ export async function GET(req: NextRequest) {
             profileUrl: participant.profile_url,
           }
         });
+        upsertedContactIds.set(participant.id, upsertedContact.id);
       }
 
+      // Then in the conversation upsert, link the primary participant:
+      const primaryParticipant = chat.participants.find(p => p.id !== account.unipileAccountId) 
+                                ?? chat.participants[0];
+      
+      // Use the previously upserted contact for this participant
       await prisma.conversation.upsert({
         where: { unipileChatId: chat.id },
         update: {
           unreadCount: chat.unread_count,
           lastMessageAt: chat.last_message?.created_at ? new Date(chat.last_message.created_at) : undefined,
-          lastMessageText: chat.last_message?.text,
+          lastMessageText: chat.last_message?.text ?? null,
         },
         create: {
           unipileChatId: chat.id,
           accountId: account.id,
+          contactId: primaryParticipant ? upsertedContactIds.get(primaryParticipant.id) ?? null : null,
           unreadCount: chat.unread_count,
           lastMessageAt: chat.last_message?.created_at ? new Date(chat.last_message.created_at) : new Date(),
-          lastMessageText: chat.last_message?.text,
+          lastMessageText: chat.last_message?.text ?? null,
         }
       });
     }
@@ -79,7 +89,7 @@ export async function GET(req: NextRequest) {
     if (search) {
       const s = search.toLowerCase();
       displayChats = displayChats.filter(c => 
-        c.last_message?.text?.toLowerCase().includes(s) || 
+        (c.last_message?.text ?? '').toLowerCase().includes(s) || 
         c.participants.some(p => p.name.toLowerCase().includes(s))
       );
     }
@@ -89,10 +99,13 @@ export async function GET(req: NextRequest) {
       nextCursor: paginatedChats.cursor,
       hasMore: paginatedChats.has_more
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Conversations GET] Error:', message)
     return NextResponse.json(
-      { error: error.message || 'Failed to list conversations', code: error.code || 'INTERNAL_ERROR' },
-      { status: error.status || 500 }
-    );
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

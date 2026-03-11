@@ -6,7 +6,8 @@ import { PeopleSearch, UnipileProfile } from '@/components/compose/PeopleSearch'
 import { BulkSendPanel } from '@/components/compose/BulkSendPanel'
 import { useAccounts } from '@/hooks/useAccounts'
 import { useSendMessage } from '@/hooks/useMessages'
-import { Send, Sparkles, AlertCircle, Loader2 } from 'lucide-react'
+import { Send, Sparkles, AlertCircle, Loader2, Search } from 'lucide-react'
+import { toast } from 'sonner'
 
 export default function ComposePage() {
   const [activeTab, setActiveTab] = useState<'SINGLE' | 'BULK' | 'TEMPLATES'>('SINGLE')
@@ -40,7 +41,7 @@ export default function ComposePage() {
       const data = await res.json()
       setMsgText(data.text)
     } catch (e: any) {
-      alert(e.message)
+      toast.error(e.message || 'Failed to generate message')
     } finally {
       setIsGenerating(false)
     }
@@ -58,7 +59,7 @@ export default function ComposePage() {
         onSuccess: () => {
           setMsgText('')
           setSelectedContact(null)
-          alert('Message sent successfully')
+          toast.success('Message sent successfully')
         }
       })
     } else {
@@ -75,7 +76,7 @@ export default function ComposePage() {
         if (res.ok) {
           setMsgText('')
           setSelectedContact(null)
-          alert('Connection request sent')
+          toast.success('Connection request sent')
         }
       })
     }

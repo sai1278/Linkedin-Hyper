@@ -11,12 +11,21 @@ export async function GET(req: NextRequest) {
     }
 
     const accounts = await prisma.linkedInAccount.findMany({
-      where: { userId: session.user.id }
+      where: { userId: session.user.id },
+      include: {
+        _count: { select: { conversations: true } }
+      }
     });
 
     return NextResponse.json(accounts);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message, code: 'INTERNAL_ERROR' }, { status: 500 });
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Accounts GET] Error:', message)
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }
 
@@ -44,10 +53,13 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({ authUrl });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Accounts POST] Error:', message)
     return NextResponse.json(
-      { error: error.message || 'Failed to generate auth link', code: error.code || 'INTERNAL_ERROR' },
-      { status: error.status || 500 }
-    );
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

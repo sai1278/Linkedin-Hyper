@@ -5,6 +5,10 @@ import { PrismaAdapter } from "@auth/prisma-adapter"
 import { prisma } from "@/lib/prisma"
 import bcryptjs from "bcryptjs"
 
+import type { JWT } from 'next-auth/jwt'
+import type { Session, User } from 'next-auth'
+import type { AdapterUser } from '@auth/core/adapters'
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
   session: {
@@ -48,7 +52,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           id: user.id,
           email: user.email,
           name: user.name,
-          image: user.image,
+          image: user.image ?? null,
         }
       }
     }),
@@ -60,13 +64,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     ] : [])
   ],
   callbacks: {
-    jwt({ token, user }) {
+    jwt({ token, user }: { token: JWT; user?: AdapterUser | User }) {
       if (user) {
         token.id = user.id
       }
       return token
     },
-    session({ session, token }) {
+    session({ session, token }: { session: Session; token: JWT }) {
       if (session.user && token.id) {
         session.user.id = token.id as string
       }

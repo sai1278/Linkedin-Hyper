@@ -8,19 +8,57 @@ datasource db {
 }
 
 model User {
-  id        String            @id @default(cuid())
-  email     String            @unique
-  name      String?
-  password  String?
-  createdAt DateTime          @default(now())
-  accounts  LinkedInAccount[]
-  templates MessageTemplate[]
+  id            String            @id @default(cuid())
+  email         String            @unique
+  name          String?
+  password      String?
+  image         String?
+  emailVerified DateTime?
+  createdAt     DateTime          @default(now())
+  accounts      LinkedInAccount[]
+  templates     MessageTemplate[]
+  sessions      Session[]
+  authAccounts  Account[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
 }
 
 model LinkedInAccount {
   id               String         @id @default(cuid())
   userId           String
-  user             User           @relation(fields: [userId], references: [id])
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   unipileAccountId String         @unique
   displayName      String
   profilePicUrl    String?
@@ -40,30 +78,31 @@ enum AccountStatus {
 
 model Contact {
   id            String          @id @default(cuid())
-  linkedinId    String
-  fullName      String
+  unipileId     String
+  name          String
   headline      String?
-  profileUrl    String
+  profileUrl    String?
   avatarUrl     String?
   accountId     String
-  account       LinkedInAccount @relation(fields: [accountId], references: [id])
+  account       LinkedInAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   conversations Conversation[]
 
-  @@unique([linkedinId, accountId])
+  @@unique([unipileId, accountId])
 }
 
 model Conversation {
-  id            String             @id @default(cuid())
-  accountId     String
-  account       LinkedInAccount    @relation(fields: [accountId], references: [id])
-  contactId     String
-  contact       Contact            @relation(fields: [contactId], references: [id])
-  unipileChatId String             @unique
-  lastMessageAt DateTime?
-  unreadCount   Int                @default(0)
-  status        ConversationStatus @default(ACTIVE)
-  messages      Message[]
-  createdAt     DateTime           @default(now())
+  id              String             @id @default(cuid())
+  accountId       String
+  account         LinkedInAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contactId       String?
+  contact         Contact?           @relation(fields: [contactId], references: [id])
+  unipileChatId   String             @unique
+  lastMessageAt   DateTime?
+  lastMessageText String?
+  unreadCount     Int                @default(0)
+  status          ConversationStatus @default(ACTIVE)
+  messages        Message[]
+  createdAt       DateTime           @default(now())
 }
 
 enum ConversationStatus {
@@ -73,11 +112,13 @@ enum ConversationStatus {
 
 model Message {
   id                  String           @id @default(cuid())
+  unipileMessageId    String?          @unique
   conversationId      String
-  conversation        Conversation     @relation(fields: [conversationId], references: [id])
+  conversation        Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   direction           MessageDirection
-  body                String
+  text                String
   sentAt              DateTime
+  isRead              Boolean          @default(false)
   deliveryStatus      DeliveryStatus   @default(SENT)
   isConnectionRequest Boolean          @default(false)
   jobId               String?

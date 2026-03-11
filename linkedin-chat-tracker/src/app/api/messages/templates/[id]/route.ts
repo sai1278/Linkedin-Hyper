@@ -33,8 +33,14 @@ export async function PUT(
     })
 
     return NextResponse.json(updated)
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Template PUT] Error:', message)
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }
 
@@ -54,7 +60,13 @@ export async function DELETE(
     await prisma.messageTemplate.delete({ where: { id: params.id } })
 
     return new NextResponse(null, { status: 204 })
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Template DELETE] Error:', message)
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

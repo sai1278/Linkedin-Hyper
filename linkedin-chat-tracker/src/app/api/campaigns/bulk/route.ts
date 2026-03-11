@@ -1,24 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { UnipileClient } from '@/lib/unipile'
+import { getUnipileClient } from '@/lib/unipile'
+import { createJob, getJob } from '@/lib/jobStore'
 import { z } from 'zod'
-
-// In-memory job store for Phase 7 (For production, this would be Redis)
-interface JobProgress {
-  status: 'running' | 'complete' | 'failed'
-  total: number
-  sent: number
-  failed: number
-  errors: Array<{ profileUrl: string; error: string }>
-}
-export const activeJobs = new Map<string, JobProgress>()
 
 const bulkSchema = z.object({
   accountId: z.string(),
   recipients: z.array(z.object({
     profileUrl: z.string(),
     name: z.string().optional(),
+    headline: z.string().optional(),
     company: z.string().optional(),
     topic: z.string().optional()
   })).min(1).max(100),
@@ -47,111 +39,92 @@ export async function POST(req: NextRequest) {
 
     const jobId = `job-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
     
-    // Init job state
-    activeJobs.set(jobId, {
-      status: 'running',
-      total: parsed.recipients.length,
-      sent: 0,
-      failed: 0,
-      errors: []
-    })
+    // Init job state using the store manager
+    createJob(jobId, parsed.recipients.length)
 
     // Start background processing immediately (don't await)
     processBulkJob(jobId, account, parsed, session.user)
 
     return NextResponse.json({ jobId, total: parsed.recipients.length, status: 'running' }, { status: 202 })
 
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Bulk POST] Error:', message)
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors[0].message }, { status: 400 })
     }
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }
 
-// Background processor
 async function processBulkJob(
-  jobId: string, 
-  account: { id: string, displayName: string }, 
+  jobId: string,
+  account: { id: string; unipileAccountId: string; displayName: string },
   data: z.infer<typeof bulkSchema>,
   user: { name?: string | null }
 ) {
-  const job = activeJobs.get(jobId)!
-  const unipile = new UnipileClient()
-
-  const BASE_URL = process.env.NEXTAUTH_URL || 'http://localhost:3000'
+  const job = getJob(jobId)!
+  const unipileClient = getUnipileClient()
 
   for (const recipient of data.recipients) {
     try {
       let finalMessage = data.message
 
       if (data.useAI) {
-        // Call our internal AI route
-        const aiRes = await fetch(`${BASE_URL}/api/messages/generate-note`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            // Need to pass a valid session cookie realistically if auth is required on the API, 
-            // but for a background fetch on the same server to a Next.js route, it might fail auth.
-            // Workaround: We'll implement the Gemini logic directly here or use a shared server-side function.
-          },
-          body: JSON.stringify({
-            recipientName: recipient.name || 'Friend',
-            recipientCompany: recipient.company,
-            senderName: user.name || account.displayName,
-            topic: recipient.topic,
-            type: 'message'
-          })
-        })
+        // Call Gemini directly — no auth needed, it's server-to-server
+        const geminiKey = process.env.GEMINI_API_KEY
+        if (!geminiKey) throw new Error('GEMINI_API_KEY not configured')
 
-        if (!aiRes.ok) {
-           throw new Error('AI Generation failed for ' + recipient.profileUrl)
-        }
-        const aiData = await aiRes.json()
-        finalMessage = aiData.text
+        const promptText = `Write a natural, non-salesy LinkedIn message from ${user.name || account.displayName} to ${recipient.name || 'a connection'}.
+${recipient.headline ? `Their headline: ${recipient.headline}.` : ''}
+${recipient.company ? `Their company: ${recipient.company}.` : ''}
+${recipient.topic ? `Context: ${recipient.topic}.` : ''}
+Max 500 characters. Write ONLY the message text. No quotes, no preamble, sound human.`
+
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] }),
+          }
+        )
+
+        if (!geminiRes.ok) throw new Error(`Gemini API error: ${geminiRes.status}`)
+        const geminiData = await geminiRes.json()
+        finalMessage = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+                      ?.replace(/^["']|["']$/g, '') ?? data.message
+
       } else {
-        // Interpolate variables
-        finalMessage = finalMessage.replace(/{name}/g, recipient.name || '')
-                                   .replace(/{company}/g, recipient.company || '')
+        // Variable interpolation
+        finalMessage = finalMessage
+          .replace(/{name}/g, recipient.name || '')
+          .replace(/{company}/g, recipient.company || '')
       }
 
-      // Send via Unipile using our unified SendMessage route logic
-      // But we bypass the Next.js GET route for Auth by calling unipile client directly
-      await unipile.sendMessage({
-        account_id: account.id, // the route handles id to unipile id mapping normally, we'll map here if client uses db id, but wait, unipile client expects internal unipile ID?
-      })
-
-      // Wait... UnipileClient needs Unipile account ID?
-      // Our lib/unipile.ts `sendMessage` is not defined in the snippet, we'll make a direct API call or assume Unipile client has it.
-      // Let's use the DB account and our own route wrapper to assure it works, or directly use Unipile API
-
-      // Use the internal endpoint logic directly
-      const sendRes = await fetch(`${BASE_URL}/api/messages/send`, {
+      // Send via Unipile API directly
+      const sendRes = await fetch(`${unipileClient.publicDsn}/api/v1/chats`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Cookie': `__Secure-next-auth.session-token=dummy` }, // this is messy.
-        // Let's just do it directly with fetch to Unipile since we're in the backend. 
-      }) // Actually I will just reconstruct the unipile request.
-      
-      const dbAccount = await prisma.linkedInAccount.findUnique({ where: { id: account.id } })
-      if (!dbAccount?.unipileAccountId) throw new Error('Unipile account missing')
-
-      const uniReq = await fetch(`${unipile.dsn}/chats`, {
-         method: 'POST',
-         headers: {
-           'Accept': 'application/json',
-           'Content-Type': 'application/json',
-           'X-API-KEY': unipile.token
-         },
-         body: JSON.stringify({
-           account_id: dbAccount.unipileAccountId,
-           attendees_ids: [recipient.profileUrl], // provider_id realistically
-           text: finalMessage
-         })
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'X-API-KEY': unipileClient.publicToken,
+        },
+        body: JSON.stringify({
+          account_id: account.unipileAccountId,
+          attendees_ids: [recipient.profileUrl],
+          text: finalMessage,
+        }),
+        signal: AbortSignal.timeout(15000),
       })
 
-      if (!uniReq.ok) {
-         const errData = await uniReq.text()
-         throw new Error(`Unipile returned ${uniReq.status}: ${errData.slice(0, 100)}`)
+      if (!sendRes.ok) {
+        const errText = await sendRes.text()
+        throw new Error(`Unipile API ${sendRes.status}: ${errText.slice(0, 200)}`)
       }
 
       // Log success
@@ -159,21 +132,24 @@ async function processBulkJob(
         data: {
           accountId: account.id,
           action: 'MESSAGE_SENT',
-          metadata: { profileUrl: recipient.profileUrl, source: 'bulk_campaign', jobId }
-        }
+          metadata: { profileUrl: recipient.profileUrl, source: 'bulk_campaign', jobId },
+        },
       })
 
       job.sent++
-    } catch (err: any) {
-      console.error(`Bulk send error for ${recipient.profileUrl}:`, err)
+
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      console.error(`[BulkJob ${jobId}] Failed for ${recipient.profileUrl}:`, message)
       job.failed++
-      job.errors.push({ profileUrl: String(recipient.profileUrl), error: err.message || 'Unknown error' })
+      job.errors.push({ profileUrl: String(recipient.profileUrl), error: message })
     }
 
-    // Rate limiting: 3 - 5 seconds
+    // Rate limit: 3–5 second delay between sends
     const delay = Math.floor(Math.random() * 2000) + 3000
     await new Promise(r => setTimeout(r, delay))
   }
 
   job.status = 'complete'
+  job.completedAt = new Date().toISOString()
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
-import { activeJobs } from './route'
+import { getJob } from '@/lib/jobStore'
 
 export async function GET(
   req: NextRequest,
@@ -12,14 +12,20 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const job = activeJobs.get(params.jobId)
+    const job = getJob(params.jobId)
 
     if (!job) {
       return NextResponse.json({ error: 'Job not found' }, { status: 404 })
     }
 
     return NextResponse.json(job)
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Bulk GET] Error:', message)
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

@@ -124,9 +124,9 @@ export async function GET(
 
     const processedContacts = conversations.map(conv => {
       return {
-        contactId: conv.contact.id,
-        name: conv.contact.name,
-        avatarUrl: conv.contact.avatarUrl,
+        contactId: conv.contact?.id ?? null,
+        name: conv.contact?.name ?? 'Unknown',
+        avatarUrl: conv.contact?.avatarUrl ?? null,
         messageCount: conv.messages.length,
         replied: conv.messages.some(m => m.direction === 'INBOUND')
       }
@@ -157,7 +157,13 @@ export async function GET(
       activityLog
     })
 
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Analytics GET] Error:', message)
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

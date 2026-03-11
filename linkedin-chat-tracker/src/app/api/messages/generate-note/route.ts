@@ -32,16 +32,20 @@ export async function POST(req: NextRequest) {
       ${parsed.type === 'connection' ? 'Max 300 characters.' : 'Max 500 characters.'}
       Write ONLY the message text. No quotes, no preamble, no sign-off. Sound human and specific.`
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY,
+      },
       body: JSON.stringify({
         contents: [{
           parts: [{ text: promptText }]
         }]
-      })
+      }),
+      signal: AbortSignal.timeout(15000),
     })
 
     if (!res.ok) {
@@ -62,11 +66,17 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ text: cleanText })
 
-  } catch (error: any) {
-    console.error('AI Gen error:', error)
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[GenerateNote] Error:', message)
+
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors[0].message }, { status: 400 })
     }
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json(
+      { error: isDev ? message : 'Failed to generate message', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

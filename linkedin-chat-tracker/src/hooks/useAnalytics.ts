@@ -43,23 +43,22 @@ export function useAnalytics(accountId: string | null, period: '7d' | '30d' | '9
   })
 }
 
+export interface AllAccountsStats {
+  totalConversations: number
+  messagesSentToday: number
+  connectionsToday: number
+  unreadMessages: number
+}
+
 export function useAllAccountsStats() {
-  return useQuery({
-    queryKey: ['analytics', 'all-accounts'],
-    queryFn: async () => {
-      // In a real app we'd aggregate via a backend endpoint.
-      // For Phase 6 Mock, we fetch accounts, then sum up generic numbers
-      const accountsRes = await fetch('/api/accounts')
-      const accounts = await accountsRes.json()
-      
-      // Mocked aggregation for overview dashboard
-      return {
-        totalConversations: accounts.reduce((acc: number, cur: any) => acc + (cur._count?.conversations || 0), 0),
-        messagesSentToday: Math.floor(Math.random() * 50) + 10,
-        connectionsToday: Math.floor(Math.random() * 20),
-        unreadMessages: accounts.reduce((acc: number, cur: any) => acc + (cur.unreadCount || 0), 0) // assuming schema update or UI sum
-      }
+  return useQuery<AllAccountsStats>({
+    queryKey: ['all-accounts-stats'],
+    queryFn: async (): Promise<AllAccountsStats> => {
+      const res = await fetch('/api/analytics/summary')
+      if (!res.ok) throw new Error('Failed to fetch summary stats')
+      return res.json()
     },
-    staleTime: 300_000,
+    staleTime: 2 * 60 * 1000, // 2 minutes
+    refetchInterval: 5 * 60 * 1000, // auto-refresh every 5 minutes
   })
 }

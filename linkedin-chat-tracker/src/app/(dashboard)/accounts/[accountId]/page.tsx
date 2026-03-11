@@ -18,26 +18,19 @@ import {
   Bell
 } from 'lucide-react'
 
-// Mock analytics for Phase 4
-const mockAnalytics = {
-  totalConversations: 142,
-  totalMessagesSent: 489,
-  totalConnectionsSent: 120,
-  responseRate: 35.5,
-}
-
-// Mock activity log
-const mockActivities = [
-  { id: 1, type: 'MESSAGE_SENT', text: 'Sent message to Sarah Jenks', time: new Date(Date.now() - 1000 * 60 * 5) },
-  { id: 2, type: 'CONNECTION_ACCEPTED', text: 'John Doe accepted your connection request', time: new Date(Date.now() - 1000 * 60 * 45) },
-  { id: 3, type: 'CONNECTION_SENT', text: 'Sent connection request to Mike Smith', time: new Date(Date.now() - 1000 * 60 * 60 * 2) },
-  { id: 4, type: 'INBOUND_MESSAGE', text: 'Received message from Jane Doe', time: new Date(Date.now() - 1000 * 60 * 60 * 5) },
-]
+import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
+import { useAnalytics } from '@/hooks/useAnalytics'
+import { useConversations } from '@/hooks/useConversations'
 
 export default function AccountDetailPage() {
   const params = useParams()
   const router = useRouter()
+  const queryClient = useQueryClient()
   const { data: account, isLoading } = useAccount(params.accountId as string)
+  const { data: analytics, isLoading: analyticsLoading } = useAnalytics(params.accountId as string, '30d')
+  const { data: convData, isLoading: convLoading } = useConversations({ accountId: params.accountId as string })
+  
   const { mutate: disconnect } = useDisconnectAccount()
   const [isSyncing, setIsSyncing] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
@@ -60,10 +53,17 @@ export default function AccountDetailPage() {
   }
 
   const handleSync = async () => {
+    if (!account) return
     setIsSyncing(true)
-    // Placeholder sync call
-    await new Promise(r => setTimeout(r, 1500))
-    setIsSyncing(false)
+    try {
+      await fetch(`/api/conversations?accountId=${account.id}`)
+      toast.success('Synced successfully')
+      queryClient.invalidateQueries({ queryKey: ['conversations', account.id] })
+    } catch {
+      toast.error('Sync failed')
+    } finally {
+      setIsSyncing(false)
+    }
   }
 
   const getActivityIcon = (type: string) => {
@@ -156,10 +156,10 @@ export default function AccountDetailPage() {
       {/* 3. Stats Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {[
-          { label: 'Conversations', value: mockAnalytics.totalConversations, icon: MessageSquare, color: 'text-sky-500', bg: 'bg-sky-500/10' },
-          { label: 'Messages Sent (30d)', value: mockAnalytics.totalMessagesSent, icon: Send, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
-          { label: 'Connections Sent (30d)', value: mockAnalytics.totalConnectionsSent, icon: Users, color: 'text-purple-500', bg: 'bg-purple-500/10' },
-          { label: 'Response Rate', value: `${mockAnalytics.responseRate}%`, icon: Activity, color: 'text-amber-500', bg: 'bg-amber-500/10' },
+          { label: 'Conversations', value: account._count?.conversations || 0, icon: MessageSquare, color: 'text-sky-500', bg: 'bg-sky-500/10' },
+          { label: 'Messages Sent (30d)', value: analytics?.stats?.totalMessagesSent || 0, icon: Send, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+          { label: 'Connections Sent (30d)', value: analytics?.stats?.totalConnectionsSent || 0, icon: Users, color: 'text-purple-500', bg: 'bg-purple-500/10' },
+          { label: 'Response Rate', value: `${analytics?.stats?.responseRate || 0}%`, icon: Activity, color: 'text-amber-500', bg: 'bg-amber-500/10' },
         ].map((stat, i) => (
           <div key={i} className="bg-[#1E293B] border border-[#334155] rounded-xl p-5">
             <div className="flex items-center gap-3 mb-3">
@@ -194,27 +194,29 @@ export default function AccountDetailPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#334155]">
-                {/* Mock rows for UI */}
-                {[
-                  { id: '1', name: 'Alice Smith', message: 'Thanks for connecting!', time: new Date() },
-                  { id: '2', name: 'Bob Jones', message: 'Can we jump on a call next week?', time: new Date(Date.now() - 3600000) },
-                  { id: '3', name: 'Charlie Davis', message: 'I reviewed the proposal.', time: new Date(Date.now() - 86400000) },
-                ].map((chat) => (
-                  <tr key={chat.id} 
-                      onClick={() => router.push(`/conversations/${chat.id}`)}
-                      className="group hover:bg-[#0F172A] cursor-pointer transition-colors"
-                  >
-                    <td className="px-5 py-4 w-48">
-                      <span className="font-medium text-slate-200 group-hover:text-sky-400 transition-colors">{chat.name}</span>
-                    </td>
-                    <td className="px-5 py-4 text-slate-400 truncate max-w-[200px]">
-                      {chat.message}
-                    </td>
-                    <td className="px-5 py-4 text-slate-500 whitespace-nowrap">
-                      {formatRelativeTime(chat.time)}
-                    </td>
-                  </tr>
-                ))}
+                {convLoading ? (
+                  <tr><td colSpan={3} className="px-5 py-4 text-slate-500 text-center">Loading...</td></tr>
+                ) : !convData?.pages[0]?.conversations?.length ? (
+                  <tr><td colSpan={3} className="px-5 py-4 text-slate-500 text-center">No recent conversations</td></tr>
+                ) : convData.pages[0].conversations.slice(0, 5).map((chat) => {
+                  const contactName = chat.contact?.fullName || 'Unknown'
+                  return (
+                    <tr key={chat.id} 
+                        onClick={() => router.push(`/conversations?id=${chat.id}`)}
+                        className="group hover:bg-[#0F172A] cursor-pointer transition-colors"
+                    >
+                      <td className="px-5 py-4 w-48">
+                        <span className="font-medium text-slate-200 group-hover:text-sky-400 transition-colors">{contactName}</span>
+                      </td>
+                      <td className="px-5 py-4 text-slate-400 truncate max-w-[200px]">
+                        {chat.lastMessage?.body || 'No messages'}
+                      </td>
+                      <td className="px-5 py-4 text-slate-500 whitespace-nowrap">
+                        {chat.lastMessageAt ? formatRelativeTime(chat.lastMessageAt) : ''}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -228,17 +230,27 @@ export default function AccountDetailPage() {
               <div className="absolute left-[33px] top-5 bottom-5 w-px bg-[#334155]" />
               
               <div className="space-y-6">
-                {mockActivities.map((act) => (
-                  <div key={act.id} className="flex gap-4 relative z-10">
-                    <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-[#334155] flex items-center justify-center shrink-0 mt-0.5">
-                      {getActivityIcon(act.type)}
+                {analyticsLoading ? (
+                  <div className="relative z-10 text-slate-500 text-sm text-center">Loading...</div>
+                ) : !analytics?.activityLog?.length ? (
+                  <div className="relative z-10 text-slate-500 text-sm text-center">No recent activity</div>
+                ) : analytics.activityLog.slice(0, 5).map((act) => {
+                  let text = act.action
+                  if (act.action === 'CONNECTION_SENT') text = 'Sent connection request'
+                  if (act.action === 'MESSAGE_SENT') text = 'Sent message'
+
+                  return (
+                    <div key={act.id} className="flex gap-4 relative z-10">
+                      <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-[#334155] flex items-center justify-center shrink-0 mt-0.5">
+                        {getActivityIcon(act.action)}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-slate-200 leading-snug mb-1">{text}</p>
+                        <p className="text-xs text-slate-500">{formatRelativeTime(act.occurredAt)}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-sm font-medium text-slate-200 leading-snug mb-1">{act.text}</p>
-                      <p className="text-xs text-slate-500">{formatRelativeTime(act.time)}</p>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
             </div>
             </div>
           </div>

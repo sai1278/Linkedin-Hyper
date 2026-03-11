@@ -27,10 +27,23 @@ export class UnipileClient {
   private dsn: string;
   private token: string;
 
-  constructor(dsn: string, token: string) {
-    this.dsn = dsn.replace(/\/$/, '');
-    this.token = token;
+  constructor(dsn?: string, token?: string) {
+    const resolvedDsn = dsn ?? process.env.UNIPILE_DSN;
+    const resolvedToken = token ?? process.env.UNIPILE_ACCESS_TOKEN;
+
+    if (!resolvedDsn || !resolvedToken) {
+      throw new Error(
+        'UnipileClient: UNIPILE_DSN and UNIPILE_ACCESS_TOKEN must be set. ' +
+        'Check your environment variables.'
+      );
+    }
+
+    this.dsn = resolvedDsn.replace(/\/$/, '');
+    this.token = resolvedToken;
   }
+
+  get publicDsn(): string { return this.dsn; }
+  get publicToken(): string { return this.token; }
 
   private async request<T>(method: string, path: string, body?: any): Promise<T> {
     const url = `${this.dsn}${path.startsWith('/') ? path : `/${path}`}`;
@@ -183,11 +196,20 @@ export class UnipileClient {
   }
 }
 
-if (!process.env.UNIPILE_DSN || !process.env.UNIPILE_ACCESS_TOKEN) {
-  throw new Error('FATAL: UNIPILE_DSN and UNIPILE_ACCESS_TOKEN must be set');
+// Lazy singleton — only throws at runtime when actually used, not at build time
+let _unipile: UnipileClient | null = null;
+
+export function getUnipileClient(): UnipileClient {
+  if (!_unipile) {
+    _unipile = new UnipileClient();
+  }
+  return _unipile;
 }
 
-export const unipile = new UnipileClient(
-  process.env.UNIPILE_DSN,
-  process.env.UNIPILE_ACCESS_TOKEN
-);
+// Keep the named export for backward compatibility with existing imports
+// but make it a getter-based proxy so it doesn't throw at import time
+export const unipile = new Proxy({} as UnipileClient, {
+  get(_target, prop) {
+    return (getUnipileClient() as any)[prop];
+  }
+});

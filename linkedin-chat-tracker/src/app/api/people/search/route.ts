@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
-import { UnipileClient } from '@/lib/unipile'
+import { getUnipileClient } from '@/lib/unipile'
 import { prisma } from '@/lib/prisma'
 
 export async function GET(req: NextRequest) {
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Account not found or unauthorized' }, { status: 404 })
     }
 
-    const unipile = new UnipileClient()
+    const unipile = getUnipileClient()
     
     // In a real scenario we'd call a Unipile people search endpoint like `GET /users?search={q}&account_id={unipileAccountId}`
     // Since we don't have the exact Unipile SDK method for this in our snippet, we'll manually fetch it:
@@ -41,13 +41,14 @@ export async function GET(req: NextRequest) {
       limit: '10'
     })
 
-    const res = await fetch(`${unipile.dsn}/users?${params.toString()}`, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'X-API-KEY': unipile.token
+    const res = await fetch(
+      `${unipile.publicDsn}/api/v1/users?${params.toString()}`,
+      {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-API-KEY': unipile.publicToken },
+        signal: AbortSignal.timeout(10000),
       }
-    })
+    )
 
     if (!res.ok) {
       const errorText = await res.text()
@@ -61,8 +62,13 @@ export async function GET(req: NextRequest) {
     // Unipile returns an array of user objects. We'll return it directly.
     return NextResponse.json(data.items || data || [])
 
-  } catch (error: any) {
-    console.error('People search failed:', error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[People Search] Error:', message)
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

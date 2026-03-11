@@ -2,6 +2,27 @@ import { NextRequest, NextResponse } from 'next/server';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { prisma } from '@/lib/prisma';
 
+interface WebhookEvent {
+  type: string
+  account_id: string
+  data: Record<string, unknown>
+}
+
+interface NewMessageData {
+  id: string
+  chat_id: string
+  text?: string
+  sender_id?: string
+  account_id?: string
+  created_at: string
+  is_read?: boolean
+}
+
+interface ConnectionEventData {
+  provider_id?: string
+  name?: string
+}
+
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
@@ -37,7 +58,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }
 
-    const event = JSON.parse(rawBody);
+    const event = JSON.parse(rawBody) as WebhookEvent;
 
     // Fire and forget
     processWebhookEvent(event).catch(err => {
@@ -45,13 +66,18 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({ received: true });
-  } catch (error) {
-    console.error('Webhook error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Webhook] Error:', message);
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }
 
-async function processWebhookEvent(event: any) {
+async function processWebhookEvent(event: WebhookEvent) {
   const { type, account_id, data } = event;
 
   const account = await prisma.linkedInAccount.findUnique({
@@ -62,31 +88,35 @@ async function processWebhookEvent(event: any) {
 
   switch (type) {
     case 'new_message':
-      await handleNewMessage(account.id, data);
+      await handleNewMessage(account.id, data as unknown as NewMessageData);
       break;
-    case 'connection_accepted':
+    case 'connection_accepted': {
+      const connData = data as unknown as ConnectionEventData;
       await prisma.activityLog.create({
         data: {
           accountId: account.id,
           action: 'CONNECTION_ACCEPTED',
-          metadata: { provider_id: data.provider_id, name: data.name }
+          metadata: { provider_id: connData.provider_id, name: connData.name }
         }
       });
       break;
-    case 'connection_requested':
+    }
+    case 'connection_requested': {
+      const reqData = data as unknown as ConnectionEventData;
       await prisma.activityLog.create({
         data: {
           accountId: account.id,
           action: 'CONNECTION_RECEIVED',
-          metadata: { provider_id: data.provider_id, name: data.name }
+          metadata: { provider_id: reqData.provider_id, name: reqData.name }
         }
       });
       break;
+    }
   }
 }
 
-async function handleNewMessage(accountId: string, data: any) {
-  const isOutbound = data.sender_id === data.account_id;
+async function handleNewMessage(accountId: string, data: NewMessageData) {
+  const isOutbound = Boolean(data.sender_id) && data.sender_id === data.account_id;
   const direction = isOutbound ? 'OUTBOUND' : 'INBOUND';
 
   let conversation = await prisma.conversation.findUnique({
@@ -114,6 +144,10 @@ async function handleNewMessage(accountId: string, data: any) {
       }
     });
   }
+
+  // In handleNewMessage, the upsert is already idempotent thanks to unipileMessageId unique constraint.
+  // Add a note for clarity:
+  console.log(`[Webhook] Processing message ${data.id} for chat ${data.chat_id}`)
 
   await prisma.message.upsert({
     where: { unipileMessageId: data.id },

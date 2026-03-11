@@ -89,17 +89,20 @@ export async function POST(req: NextRequest) {
         conversationId: dbConversation.id,
         direction: 'OUTBOUND',
         text: sentMessage.text,
-        isRead: sentMessage.is_read || true,
+        isRead: true, // Outbound messages are always read by the sender
         sentAt: new Date(sentMessage.created_at),
         deliveryStatus: 'SENT'
       }
     });
 
     return NextResponse.json(savedMessage);
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Messages POST] Error:', message)
     return NextResponse.json(
-      { error: error.message || 'Failed to send message', code: error.code || 'INTERNAL_ERROR' },
-      { status: error.status || 500 }
-    );
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

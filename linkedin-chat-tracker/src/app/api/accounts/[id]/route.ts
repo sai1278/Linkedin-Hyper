@@ -17,6 +17,11 @@ export async function GET(
       where: { 
         id: params.id,
         userId: session.user.id 
+      },
+      include: {
+        _count: {
+          select: { conversations: true }
+        }
       }
     });
 
@@ -25,8 +30,14 @@ export async function GET(
     }
 
     return NextResponse.json(account);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message, code: 'INTERNAL_ERROR' }, { status: 500 });
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Account GET] Error:', message)
+    return NextResponse.json(
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }
 
@@ -58,10 +69,13 @@ export async function DELETE(
     });
 
     return new NextResponse(null, { status: 204 });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Account DELETE] Error:', message)
     return NextResponse.json(
-      { error: error.message || 'Failed to delete account', code: error.code || 'INTERNAL_ERROR' },
-      { status: error.status || 500 }
-    );
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

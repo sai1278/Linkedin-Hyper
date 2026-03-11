@@ -6,20 +6,8 @@ import { signOut } from 'next-auth/react'
 import { Menu, Search, Bell, User, Settings, LogOut } from 'lucide-react'
 import { useUIStore } from '@/store/uiStore'
 
-// Dummy hooks for Phase 3 (we can replace them with actual React Query hooks later if needed)
-function useAccounts() {
-  const [data, setData] = useState<any[]>([])
-  useEffect(() => {
-    fetch('/api/accounts').then(res => res.json()).then(d => {
-      if (Array.isArray(d)) setData(d)
-    })
-  }, [])
-  return { data }
-}
-
-function useUnreadCount() {
-  return { data: 0 } // placeholder
-}
+import { useAccounts } from '@/hooks/useAccounts'
+import { useAllAccountsStats } from '@/hooks/useAnalytics'
 
 interface TopBarProps {
   user?: {
@@ -35,7 +23,8 @@ export function TopBar({ user }: TopBarProps) {
   const { toggleSidebar, selectedAccountId, setSelectedAccount, searchQuery, setSearchQuery } = useUIStore()
   
   const { data: accounts } = useAccounts()
-  const { data: unreadCount } = useUnreadCount()
+  const { data: stats } = useAllAccountsStats()
+  const unreadCount = stats?.unreadMessages || 0
 
   const [localSearch, setLocalSearch] = useState(searchQuery)
 
@@ -82,8 +71,7 @@ export function TopBar({ user }: TopBarProps) {
       </div>
 
       {/* Center: Search */}
-      <div className="flex-1 max-w-xl px-4">
-        <div className="relative group">
+        <div className="relative group flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-sky-400 transition-colors" />
           <input 
             type="text"
@@ -93,7 +81,6 @@ export function TopBar({ user }: TopBarProps) {
             className="w-full bg-[#0F172A] text-slate-200 border border-slate-700 rounded-full h-9 pl-9 pr-4 text-sm focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all placeholder:text-slate-500"
           />
         </div>
-      </div>
 
       {/* Right: Actions */}
       <div className="flex items-center gap-4 flex-1 justify-end">
@@ -105,7 +92,7 @@ export function TopBar({ user }: TopBarProps) {
         >
           <option value="">All Accounts</option>
           {accounts?.map((acc: any) => (
-            <option key={acc.id} value={acc.id}>{acc.name}</option>
+            <option key={acc.id} value={acc.id}>{acc.displayName}</option>
           ))}
         </select>
 

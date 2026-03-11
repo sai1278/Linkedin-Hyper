@@ -51,10 +51,13 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({ success: true });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const isDev = process.env.NODE_ENV === 'development'
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    console.error('[Connect POST] Error:', message)
     return NextResponse.json(
-      { error: error.message || 'Failed to send connection request', code: error.code || 'INTERNAL_ERROR' },
-      { status: error.status || 500 }
-    );
+      { error: isDev ? message : 'Internal server error', code: 'INTERNAL_ERROR' },
+      { status: error instanceof Error && 'status' in error ? (error as any).status || 500 : 500 }
+    )
   }
 }

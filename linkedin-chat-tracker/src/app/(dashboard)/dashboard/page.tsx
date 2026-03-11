@@ -3,13 +3,16 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession } from 'next-auth/react'
-import { useAllAccountsStats } from '@/hooks/useAnalytics'
+import { useAllAccountsStats, useAnalytics } from '@/hooks/useAnalytics'
 import { useAccounts } from '@/hooks/useAccounts'
+import { useConversations } from '@/hooks/useConversations'
+import { useUIStore } from '@/store/uiStore'
 import { StatsCard } from '@/components/analytics/StatsCard'
 import { AccountCard } from '@/components/accounts/AccountCard'
 import { MessageSquare, Send, UserPlus, Bell, Clock, Search, Sparkles } from 'lucide-react'
 import { formatRelativeTime, cn } from '@/lib/utils'
 import { useSendMessage } from '@/hooks/useMessages'
+import { toast } from 'sonner'
 
 export default function DashboardOverviewPage() {
   const { data: session } = useSession()
@@ -18,6 +21,15 @@ export default function DashboardOverviewPage() {
   const { data: stats, isLoading: statsLoading } = useAllAccountsStats()
   const { data: accounts, isLoading: accountsLoading } = useAccounts()
   
+  const { selectedAccountId } = useUIStore()
+  
+  const { data: unreadData, isLoading: unreadLoading } = useConversations({ 
+    accountId: selectedAccountId, 
+    filter: 'unread' 
+  })
+  
+  const { data: analyticsData, isLoading: analyticsLoading } = useAnalytics(selectedAccountId, '7d')
+
   const [recipient, setRecipient] = useState('')
   const [messageText, setMessageText] = useState('')
   const [selectedComposeAccount, setSelectedComposeAccount] = useState<string>('')
@@ -34,7 +46,10 @@ export default function DashboardOverviewPage() {
       onSuccess: () => {
         setMessageText('')
         setRecipient('')
-        alert('Message sent successfully!')
+        toast.success('Message sent successfully!')
+      },
+      onError: () => {
+        toast.error('Failed to send message. Please try again.')
       }
     })
   }
@@ -100,33 +115,39 @@ export default function DashboardOverviewPage() {
             </button>
           </div>
           <div className="p-2 space-y-1">
-            {/* Mock Needs Reply List */}
-            {statsLoading ? (
-               <div className="p-4 flex justify-center text-slate-500">Loading...</div>
+            {!selectedAccountId ? (
+              <div className="p-4 flex justify-center text-slate-500 text-sm">Select an account to view unread messages</div>
+            ) : unreadLoading ? (
+               <div className="p-4 flex justify-center text-slate-500 text-sm">Loading...</div>
+            ) : !unreadData?.pages[0]?.conversations?.length ? (
+              <div className="p-4 flex justify-center text-slate-500 text-sm">No unread messages</div>
             ) : (
-              [
-                { id: '1', name: 'Sarah Jenkins', time: new Date(Date.now() - 3600000), preview: 'Can we schedule a quick call about this?' },
-                { id: '2', name: 'Michael Chen', time: new Date(Date.now() - 7200000), preview: 'Thanks, I will take a look at the repo.' },
-                { id: '3', name: 'Emily Ross', time: new Date(Date.now() - 86400000), preview: 'Are you available next Tuesday?' },
-              ].map((item) => (
-                <div key={item.id} className="p-3 hover:bg-[#0F172A] rounded-xl transition-colors group flex items-start gap-4 cursor-pointer" onClick={() => router.push(`/conversations?id=${item.id}`)}>
-                   <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center shrink-0 border border-[#334155] text-slate-300 font-semibold text-sm">
-                     {item.name[0]}
-                   </div>
-                   <div className="flex-1 min-w-0">
-                     <div className="flex justify-between items-center mb-0.5">
-                       <span className="font-medium text-slate-200 text-sm group-hover:text-sky-400 transition-colors">{item.name}</span>
-                       <span className="text-xs text-slate-500 flex items-center gap-1">
-                         <Clock className="w-3 h-3" /> {formatRelativeTime(item.time)}
-                       </span>
+              unreadData.pages[0].conversations.slice(0, 5).map((chat) => {
+                const contactName = chat.contact?.fullName || 'Unknown'
+                return (
+                  <div key={chat.id} className="p-3 hover:bg-[#0F172A] rounded-xl transition-colors group flex items-start gap-4 cursor-pointer" onClick={() => router.push(`/conversations?id=${chat.id}`)}>
+                     <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center shrink-0 border border-[#334155] overflow-hidden text-slate-300 font-semibold text-sm">
+                       {chat.contact?.avatarUrl ? (
+                         <img src={chat.contact.avatarUrl} alt={contactName} className="w-full h-full object-cover" />
+                       ) : (
+                         contactName[0]?.toUpperCase() || '?'
+                       )}
                      </div>
-                     <p className="text-xs text-slate-400 truncate">{item.preview}</p>
-                   </div>
-                   <button className="opacity-0 group-hover:opacity-100 transition-opacity bg-sky-500/10 text-sky-400 px-3 py-1.5 rounded-lg text-xs font-medium shrink-0">
-                     Reply →
-                   </button>
-                </div>
-              ))
+                     <div className="flex-1 min-w-0">
+                       <div className="flex justify-between items-center mb-0.5">
+                         <span className="font-medium text-slate-200 text-sm group-hover:text-sky-400 transition-colors">{contactName}</span>
+                         <span className="text-xs text-slate-500 flex items-center gap-1">
+                           <Clock className="w-3 h-3" /> {chat.lastMessageAt ? formatRelativeTime(chat.lastMessageAt) : ''}
+                         </span>
+                       </div>
+                       <p className="text-xs text-slate-400 truncate">{chat.lastMessage?.body || 'New message'}</p>
+                     </div>
+                     <button className="opacity-0 group-hover:opacity-100 transition-opacity bg-sky-500/10 text-sky-400 px-3 py-1.5 rounded-lg text-xs font-medium shrink-0">
+                       Reply →
+                     </button>
+                  </div>
+                )
+              })
             )}
           </div>
         </div>
@@ -134,27 +155,42 @@ export default function DashboardOverviewPage() {
         {/* Global Activity */}
         <div className="bg-[#1E293B] border border-[#334155] rounded-2xl flex flex-col overflow-hidden">
           <div className="p-5 border-b border-[#334155] bg-[#0F172A]/50">
-            <h2 className="text-base font-semibold text-slate-100">Today's Activity</h2>
+            <h2 className="text-base font-semibold text-slate-100">Recent Activity</h2>
           </div>
           <div className="p-5 overflow-y-auto max-h-[300px] relative">
             <div className="absolute left-[27px] top-6 bottom-6 w-px bg-[#334155]" />
             <div className="space-y-6">
-              {[
-                { type: 'MSG', text: 'Sent message to David Miller', time: '10 mins ago', icon: <Send className="w-3.5 h-3.5 text-sky-400" /> },
-                { type: 'CONN', text: 'Connected with Elena Ford', time: '1 hour ago', icon: <UserPlus className="w-3.5 h-3.5 text-emerald-400" /> },
-                { type: 'MSG', text: 'Received message from Sarah J.', time: '2 hours ago', icon: <Bell className="w-3.5 h-3.5 text-violet-400" /> },
-                { type: 'CONN', text: 'Sent request to James Smith', time: '3 hours ago', icon: <UserPlus className="w-3.5 h-3.5 text-amber-400" /> },
-              ].map((act, i) => (
-                <div key={i} className="flex gap-4 relative z-10 w-full">
-                   <div className="w-6 h-6 rounded-full bg-[#0F172A] border border-[#334155] flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
-                     {act.icon}
-                   </div>
-                   <div className="flex-1 min-w-0">
-                     <p className="text-sm font-medium text-slate-200 truncate">{act.text}</p>
-                     <p className="text-xs text-slate-500 mt-0.5">{act.time}</p>
-                   </div>
-                </div>
-              ))}
+              {!selectedAccountId ? (
+                <div className="relative z-10 flex justify-center text-slate-500 text-sm">Select an account to view activity</div>
+              ) : analyticsLoading ? (
+                <div className="relative z-10 flex justify-center text-slate-500 text-sm">Loading activity...</div>
+              ) : !analyticsData?.activityLog?.length ? (
+                <div className="relative z-10 flex justify-center text-slate-500 text-sm">No recent activity</div>
+              ) : (
+                analyticsData.activityLog.slice(0, 4).map((act) => {
+                  let icon = <Bell className="w-3.5 h-3.5 text-slate-400" />
+                  if (act.action === 'CONNECTION_SENT') icon = <UserPlus className="w-3.5 h-3.5 text-amber-400" />
+                  if (act.action === 'MESSAGE_SENT') icon = <Send className="w-3.5 h-3.5 text-sky-400" />
+
+                  // Optional: handle CONNECTION_ACCEPTED, INBOUND_MESSAGE if added to schema
+
+                  let text = act.action
+                  if (act.action === 'CONNECTION_SENT') text = 'Sent connection request'
+                  if (act.action === 'MESSAGE_SENT') text = 'Sent message'
+
+                  return (
+                    <div key={act.id} className="flex gap-4 relative z-10 w-full">
+                       <div className="w-6 h-6 rounded-full bg-[#0F172A] border border-[#334155] flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                         {icon}
+                       </div>
+                       <div className="flex-1 min-w-0">
+                         <p className="text-sm font-medium text-slate-200 truncate">{text}</p>
+                         <p className="text-xs text-slate-500 mt-0.5">{formatRelativeTime(act.occurredAt)}</p>
+                       </div>
+                    </div>
+                  )
+                })
+              )}
             </div>
           </div>
         </div>
