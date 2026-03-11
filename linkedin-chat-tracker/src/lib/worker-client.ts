@@ -1,9 +1,7 @@
 /**
- * WorkerClient — thin HTTP client for the self-hosted Playwright worker API.
- * Replaces the former UnipileClient. All methods talk to WORKER_API_URL.
- *
- * Phase 1: stubs that throw WorkerNotImplementedError.
- * Phase 2: replace each stub body with a real fetch() call.
+ * WorkerClient — HTTP client for the self-hosted Playwright worker API.
+ * Talks to WORKER_API_URL (default http://localhost:3001).
+ * Authentication via X-Api-Key header using WORKER_API_KEY.
  */
 
 export class WorkerError extends Error {
@@ -12,191 +10,284 @@ export class WorkerError extends Error {
 
   constructor(message: string, status: number, code?: string) {
     super(message);
-    this.name = 'WorkerError';
+    this.name   = 'WorkerError';
     this.status = status;
-    this.code = code;
+    this.code   = code;
   }
 }
 
-export class WorkerNotImplementedError extends WorkerError {
-  constructor(method: string) {
-    super(
-      `WorkerClient.${method} is not yet implemented. ` +
-      'Deploy the Playwright worker and complete Phase 2.',
-      501,
-      'NOT_IMPLEMENTED'
-    );
-    this.name = 'WorkerNotImplementedError';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Shared types (previously in types/unipile.ts)
-// ---------------------------------------------------------------------------
+// ── Shared types ─────────────────────────────────────────────────────────────
 
 export interface WorkerAccount {
-  id: string;           // internal accountId used by the worker (= cookie key)
-  name: string;
-  status: 'active' | 'expired' | 'error';
-  sessionAge?: number;  // seconds since cookies were last saved
+  id:          string;
+  name:        string;
+  status:      'active' | 'expired' | 'error';
+  sessionAge?: number;
 }
 
 export interface WorkerParticipant {
-  id: string;
-  name: string;
-  headline?: string;
-  avatarUrl?: string;
+  id:          string;
+  name:        string;
+  headline?:   string;
+  avatarUrl?:  string;
   profileUrl?: string;
 }
 
 export interface WorkerMessage {
-  id: string;
-  chatId: string;
-  senderId: string;
-  text: string;
+  id:        string;
+  chatId:    string;
+  senderId:  string;
+  text:      string;
   createdAt: string;
-  isRead: boolean;
+  isRead:    boolean;
 }
 
 export interface WorkerChat {
-  id: string;
-  accountId: string;
+  id:           string;
+  accountId:    string;
   participants: WorkerParticipant[];
-  unreadCount: number;
+  unreadCount:  number;
   lastMessage?: WorkerMessage;
-  createdAt: string;
+  createdAt:    string;
 }
 
 export interface WorkerProfile {
-  id: string;
-  name: string;
-  headline?: string;
-  location?: string;
-  about?: string;
-  avatarUrl?: string;
+  id:          string;
+  name:        string;
+  headline?:   string;
+  location?:   string;
+  about?:      string;
+  avatarUrl?:  string;
   profileUrl?: string;
-  company?: string;
+  company?:    string;
 }
 
 export interface Paginated<T> {
-  items: T[];
-  cursor: string | null;
+  items:   T[];
+  cursor:  string | null;
   hasMore: boolean;
 }
 
 export type PaginatedChats    = Paginated<WorkerChat>;
 export type PaginatedMessages = Paginated<WorkerMessage>;
 
-// ---------------------------------------------------------------------------
-// WorkerClient
-// ---------------------------------------------------------------------------
+// ── WorkerClient ──────────────────────────────────────────────────────────────
 
 export class WorkerClient {
   private baseUrl: string;
-  private apiKey: string;
+  private apiKey:  string;
 
   constructor(baseUrl?: string, apiKey?: string) {
     this.baseUrl = (baseUrl ?? process.env.WORKER_API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
-    this.apiKey  = apiKey  ?? process.env.WORKER_API_KEY ?? '';
+    this.apiKey  =  apiKey  ?? process.env.WORKER_API_KEY ?? '';
 
     if (!this.apiKey) {
       throw new WorkerError(
-        'WorkerClient: WORKER_API_KEY must be set in environment variables.',
+        'WorkerClient: WORKER_API_KEY must be set.',
         500,
         'MISSING_CONFIG'
       );
     }
   }
 
-  // ── Account management ──────────────────────────────────────────────────
+  // ── Internal request helper ───────────────────────────────────────────────
+
+  private async request<T>(
+    method: string,
+    path:   string,
+    body?:  Record<string, unknown>,
+    timeoutMs = 120_000
+  ): Promise<T> {
+    const url     = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      'x-api-key': this.apiKey,
+      'Accept':    'application/json',
+    };
+    if (body) headers['Content-Type'] = 'application/json';
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers,
+        body:   body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Network error';
+      throw new WorkerError(`Worker unreachable: ${msg}`, 503, 'WORKER_OFFLINE');
+    }
+
+    if (!res.ok) {
+      let payload: { error?: string; code?: string } = {};
+      try { payload = await res.json(); } catch { /* ignore */ }
+      throw new WorkerError(
+        payload.error || `Worker API error ${res.status}`,
+        res.status,
+        payload.code
+      );
+    }
+
+    if (res.status === 204) return undefined as T;
+    return res.json() as Promise<T>;
+  }
+
+  // ── Account / session management ─────────────────────────────────────────
 
   /**
-   * Returns the URL the user should open to import cookies for a new account.
-   * Phase 2: POST /accounts/:name/session/start → returns { importUrl }
+   * Returns a cookie-import URL the user should open.
+   * The worker does not do OAuth — the user logs in manually once
+   * and then imports their cookies via the dashboard.
+   *
+   * For now this returns a static instructions URL that the
+   * AccountConnectModal will display.
    */
-  async generateAuthLink(_params: {
-    name: string;
+  async generateAuthLink(params: {
+    name:               string;
     successRedirectUrl: string;
     failureRedirectUrl: string;
   }): Promise<{ url: string }> {
-    throw new WorkerNotImplementedError('generateAuthLink');
+    // Cookie import is handled via POST /accounts/:id/session directly.
+    // Return a special internal URL that the modal intercepts.
+    return {
+      url: `/accounts/import-cookies?name=${encodeURIComponent(params.name)}&redirect=${encodeURIComponent(params.successRedirectUrl)}`,
+    };
   }
 
-  /** Phase 2: DELETE /accounts/:workerAccountId */
-  async deleteAccount(_workerAccountId: string): Promise<void> {
-    throw new WorkerNotImplementedError('deleteAccount');
+  /** Delete all session cookies for an account from Redis. */
+  async deleteAccount(workerAccountId: string): Promise<void> {
+    return this.request('DELETE', `/accounts/${encodeURIComponent(workerAccountId)}/session`);
   }
 
-  // ── Conversations ────────────────────────────────────────────────────────
-
-  /** Phase 2: GET /messages/read → queues inbox fetch job, returns chats */
-  async listChats(_workerAccountId: string, _cursor?: string): Promise<PaginatedChats> {
-    throw new WorkerNotImplementedError('listChats');
+  /** Verify a session is alive (navigates to LinkedIn feed). */
+  async verifySession(workerAccountId: string): Promise<{ ok: boolean }> {
+    return this.request('POST', `/accounts/${encodeURIComponent(workerAccountId)}/verify`);
   }
 
-  /** Phase 2: GET /messages/read?chatId=… */
-  async getMessages(_chatId: string, _cursor?: string): Promise<PaginatedMessages> {
-    throw new WorkerNotImplementedError('getMessages');
+  /** Raw cookie import — body is the cookies array directly. */
+  async importCookiesRaw(workerAccountId: string, cookies: unknown[]): Promise<{ success: boolean; cookieCount: number }> {
+    const url     = `${this.baseUrl}/accounts/${encodeURIComponent(workerAccountId)}/session`;
+    const headers = {
+      'x-api-key':    this.apiKey,
+      'Content-Type': 'application/json',
+      'Accept':       'application/json',
+    };
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method:  'POST',
+        headers,
+        body:    JSON.stringify(cookies),
+        signal:  AbortSignal.timeout(30_000),
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Network error';
+      throw new WorkerError(`Worker unreachable: ${msg}`, 503, 'WORKER_OFFLINE');
+    }
+
+    if (!res.ok) {
+      let payload: { error?: string } = {};
+      try { payload = await res.json(); } catch { /* ignore */ }
+      throw new WorkerError(payload.error || `Worker API error ${res.status}`, res.status);
+    }
+
+    return res.json();
   }
 
-  /** Phase 2: POST /chats/:chatId/read */
+  // ── Conversations ─────────────────────────────────────────────────────────
+
+  /** Fetch the inbox conversation list. */
+  async listChats(workerAccountId: string, _cursor?: string): Promise<PaginatedChats> {
+    return this.request('GET', `/messages/inbox?accountId=${encodeURIComponent(workerAccountId)}&limit=20`);
+  }
+
+  /** Fetch messages from a specific conversation thread. */
+  async getMessages(chatId: string, _cursor?: string): Promise<PaginatedMessages> {
+    // chatId format: "accountId::threadId" — split on "::"
+    const [accountId, threadId] = chatId.includes('::')
+      ? chatId.split('::')
+      : [chatId, chatId];
+
+    return this.request(
+      'GET',
+      `/messages/thread?accountId=${encodeURIComponent(accountId)}&chatId=${encodeURIComponent(threadId)}&limit=50`
+    );
+  }
+
+  /** Mark a conversation as read (best-effort, never throws). */
   async markChatRead(_chatId: string): Promise<void> {
-    throw new WorkerNotImplementedError('markChatRead');
+    // LinkedIn does not have a separate "mark read" API call when
+    // viewing the thread — it marks read automatically. No-op here.
+    return Promise.resolve();
   }
 
-  // ── Messaging ────────────────────────────────────────────────────────────
+  // ── Messaging ─────────────────────────────────────────────────────────────
 
-  /** Phase 2: POST /messages/send { accountId, chatId, text } */
-  async sendMessage(_chatId: string, _text: string): Promise<WorkerMessage> {
-    throw new WorkerNotImplementedError('sendMessage');
+  /** Send a message in an existing conversation. */
+  async sendMessage(chatId: string, text: string): Promise<WorkerMessage> {
+    // chatId stored in DB as "accountId::threadId"
+    const [accountId, threadId] = chatId.includes('::')
+      ? chatId.split('::')
+      : [chatId, chatId];
+
+    return this.request<WorkerMessage>('POST', '/messages/send', {
+      accountId,
+      chatId:   threadId,
+      text,
+    });
   }
 
-  /**
-   * Phase 2: POST /messages/send { accountId, recipientProfileUrl, text }
-   * Navigates to profile and sends via the Message button.
-   */
+  /** Send a message to a profile URL (creates new conversation). */
   async sendMessageToProfile(
-    _workerAccountId: string,
-    _profileUrl: string,
-    _text: string
+    workerAccountId: string,
+    profileUrl:      string,
+    text:            string
   ): Promise<WorkerMessage> {
-    throw new WorkerNotImplementedError('sendMessageToProfile');
+    return this.request<WorkerMessage>('POST', '/messages/send-new', {
+      accountId: workerAccountId,
+      profileUrl,
+      text,
+    });
   }
 
-  // ── Connections ──────────────────────────────────────────────────────────
+  // ── Connections ───────────────────────────────────────────────────────────
 
-  /** Phase 2: POST /connections/send { accountId, userId, note } */
+  /** Send a LinkedIn connection request. */
   async sendConnectionRequest(
-    _workerAccountId: string,
-    _userId: string,
-    _note?: string
+    workerAccountId: string,
+    profileUrl:      string,
+    note?:           string
   ): Promise<void> {
-    throw new WorkerNotImplementedError('sendConnectionRequest');
+    return this.request('POST', '/connections/send', {
+      accountId: workerAccountId,
+      profileUrl,
+      ...(note ? { note } : {}),
+    }, 90_000);
   }
 
-  // ── People search ────────────────────────────────────────────────────────
+  // ── People search ─────────────────────────────────────────────────────────
 
-  /** Phase 2: POST /profiles/scrape { accountId, query } */
-  async searchPeople(_workerAccountId: string, _query: string): Promise<WorkerProfile[]> {
-    throw new WorkerNotImplementedError('searchPeople');
+  /** Search LinkedIn for people. */
+  async searchPeople(workerAccountId: string, query: string): Promise<WorkerProfile[]> {
+    return this.request(
+      'GET',
+      `/people/search?accountId=${encodeURIComponent(workerAccountId)}&q=${encodeURIComponent(query)}&limit=10`
+    );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Singleton helpers
-// ---------------------------------------------------------------------------
+// ── Singleton helpers ─────────────────────────────────────────────────────────
 
 let _worker: WorkerClient | null = null;
 
 export function getWorkerClient(): WorkerClient {
-  if (!_worker) {
-    _worker = new WorkerClient();
-  }
+  if (!_worker) _worker = new WorkerClient();
   return _worker;
 }
 
 export const workerClient = new Proxy({} as WorkerClient, {
   get(_target, prop) {
-    return (getWorkerClient() as unknown  as Record<string | symbol, unknown>)[prop];
+    return (getWorkerClient() as unknown as Record<string | symbol, unknown>)[prop];
   },
 });

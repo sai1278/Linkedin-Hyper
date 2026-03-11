@@ -28,23 +28,15 @@ export function useAccount(id: string) {
   })
 }
 
+// useConnectAccount is no longer used — cookie import is handled
+// directly in AccountConnectModal via POST /api/accounts/import-cookies.
+// Kept as a no-op export to avoid breaking any existing imports.
 export function useConnectAccount() {
   return useMutation({
-    mutationFn: async (data: { name: string }) => {
-      const res = await fetch('/api/accounts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      })
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.error || 'Failed to connect account')
-      }
-      return res.json() as Promise<{ authUrl: string }>
+    mutationFn: async (_data: { name: string }) => {
+      // Handled by AccountConnectModal directly
+      return { success: true }
     },
-    onSuccess: (data) => {
-      window.open(data.authUrl, '_blank', 'width=600,height=700')
-    }
   })
 }
 
