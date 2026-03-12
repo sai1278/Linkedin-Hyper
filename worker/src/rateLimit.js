@@ -1,0 +1,59 @@
+'use strict';
+
+const { getRedis } = require('./redisClient');
+
+// Conservative daily limits — well below LinkedIn detection thresholds
+const LIMITS = {
+  messagesSent:    25,
+  connectRequests: 15,
+  profileViews:    60,
+  searchQueries:   40,
+  inboxReads:      50,
+};
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+}
+
+/**
+ * Atomically increment counter and check against limit.
+ * Throws if limit exceeded.
+ */
+async function checkAndIncrement(accountId, action) {
+  const limit = LIMITS[action];
+  if (limit === undefined) throw new Error(`Unknown rate-limit action: ${action}`);
+
+  const redis   = getRedis();
+  const key     = `ratelimit:${accountId}:${action}:${todayKey()}`;
+  const current = await redis.incr(key);
+
+  if (current === 1) {
+    // New counter — set TTL to expire at end of UTC day
+    const secondsUntilMidnight = 86400 - (Math.floor(Date.now() / 1000) % 86400);
+    await redis.expire(key, secondsUntilMidnight + 60); // +60s buffer
+  }
+
+  if (current > limit) {
+    const err = new Error(
+      `Daily limit reached: ${action} (${current}/${limit}) for account ${accountId}`
+    );
+    err.code   = 'RATE_LIMIT_EXCEEDED';
+    err.status = 429;
+    throw err;
+  }
+
+  return { current, limit, remaining: limit - current };
+}
+
+async function getLimits(accountId) {
+  const redis   = getRedis();
+  const results = {};
+  for (const [action, limit] of Object.entries(LIMITS)) {
+    const key     = `ratelimit:${accountId}:${action}:${todayKey()}`;
+    const current = parseInt((await redis.get(key)) || '0', 10);
+    results[action] = { current, limit, remaining: Math.max(0, limit - current) };
+  }
+  return results;
+}
+
+module.exports = { checkAndIncrement, getLimits };

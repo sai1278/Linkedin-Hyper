@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  worker:
+    build:
+      context: ./worker
+    shm_size: '1gb'
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - ACCOUNT_IDS=${ACCOUNT_IDS}
+      - API_SECRET=${API_SECRET}
+      - HTTP_PROXY=${PROXY_URL}
+      - HTTPS_PROXY=${PROXY_URL}
+      - PROXY_URL=${PROXY_URL}
+    depends_on:
+      - redis
+    restart: always
+
+  frontend:
+    build:
+      context: .
+    ports:
+      - "3000:3000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - API_SECRET=${API_SECRET}
+      - WORKER_URL=http://worker:3001
+    depends_on:
+      - redis
+      - worker
+    restart: always
