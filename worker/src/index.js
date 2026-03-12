@@ -318,7 +318,7 @@ app.get('/inbox/unified', async (req, res) => {
     const results = await Promise.allSettled(
       ids.map(async (accountId) => {
         const metaRaw = await redis.get(`session:meta:${accountId}`);
-        if (!metaRaw) return { accountId, conversations: [] };
+        if (!metaRaw) return [];
 
         const result = await runJob('readMessages', {
           accountId,
@@ -326,14 +326,31 @@ app.get('/inbox/unified', async (req, res) => {
           proxyUrl: process.env.PROXY_URL || null,
         }, 120000);
 
-        const conversations = (result?.conversations ?? []).map(c => ({ ...c, accountId }));
-        return { accountId, conversations };
+        const items = result?.items ?? [];
+
+        return items.map((chat) => ({
+          conversationId: chat.id,
+          accountId,
+          participant: {
+            name: chat.participants?.[0]?.name ?? 'Unknown',
+            profileUrl: chat.participants?.[0]?.profileUrl ?? '',
+          },
+          lastMessage: {
+            text: chat.lastMessage?.text ?? '',
+            sentAt: chat.lastMessage?.createdAt
+              ? new Date(chat.lastMessage.createdAt).getTime()
+              : Date.now(),
+            sentByMe: chat.lastMessage?.senderId === '__self__',
+          },
+          unreadCount: chat.unreadCount ?? 0,
+          messages: [],
+        }));
       })
     );
 
     const all = results
       .filter(r => r.status === 'fulfilled')
-      .flatMap(r => r.value.conversations)
+      .flatMap(r => r.value)
       .sort((a, b) => (b.lastMessage?.sentAt ?? 0) - (a.lastMessage?.sentAt ?? 0));
 
     res.json({ conversations: all });

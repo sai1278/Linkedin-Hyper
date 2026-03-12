@@ -31,6 +31,31 @@ export async function getUnifiedInbox(): Promise<{ conversations: Conversation[]
   return apiFetch<{ conversations: Conversation[] }>('inbox/unified');
 }
 
+export async function getConversationThread(
+  accountId: string,
+  chatId: string
+): Promise<{ messages: Message[] }> {
+  const res = await apiFetch<{
+    items: Array<{
+      id: string;
+      chatId: string;
+      senderId: string;
+      text: string;
+      createdAt: string;
+    }>;
+  }>(`messages/thread?accountId=${encodeURIComponent(accountId)}&chatId=${encodeURIComponent(chatId)}`);
+
+  return {
+    messages: res.items.map((m) => ({
+      id: m.id,
+      text: m.text,
+      sentAt: new Date(m.createdAt).getTime(),
+      sentByMe: m.senderId === '__self__',
+      senderName: m.senderId === '__self__' ? accountId : 'Participant',
+    })),
+  };
+}
+
 // ── Activity Log ──────────────────────────────────────────────────────────────
 
 export async function getAccountActivity(

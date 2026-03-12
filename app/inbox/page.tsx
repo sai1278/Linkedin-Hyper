@@ -1,8 +1,6 @@
-'use client';
-
 import { useState, useEffect, useCallback } from 'react';
-import type { Conversation, Account } from '@/types/dashboard';
-import { getUnifiedInbox, getAccounts } from '@/lib/api-client';
+import type { Conversation, Account, Message } from '@/types/dashboard';
+import { getUnifiedInbox, getAccounts, getConversationThread } from '@/lib/api-client';
 import { ConversationList } from '@/components/inbox/ConversationList';
 import { MessageThread } from '@/components/inbox/MessageThread';
 import { Spinner } from '@/components/ui/Spinner';
@@ -43,6 +41,16 @@ export default function InboxPage() {
       ? conversations
       : conversations.filter((c) => c.accountId === filter);
 
+  async function handleSelect(conv: Conversation) {
+    setSelected(conv); // optimistic UI, show immediately
+    try {
+      const thread = await getConversationThread(conv.accountId, conv.conversationId);
+      setSelected({ ...conv, messages: thread.messages });
+    } catch {
+      // ignore, thread shows up with previous messages or empty
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 h-full">
@@ -66,7 +74,7 @@ export default function InboxPage() {
         selected={selected}
         filter={filter}
         onFilterChange={setFilter}
-        onSelect={setSelected}
+        onSelect={handleSelect}
       />
       <MessageThread
         conversation={selected}
