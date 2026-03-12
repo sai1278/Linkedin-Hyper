@@ -1,6 +1,6 @@
 import type { Account, Conversation, ActivityEntry, Message } from '@/types/dashboard';
 
-const BASE = '/api/proxy';
+const BASE = '/api';
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}/${path}`, {
