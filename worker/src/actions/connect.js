@@ -34,6 +34,24 @@ async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) 
     await humanScroll(page, 150);
     await delay(800, 1500);
 
+    // Try to extract profile name near the interaction point
+    let participantName = 'Unknown';
+    try {
+      participantName = await page.evaluate(() => {
+        const connectButton = document.querySelector('button[aria-label*="Connect"], button[aria-label*="connect"]');
+        const nearestCard = connectButton?.closest(
+          '.pv-top-card, .ph5, .artdeco-card, main, section'
+        );
+
+        const scopedName = nearestCard?.querySelector('h1, [data-anonymize="person-name"], .text-heading-xlarge');
+        const fallbackName = document.querySelector('h1, [data-anonymize="person-name"], .text-heading-xlarge');
+        const raw = scopedName?.textContent || fallbackName?.textContent || '';
+        const value = raw.trim();
+
+        return value || 'Unknown';
+      });
+    } catch (_) {}
+
     // Click Connect button — may be inside a More dropdown
     const connectBtn = await page.$('button[aria-label*="Connect"], button[aria-label*="connect"]');
 
@@ -70,7 +88,7 @@ async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) 
     const entry = JSON.stringify({
       type: 'connectionSent',
       accountId,
-      targetName: 'Participant',
+      targetName: participantName,
       targetProfileUrl: profileUrl,
       message: note || '',
       timestamp: Date.now(),

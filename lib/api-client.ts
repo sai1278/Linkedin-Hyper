@@ -47,6 +47,7 @@ export async function getConversationThread(
       senderId: string;
       text: string;
       createdAt: string;
+      senderName?: string;
     }>;
   }>(`messages/thread?accountId=${encodeURIComponent(accountId)}&chatId=${encodeURIComponent(chatId)}`);
 
@@ -56,7 +57,9 @@ export async function getConversationThread(
       text: m.text,
       sentAt: new Date(m.createdAt).getTime(),
       sentByMe: m.senderId === '__self__',
-      senderName: m.senderId === '__self__' ? accountId : 'Participant',
+      senderName: m.senderId === '__self__'
+        ? (m.senderName || accountId)
+        : (m.senderName || 'Unknown'),
     })),
   };
 }

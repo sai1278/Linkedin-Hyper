@@ -35,6 +35,24 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     await humanScroll(page, 200);
     await delay(800, 1500);
 
+    // Try to extract profile name near the interaction point
+    let participantName = 'Unknown';
+    try {
+      participantName = await page.evaluate(() => {
+        const messageButton = document.querySelector('button[aria-label*="Message"], a[aria-label*="Message"]');
+        const nearestCard = messageButton?.closest(
+          '.pv-top-card, .ph5, .artdeco-card, main, section'
+        );
+
+        const scopedName = nearestCard?.querySelector('h1, [data-anonymize="person-name"], .text-heading-xlarge');
+        const fallbackName = document.querySelector('h1, [data-anonymize="person-name"], .text-heading-xlarge');
+        const raw = scopedName?.textContent || fallbackName?.textContent || '';
+        const value = raw.trim();
+
+        return value || 'Unknown';
+      });
+    } catch (_) {}
+
     // Click the Message button on their profile
     await humanClick(page, 'button[aria-label*="Message"], a[aria-label*="Message"]', { timeout: 10000 });
     await delay(1500, 3000);
@@ -63,7 +81,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     const entry = JSON.stringify({
       type: 'messageSent',
       accountId,
-      targetName: 'Participant', // Simple fallback since we don't scrape name easily here
+      targetName: participantName,
       targetProfileUrl: profileUrl,
       message: text,
       timestamp: Date.now(),

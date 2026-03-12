@@ -51,7 +51,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
     const msgId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     
     // Try to extract the real participant name
-    let participantName = 'Participant';
+    let participantName = 'Unknown';
     try {
       const nameEl = await page.$('.msg-thread__name, .msg-entity-lockup__entity-title');
       if (nameEl) {

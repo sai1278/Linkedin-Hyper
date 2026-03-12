@@ -49,6 +49,9 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
           const bodyEl   = item.querySelector('.msg-s-event__content, .body');
           const timeEl   = item.querySelector('time');
           const senderEl = item.querySelector('.msg-s-message-group__profile-link, .msg-s-event__link');
+          const senderNameEl = item.querySelector(
+            '.msg-s-message-group__name, .msg-s-message-group__profile-link, .msg-s-event__link, [data-anonymize="person-name"]'
+          );
           const isSelf   = item.classList.contains('msg-s-message-list__event--own-turn') ||
                            item.querySelector('[data-view-name="messaging-self-message"]') !== null;
 
@@ -62,6 +65,9 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
             senderId:  isSelf ? '__self__' : (senderEl?.href?.match(/\/in\/([^/]+)/)?.[1] || 'other'),
             text:      bodyEl.textContent?.trim() || '',
             createdAt: timeEl?.getAttribute('datetime') || new Date().toISOString(),
+            senderName: isSelf
+              ? '__self__'
+              : (senderNameEl?.textContent?.trim() || 'Unknown'),
             isRead:    true,
           });
         } catch (_) { /* skip malformed */ }
@@ -69,7 +75,12 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
       return results;
     }, limit);
 
-    messages.forEach((m) => { m.chatId = chatId; });
+    messages.forEach((m) => {
+      m.chatId = chatId;
+      if (m.senderId === '__self__') {
+        m.senderName = accountId;
+      }
+    });
 
     await saveCookies(accountId, await context.cookies());
 
