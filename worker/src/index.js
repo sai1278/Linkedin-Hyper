@@ -40,6 +40,40 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ts: new Date().toISOString() });
 });
 
+/**
+ * GET /accounts
+ * Returns all known account IDs and their session status.
+ * Reads ACCOUNT_IDS env var (comma-separated).
+ * Does NOT require API key — frontend needs public access.
+ */
+const { getRedis } = require('./redisClient');
+app.get('/accounts', async (_req, res) => {
+  try {
+    const ids = (process.env.ACCOUNT_IDS ?? '').split(',').filter(Boolean);
+    const redis = getRedis();
+
+    const accounts = await Promise.all(
+      ids.map(async (id) => {
+        let isActive = false;
+        let lastSeen = null;
+        try {
+          const metaRaw = await redis.get(`session:meta:${id}`);
+          const meta = metaRaw ? JSON.parse(metaRaw) : null;
+          isActive = !!meta;
+          lastSeen = meta?.importedAt ?? null;
+        } catch (_err) {
+          // Redis may be unavailable — degrade gracefully
+        }
+        return { id, displayName: id, isActive, lastSeen };
+      })
+    );
+
+    res.json({ accounts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── All routes below require API key ─────────────────────────────────────────
 
 app.use(requireApiKey);
@@ -268,6 +302,114 @@ app.post('/connections/send', async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, code: err.code });
+  }
+});
+
+/**
+ * GET /inbox/unified
+ * Triggers inbox reads for ALL active accounts in parallel,
+ * waits for all jobs to complete, merges and sorts results.
+ */
+app.get('/inbox/unified', async (req, res) => {
+  try {
+    const ids = (process.env.ACCOUNT_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+    const redis = getRedis();
+
+    const results = await Promise.allSettled(
+      ids.map(async (accountId) => {
+        const metaRaw = await redis.get(`session:meta:${accountId}`);
+        if (!metaRaw) return { accountId, conversations: [] };
+
+        const result = await runJob('readMessages', {
+          accountId,
+          limit: 20,
+          proxyUrl: process.env.PROXY_URL || null,
+        }, 120000);
+
+        const conversations = (result?.conversations ?? []).map(c => ({ ...c, accountId }));
+        return { accountId, conversations };
+      })
+    );
+
+    const all = results
+      .filter(r => r.status === 'fulfilled')
+      .flatMap(r => r.value.conversations)
+      .sort((a, b) => (b.lastMessage?.sentAt ?? 0) - (a.lastMessage?.sentAt ?? 0));
+
+    res.json({ conversations: all });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /stats/:accountId/activity?page=0&limit=50
+ * Returns paginated activity log for an account.
+ * Reads from Redis list `activity:log:${accountId}`.
+ */
+app.get('/stats/:accountId/activity', async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const page  = parseInt(req.query.page  ?? '0',  10);
+    const limit = parseInt(req.query.limit ?? '50', 10);
+    const redis = getRedis();
+
+    // Activity entries stored as JSON strings in a Redis list
+    const key = `activity:log:${accountId}`;
+    const total = await redis.llen(key);
+    const start = page * limit;
+    const stop  = start + limit - 1;
+    const raw   = await redis.lrange(key, start, stop);
+
+    const entries = raw.map(r => {
+      try { return JSON.parse(r); } catch { return null; }
+    }).filter(Boolean);
+
+    res.json({ entries, total });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /stats/all/summary
+ * Aggregated stats across all accounts.
+ */
+app.get('/stats/all/summary', async (req, res) => {
+  try {
+    const ids = (process.env.ACCOUNT_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+    const redis = getRedis();
+
+    const accountStats = await Promise.all(
+      ids.map(async (id) => {
+        const key = `activity:log:${id}`;
+        const total = await redis.llen(key).catch(() => 0);
+        return { id, totalActivity: total };
+      })
+    );
+
+    const totalMessages     = 0;
+    const totalConnections  = 0;
+
+    res.json({ accounts: Object.fromEntries(accountStats.map(a => [a.id, a])), totalMessages, totalConnections });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /stats/:accountId/summary
+ * Stats for one account.
+ */
+app.get('/stats/:accountId/summary', async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const redis = getRedis();
+    const key = `activity:log:${accountId}`;
+    const total = await redis.llen(key).catch(() => 0);
+    res.json({ accountId, totalActivity: total });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

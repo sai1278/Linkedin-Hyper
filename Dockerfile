@@ -34,6 +34,4 @@ COPY --from=builder /app/public ./public
 EXPOSE 3000
 
 # Start Next.js standalone server
-# Environment variables NEXT_PUBLIC_STRAPI_URL and NEXT_PUBLIC_STRAPI_API_TOKEN
-# will be picked up from Render's environment variables at runtime
 CMD ["node", "server.js"]
