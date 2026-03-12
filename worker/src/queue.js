@@ -1,14 +1,21 @@
 'use strict';
 
-const { Queue } = require('bullmq');
-const { getRedis } = require('./redisClient');
+const { Queue, QueueEvents } = require('bullmq');
+const { getRedis, createRedisClient } = require('./redisClient');
 
 let _queue = null;
+let _queueEvents = null;
 
 function getQueue() {
   if (_queue) return _queue;
-  _queue = new Queue('linkedin-jobs', { connection: getRedis() });
+  _queue = new Queue('linkedin-jobs', { connection: createRedisClient() });
   return _queue;
 }
 
-module.exports = { getQueue };
+function getQueueEvents() {
+  if (_queueEvents) return _queueEvents;
+  _queueEvents = new QueueEvents('linkedin-jobs', { connection: createRedisClient() });
+  return _queueEvents;
+}
+
+module.exports = { getQueue, getQueueEvents };

@@ -4,13 +4,13 @@
  * Scrapes messages from a specific LinkedIn conversation thread.
  */
 
-const { createBrowser, createContext } = require('../browser');
+const { getAccountContext } = require('../browser');
 const { loadCookies, saveCookies }     = require('../session');
 const { delay, humanScroll }           = require('../humanBehavior');
 
 async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
-  const browser = await createBrowser(proxyUrl);
-  const context = await createContext(browser);
+  const { context } = await getAccountContext(accountId, proxyUrl);
+  let page;
 
   try {
     const cookies = await loadCookies(accountId);
@@ -21,7 +21,7 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
     }
 
     await context.addCookies(cookies);
-    const page = await context.newPage();
+    page = await context.newPage();
 
     await page.goto(`https://www.linkedin.com/messaging/thread/${chatId}/`, {
       waitUntil: 'domcontentloaded',
@@ -75,8 +75,7 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
 
     return { items: messages, cursor: null, hasMore: false };
   } finally {
-    await context.close();
-    await browser.close();
+    if (page) await page.close().catch(() => {});
   }
 }
 

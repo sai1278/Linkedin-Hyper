@@ -26,4 +26,23 @@ function getRedis() {
   return _redis;
 }
 
-module.exports = { getRedis };
+/**
+ * Returns a new discrete Redis connection, required by BullMQ workers.
+ */
+function createRedisClient() {
+  const client = new Redis({
+    host:     process.env.REDIS_HOST     || '127.0.0.1',
+    port:     parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD || undefined,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  });
+  
+  client.on('error', (err) => {
+    console.error('[Redis Client] Connection error:', err.message);
+  });
+  
+  return client;
+}
+
+module.exports = { getRedis, createRedisClient };

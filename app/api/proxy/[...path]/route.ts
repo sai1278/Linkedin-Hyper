@@ -9,7 +9,30 @@ async function handler(
 ): Promise<NextResponse> {
   const { path } = await params;
   const pathStr = path.join('/');
+
+  // Prevent directory traversal
+  if (pathStr.includes('..')) {
+    return new NextResponse(JSON.stringify({ error: 'Invalid path' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const url = `${BACKEND}/${pathStr}${req.nextUrl.search}`;
+
+  // Ensure the constructed URL strictly originates from the configured BACKEND origin
+  try {
+    const parsedUrl = new URL(url);
+    const backendUrl = new URL(BACKEND);
+    if (parsedUrl.origin !== backendUrl.origin) {
+      throw new Error('Origin mismatch');
+    }
+  } catch {
+    return new NextResponse(JSON.stringify({ error: 'Invalid backend URL construction' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',

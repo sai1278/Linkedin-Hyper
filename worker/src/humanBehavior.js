@@ -40,7 +40,13 @@ async function humanType(page, selector, text, options = {}) {
   await humanClick(page, selector, options);
   await delay(150, 350);
 
-  for (const char of text) {
+  // Sanitize: max 3000 chars, strip non-printable/control characters (except newlines)
+  const saneText = (text || '')
+    .toString()
+    .replace(/[^\x20-\x7E\n\r]/g, '')
+    .slice(0, 3000);
+
+  for (const char of saneText) {
     await page.keyboard.type(char, { delay: randInt(55, 130) });
     // ~4% chance of a thinking pause
     if (Math.random() < 0.04) await delay(350, 800);

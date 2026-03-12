@@ -5,7 +5,7 @@
  * Optionally includes a personalised note (max 300 chars).
  */
 
-const { createBrowser, createContext }              = require('../browser');
+const { getAccountContext }                         = require('../browser');
 const { loadCookies, saveCookies }                  = require('../session');
 const { delay, humanClick, humanType, humanScroll } = require('../humanBehavior');
 const { checkAndIncrement }                         = require('../rateLimit');
@@ -14,8 +14,8 @@ const { getRedis }                                  = require('../redisClient');
 async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) {
   await checkAndIncrement(accountId, 'connectRequests');
 
-  const browser = await createBrowser(proxyUrl);
-  const context = await createContext(browser);
+  const { context } = await getAccountContext(accountId, proxyUrl);
+  let page;
 
   try {
     const cookies = await loadCookies(accountId);
@@ -26,7 +26,7 @@ async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) 
     }
 
     await context.addCookies(cookies);
-    const page = await context.newPage();
+    page = await context.newPage();
 
     await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await delay(2500, 5000);
@@ -80,8 +80,7 @@ async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) 
 
     return { success: true, profileUrl };
   } finally {
-    await context.close();
-    await browser.close();
+    if (page) await page.close().catch(() => {});
   }
 }
 

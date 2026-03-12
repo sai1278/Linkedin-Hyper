@@ -5,7 +5,7 @@
  * Uses the messaging overlay accessible from /messaging/.
  */
 
-const { createBrowser, createContext } = require('../browser');
+const { getAccountContext } = require('../browser');
 const { loadCookies, saveCookies }     = require('../session');
 const { delay, humanScroll }           = require('../humanBehavior');
 const { checkAndIncrement }            = require('../rateLimit');
@@ -13,8 +13,8 @@ const { checkAndIncrement }            = require('../rateLimit');
 async function readMessages({ accountId, proxyUrl, limit = 20 }) {
   await checkAndIncrement(accountId, 'inboxReads');
 
-  const browser = await createBrowser(proxyUrl);
-  const context = await createContext(browser);
+  const { context } = await getAccountContext(accountId, proxyUrl);
+  let page;
 
   try {
     const cookies = await loadCookies(accountId);
@@ -25,7 +25,7 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
     }
 
     await context.addCookies(cookies);
-    const page = await context.newPage();
+    page = await context.newPage();
 
     await page.goto('https://www.linkedin.com/messaging/', {
       waitUntil: 'domcontentloaded',
@@ -95,8 +95,7 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
 
     return { items: chats, cursor: null, hasMore: false };
   } finally {
-    await context.close();
-    await browser.close();
+    if (page) await page.close().catch(() => {});
   }
 }
 

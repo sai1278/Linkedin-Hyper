@@ -5,7 +5,7 @@
  * Returns a list of WorkerProfile objects.
  */
 
-const { createBrowser, createContext } = require('../browser');
+const { getAccountContext } = require('../browser');
 const { loadCookies, saveCookies }     = require('../session');
 const { delay, humanScroll }           = require('../humanBehavior');
 const { checkAndIncrement }            = require('../rateLimit');
@@ -13,8 +13,8 @@ const { checkAndIncrement }            = require('../rateLimit');
 async function searchPeople({ accountId, query, proxyUrl, limit = 10 }) {
   await checkAndIncrement(accountId, 'searchQueries');
 
-  const browser = await createBrowser(proxyUrl);
-  const context = await createContext(browser);
+  const { context } = await getAccountContext(accountId, proxyUrl);
+  let page;
 
   try {
     const cookies = await loadCookies(accountId);
@@ -25,7 +25,7 @@ async function searchPeople({ accountId, query, proxyUrl, limit = 10 }) {
     }
 
     await context.addCookies(cookies);
-    const page = await context.newPage();
+    page = await context.newPage();
 
     const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(query)}&origin=GLOBAL_SEARCH_HEADER`;
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -74,8 +74,7 @@ async function searchPeople({ accountId, query, proxyUrl, limit = 10 }) {
 
     return profiles;
   } finally {
-    await context.close();
-    await browser.close();
+    if (page) await page.close().catch(() => {});
   }
 }
 

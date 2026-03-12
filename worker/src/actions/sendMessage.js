@@ -4,7 +4,7 @@
  * Sends a message in an existing LinkedIn conversation thread.
  */
 
-const { createBrowser, createContext } = require('../browser');
+const { getAccountContext }            = require('../browser');
 const { loadCookies, saveCookies }     = require('../session');
 const { delay, humanClick }            = require('../humanBehavior');
 const { checkAndIncrement }            = require('../rateLimit');
@@ -13,8 +13,8 @@ const { getRedis }                     = require('../redisClient');
 async function sendMessage({ accountId, chatId, text, proxyUrl }) {
   await checkAndIncrement(accountId, 'messagesSent');
 
-  const browser = await createBrowser(proxyUrl);
-  const context = await createContext(browser);
+  const { context } = await getAccountContext(accountId, proxyUrl);
+  let page;
 
   try {
     const cookies = await loadCookies(accountId);
@@ -25,7 +25,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
     }
 
     await context.addCookies(cookies);
-    const page = await context.newPage();
+    page = await context.newPage();
 
     await page.goto(`https://www.linkedin.com/messaging/thread/${chatId}/`, {
       waitUntil: 'domcontentloaded',
@@ -50,11 +50,21 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
 
     const msgId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     
+    // Try to extract the real participant name
+    let participantName = 'Participant';
+    try {
+      const nameEl = await page.$('.msg-thread__name, .msg-entity-lockup__entity-title');
+      if (nameEl) {
+        const text = await nameEl.textContent();
+        if (text) participantName = text.trim();
+      }
+    } catch (_) {}
+
     const redis = getRedis();
     const entry = JSON.stringify({
       type: 'messageSent',
       accountId,
-      targetName: 'Participant',
+      targetName: participantName,
       targetProfileUrl: chatId,
       message: text,
       timestamp: Date.now(),
@@ -71,8 +81,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
       isRead:    true,
     };
   } finally {
-    await context.close();
-    await browser.close();
+    if (page) await page.close().catch(() => {});
   }
 }
 

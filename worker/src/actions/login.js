@@ -8,13 +8,13 @@
  * Returns { ok: true } if session is valid, throws WorkerError if not.
  */
 
-const { createBrowser, createContext } = require('../browser');
+const { getAccountContext } = require('../browser');
 const { loadCookies, saveCookies }     = require('../session');
 const { delay }                        = require('../humanBehavior');
 
 async function verifySession({ accountId, proxyUrl }) {
-  const browser = await createBrowser(proxyUrl);
-  const context = await createContext(browser);
+  const { context } = await getAccountContext(accountId, proxyUrl);
+  let page;
 
   try {
     const cookies = await loadCookies(accountId);
@@ -26,7 +26,7 @@ async function verifySession({ accountId, proxyUrl }) {
     }
 
     await context.addCookies(cookies);
-    const page = await context.newPage();
+    page = await context.newPage();
 
     await page.goto('https://www.linkedin.com/feed/', {
       waitUntil: 'domcontentloaded',
@@ -50,8 +50,7 @@ async function verifySession({ accountId, proxyUrl }) {
 
     return { ok: true, url };
   } finally {
-    await context.close();
-    await browser.close();
+    if (page) await page.close().catch(() => {});
   }
 }
 

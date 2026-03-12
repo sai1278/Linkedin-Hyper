@@ -5,7 +5,7 @@
  * Returns the message object including the chat ID extracted from the URL.
  */
 
-const { createBrowser, createContext }   = require('../browser');
+const { getAccountContext }              = require('../browser');
 const { loadCookies, saveCookies }       = require('../session');
 const { delay, humanClick, humanScroll } = require('../humanBehavior');
 const { checkAndIncrement }              = require('../rateLimit');
@@ -14,8 +14,8 @@ const { getRedis }                       = require('../redisClient');
 async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
   await checkAndIncrement(accountId, 'messagesSent');
 
-  const browser = await createBrowser(proxyUrl);
-  const context = await createContext(browser);
+  const { context } = await getAccountContext(accountId, proxyUrl);
+  let page;
 
   try {
     const cookies = await loadCookies(accountId);
@@ -26,7 +26,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     }
 
     await context.addCookies(cookies);
-    const page = await context.newPage();
+    page = await context.newPage();
 
     // Navigate to the recipient's profile (more natural than going to messaging directly)
     await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -80,8 +80,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
       isRead:    true,
     };
   } finally {
-    await context.close();
-    await browser.close();
+    if (page) await page.close().catch(() => {});
   }
 }
 

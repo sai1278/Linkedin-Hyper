@@ -3,7 +3,7 @@
 const express    = require('express');
 const crypto     = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { getQueue }   = require('./queue');
+const { getQueue, getQueueEvents }   = require('./queue');
 const { startWorker }  = require('./worker');
 const { saveCookies, loadCookies, sessionMeta, deleteSession } = require('./session');
 const { getLimits }    = require('./rateLimit');
@@ -40,11 +40,14 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ts: new Date().toISOString() });
 });
 
+// ── All routes below require API key ─────────────────────────────────────────
+
+app.use(requireApiKey);
+
 /**
  * GET /accounts
  * Returns all known account IDs and their session status.
  * Reads ACCOUNT_IDS env var (comma-separated).
- * Does NOT require API key — frontend needs public access.
  */
 const { getRedis } = require('./redisClient');
 app.get('/accounts', async (_req, res) => {
@@ -60,7 +63,7 @@ app.get('/accounts', async (_req, res) => {
           const metaRaw = await redis.get(`session:meta:${id}`);
           const meta = metaRaw ? JSON.parse(metaRaw) : null;
           isActive = !!meta;
-          lastSeen = meta?.importedAt ?? null;
+          lastSeen = meta?.savedAt ?? null;
         } catch (_err) {
           // Redis may be unavailable — degrade gracefully
         }
@@ -73,10 +76,6 @@ app.get('/accounts', async (_req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// ── All routes below require API key ─────────────────────────────────────────
-
-app.use(requireApiKey);
 
 // ── Session management ───────────────────────────────────────────────────────
 
@@ -150,32 +149,25 @@ app.get('/accounts/:accountId/limits', async (req, res) => {
  */
 async function runJob(name, data, timeoutMs = 120000) {
   const queue = getQueue();
+  const queueEvents = getQueueEvents();
   const jobId = uuidv4();
   const job   = await queue.add(name, data, { jobId });
 
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    const state = await job.getState();
-
-    if (state === 'completed') {
-      return await job.returnvalue;
+  try {
+    return await job.waitUntilFinished(queueEvents, timeoutMs);
+  } catch (err) {
+    if (err.message && err.message.includes('timed out')) {
+      await job.remove().catch(() => {});
+      const toErr = new Error(`Job ${name} timed out after ${timeoutMs}ms`);
+      toErr.status = 504;
+      throw toErr;
     }
 
-    if (state === 'failed') {
-      const err    = new Error(job.failedReason || 'Job failed');
-      err.code     = job.data?.code;
-      err.status   = job.data?.status || 500;
-      throw err;
-    }
-
-    await new Promise((r) => setTimeout(r, 500));
+    const failErr  = new Error(job.failedReason || err.message || 'Job failed');
+    failErr.code   = job.data?.code;
+    failErr.status = job.data?.status || 500;
+    throw failErr;
   }
-
-  await job.remove().catch(() => {});
-  const err    = new Error(`Job ${name} timed out after ${timeoutMs}ms`);
-  err.status   = 504;
-  throw err;
 }
 
 // ── LinkedIn action endpoints ─────────────────────────────────────────────────
@@ -397,16 +389,25 @@ app.get('/stats/all/summary', async (req, res) => {
     const ids = (process.env.ACCOUNT_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
     const redis = getRedis();
 
+    let totalMessages = 0;
+    let totalConnections = 0;
+
     const accountStats = await Promise.all(
       ids.map(async (id) => {
         const key = `activity:log:${id}`;
-        const total = await redis.llen(key).catch(() => 0);
-        return { id, totalActivity: total };
+        const raw = await redis.lrange(key, 0, -1).catch(() => []);
+        
+        for (const item of raw) {
+          try {
+            const entry = JSON.parse(item);
+            if (entry.type === 'messageSent') totalMessages++;
+            if (entry.type === 'connectionSent') totalConnections++;
+          } catch { }
+        }
+
+        return { id, totalActivity: raw.length };
       })
     );
-
-    const totalMessages     = 0;
-    const totalConnections  = 0;
 
     res.json({ accounts: Object.fromEntries(accountStats.map(a => [a.id, a])), totalMessages, totalConnections });
   } catch (err) {

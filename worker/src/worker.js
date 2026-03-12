@@ -1,7 +1,7 @@
 'use strict';
 
 const { Worker } = require('bullmq');
-const { getRedis }  = require('./redisClient');
+const { getRedis, createRedisClient }  = require('./redisClient');
 
 const { verifySession }         = require('./actions/login');
 const { readMessages }          = require('./actions/readMessages');
@@ -11,7 +11,8 @@ const { sendMessageNew }        = require('./actions/sendMessageNew');
 const { sendConnectionRequest } = require('./actions/connect');
 const { searchPeople }          = require('./actions/searchPeople');
 
-const CONCURRENCY = parseInt(process.env.WORKER_CONCURRENCY || '1', 10);
+// Hard-clamped to 1: LinkedIn will flag parallel browser sessions from the same IP/account.
+const CONCURRENCY = 1;
 
 function startWorker() {
   const worker = new Worker(
@@ -33,7 +34,7 @@ function startWorker() {
       }
     },
     {
-      connection:  getRedis(),
+      connection:  createRedisClient(),
       concurrency: CONCURRENCY,
     }
   );

@@ -81,4 +81,33 @@ async function createContext(browser) {
   return context;
 }
 
-module.exports = { createBrowser, createContext };
+const activeContexts = new Map();
+
+async function getAccountContext(accountId, proxyUrl) {
+  const existing = activeContexts.get(accountId);
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.lastUsed = Date.now();
+    existing.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000); // 5 mins
+    return { browser: existing.browser, context: existing.context };
+  }
+
+  const browser = await createBrowser(proxyUrl);
+  const context = await createContext(browser);
+
+  const timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
+  activeContexts.set(accountId, { browser, context, lastUsed: Date.now(), timer });
+
+  return { browser, context };
+}
+
+async function cleanupContext(accountId) {
+  const existing = activeContexts.get(accountId);
+  if (existing) {
+    activeContexts.delete(accountId);
+    await existing.context.close().catch(() => {});
+    await existing.browser.close().catch(() => {});
+  }
+}
+
+module.exports = { createBrowser, createContext, getAccountContext, cleanupContext };
