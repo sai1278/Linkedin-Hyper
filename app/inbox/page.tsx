@@ -1,3 +1,5 @@
+'use client';
+
 import { useState, useEffect, useCallback } from 'react';
 import type { Conversation, Account, Message } from '@/types/dashboard';
 import { getUnifiedInbox, getAccounts, getConversationThread } from '@/lib/api-client';

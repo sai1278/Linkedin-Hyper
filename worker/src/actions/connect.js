@@ -9,6 +9,7 @@ const { createBrowser, createContext }              = require('../browser');
 const { loadCookies, saveCookies }                  = require('../session');
 const { delay, humanClick, humanType, humanScroll } = require('../humanBehavior');
 const { checkAndIncrement }                         = require('../rateLimit');
+const { getRedis }                                  = require('../redisClient');
 
 async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) {
   await checkAndIncrement(accountId, 'connectRequests');
@@ -63,6 +64,19 @@ async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) 
     await delay(1500, 3000);
 
     await saveCookies(accountId, await context.cookies());
+
+    // Log activity
+    const redis = getRedis();
+    const entry = JSON.stringify({
+      type: 'connectionSent',
+      accountId,
+      targetName: 'Participant',
+      targetProfileUrl: profileUrl,
+      message: note || '',
+      timestamp: Date.now(),
+    });
+    await redis.lpush(`activity:log:${accountId}`, entry);
+    await redis.ltrim(`activity:log:${accountId}`, 0, 999);
 
     return { success: true, profileUrl };
   } finally {

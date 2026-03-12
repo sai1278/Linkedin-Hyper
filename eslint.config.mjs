@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Ignore worker and scaffold/phase scripts
+    "worker/**",
+    "scaffold.js",
+    "scaffold2.js",
+    "phase2.js"
   ]),
 ]);
 

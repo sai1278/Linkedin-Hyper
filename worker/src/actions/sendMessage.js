@@ -8,6 +8,7 @@ const { createBrowser, createContext } = require('../browser');
 const { loadCookies, saveCookies }     = require('../session');
 const { delay, humanClick }            = require('../humanBehavior');
 const { checkAndIncrement }            = require('../rateLimit');
+const { getRedis }                     = require('../redisClient');
 
 async function sendMessage({ accountId, chatId, text, proxyUrl }) {
   await checkAndIncrement(accountId, 'messagesSent');
@@ -48,6 +49,19 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
     await saveCookies(accountId, await context.cookies());
 
     const msgId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    
+    const redis = getRedis();
+    const entry = JSON.stringify({
+      type: 'messageSent',
+      accountId,
+      targetName: 'Participant',
+      targetProfileUrl: chatId,
+      message: text,
+      timestamp: Date.now(),
+    });
+    await redis.lpush(`activity:log:${accountId}`, entry);
+    await redis.ltrim(`activity:log:${accountId}`, 0, 999);
+
     return {
       id:        msgId,
       chatId,

@@ -1,4 +1,4 @@
-import type { Account, Conversation, ActivityEntry } from '@/types/dashboard';
+import type { Account, Conversation, ActivityEntry, Message } from '@/types/dashboard';
 
 const BASE = '/api/proxy';
 
