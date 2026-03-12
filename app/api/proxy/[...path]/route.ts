@@ -13,15 +13,18 @@ type RouteRule = {
   injectApiKey: boolean;
 };
 
-const BACKEND = process.env.API_URL ?? 'http://localhost:3001';
-const SECRET = process.env.API_SECRET ?? '';
+const BACKEND          = process.env.API_URL              ?? 'http://localhost:3001';
+const SECRET           = process.env.API_SECRET           ?? '';
 const AUTH_COOKIE_NAME = process.env.PROXY_AUTH_COOKIE_NAME ?? 'proxy_session';
 
-const TOKEN_ROLE_MAP: Record<string, Role> = (() => {
+/**
+ * TOKEN_ROLE_MAP — loaded from PROXY_AUTH_TOKENS env var.
+ * Shape: { "<token>": "user" | "admin", ... }
+ * Generate tokens with: openssl rand -hex 32
+ */
+const TOKEN_ROLE_MAP: Readonly<Record<string, Role>> = (() => {
   const raw = process.env.PROXY_AUTH_TOKENS;
-  if (!raw) {
-    return {};
-  }
+  if (!raw) return {};
 
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -35,48 +38,62 @@ const TOKEN_ROLE_MAP: Record<string, Role> = (() => {
 
     return valid;
   } catch {
+    console.error('[proxy] PROXY_AUTH_TOKENS is not valid JSON — no tokens loaded.');
     return {};
   }
 })();
 
+/**
+ * Route allowlist.
+ * roles: which roles may access this route.
+ * injectApiKey: whether to forward API_SECRET to the worker.
+ *
+ * IMPORTANT: The dynamic segment in stats/:accountId/activity uses
+ * [a-zA-Z0-9_-]+ intentionally — this prevents encoding tricks or
+ * path-injection via the accountId segment.
+ */
 const ALLOWLIST: readonly RouteRule[] = [
   {
-    pattern: /^accounts$/,
-    methods: new Set(['GET']),
-    roles: new Set(['user', 'admin']),
+    pattern:      /^accounts$/,
+    methods:      new Set(['GET']),
+    roles:        new Set(['user', 'admin']),
     injectApiKey: true,
   },
   {
-    pattern: /^inbox\/unified$/,
-    methods: new Set(['GET']),
-    roles: new Set(['user', 'admin']),
+    pattern:      /^inbox\/unified$/,
+    methods:      new Set(['GET']),
+    roles:        new Set(['user', 'admin']),
     injectApiKey: true,
   },
   {
-    pattern: /^messages\/thread$/,
-    methods: new Set(['GET']),
-    roles: new Set(['user', 'admin']),
+    pattern:      /^messages\/thread$/,
+    methods:      new Set(['GET']),
+    roles:        new Set(['user', 'admin']),
     injectApiKey: true,
   },
   {
-    pattern: /^messages\/send$/,
-    methods: new Set(['POST']),
-    roles: new Set(['admin']),
+    pattern:      /^messages\/send$/,
+    methods:      new Set(['POST']),
+    roles:        new Set(['admin']),   // write action — admin only
     injectApiKey: true,
   },
   {
-    pattern: /^stats\/all\/summary$/,
-    methods: new Set(['GET']),
-    roles: new Set(['user', 'admin']),
+    pattern:      /^stats\/all\/summary$/,
+    methods:      new Set(['GET']),
+    roles:        new Set(['user', 'admin']),
     injectApiKey: true,
   },
   {
-    pattern: /^stats\/[^/]+\/activity$/,
-    methods: new Set(['GET']),
-    roles: new Set(['user', 'admin']),
+    // FIX: was [^/]+ which allows any character.
+    // Constrained to safe alphanum + hyphen + underscore only.
+    pattern:      /^stats\/[a-zA-Z0-9_-]+\/activity$/,
+    methods:      new Set(['GET']),
+    roles:        new Set(['user', 'admin']),
     injectApiKey: true,
   },
 ] as const;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function jsonError(status: number, message: string): NextResponse {
   return new NextResponse(JSON.stringify({ error: message }), {
@@ -87,27 +104,21 @@ function jsonError(status: number, message: string): NextResponse {
 
 function getBearerToken(req: NextRequest): string | null {
   const authHeader = req.headers.get('authorization') ?? '';
-  if (!authHeader.startsWith('Bearer ')) {
-    return null;
-  }
-
+  if (!authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.slice('Bearer '.length).trim();
   return token.length > 0 ? token : null;
 }
 
 function authenticate(req: NextRequest): AuthContext | null {
-  const bearer = getBearerToken(req);
-  const cookieToken = req.cookies.get(AUTH_COOKIE_NAME)?.value;
-  const token = bearer ?? cookieToken;
+  const token =
+    getBearerToken(req) ??
+    req.cookies.get(AUTH_COOKIE_NAME)?.value ??
+    null;
 
-  if (!token) {
-    return null;
-  }
+  if (!token) return null;
 
   const role = TOKEN_ROLE_MAP[token];
-  if (!role) {
-    return null;
-  }
+  if (!role) return null;
 
   return { role };
 }
@@ -118,47 +129,61 @@ function resolveRule(pathStr: string, method: string): RouteRule | null {
       return rule;
     }
   }
-
   return null;
 }
+
+/**
+ * Builds and validates the final backend URL.
+ * Returns null if the constructed URL's origin doesn't match BACKEND — SSRF guard.
+ * Validated BEFORE fetch() is called, not in a separate try/catch after.
+ */
+function buildBackendUrl(pathStr: string, search: string): URL | null {
+  try {
+    const base   = new URL(BACKEND);
+    const target = new URL(
+      `${base.origin}${base.pathname.replace(/\/$/, '')}/${pathStr}${search}`
+    );
+    if (target.origin !== base.origin) return null;
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+// ── Handler ───────────────────────────────────────────────────────────────────
 
 async function handler(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ): Promise<NextResponse> {
-  const auth = authenticate(req);
-  if (!auth) {
-    return jsonError(401, 'Unauthorized');
-  }
 
+  // 1. Authenticate
+  const auth = authenticate(req);
+  if (!auth) return jsonError(401, 'Unauthorized');
+
+  // 2. Normalise path — reject traversal sequences
   const { path } = await params;
   const pathStr = path.join('/');
 
-  if (pathStr.includes('..')) {
+  if (
+    pathStr.includes('..') ||
+    pathStr.toLowerCase().includes('%2e')
+  ) {
     return jsonError(400, 'Invalid path');
   }
 
+  // 3. Allowlist check
   const rule = resolveRule(pathStr, req.method);
-  if (!rule) {
-    return jsonError(403, 'Forbidden route or method');
-  }
+  if (!rule) return jsonError(403, 'Forbidden route or method');
 
-  if (!rule.roles.has(auth.role)) {
-    return jsonError(403, 'Insufficient permissions');
-  }
+  // 4. Role check
+  if (!rule.roles.has(auth.role)) return jsonError(403, 'Insufficient permissions');
 
-  const url = `${BACKEND}/${pathStr}${req.nextUrl.search}`;
+  // 5. Build and validate backend URL (SSRF-safe, validated before fetch)
+  const backendUrl = buildBackendUrl(pathStr, req.nextUrl.search);
+  if (!backendUrl) return jsonError(400, 'Invalid backend URL construction');
 
-  try {
-    const parsedUrl = new URL(url);
-    const backendUrl = new URL(BACKEND);
-    if (parsedUrl.origin !== backendUrl.origin) {
-      throw new Error('Origin mismatch');
-    }
-  } catch {
-    return jsonError(400, 'Invalid backend URL construction');
-  }
-
+  // 6. Forward to worker API
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -171,11 +196,11 @@ async function handler(
     req.method !== 'GET' && req.method !== 'HEAD' ? await req.text() : undefined;
 
   try {
-    const res = await fetch(url, { method: req.method, headers, body });
+    const res  = await fetch(backendUrl.toString(), { method: req.method, headers, body });
     const data = await res.text();
 
     return new NextResponse(data, {
-      status: res.status,
+      status:  res.status,
       headers: { 'Content-Type': 'application/json' },
     });
   } catch {
@@ -183,8 +208,8 @@ async function handler(
   }
 }
 
-export const GET = handler;
+// FIX: Only export methods present in the allowlist.
+// Exporting DELETE/PATCH/PUT when they aren't allowed just widens the
+// attack surface — Next.js won't invoke handlers for unexported methods.
+export const GET  = handler;
 export const POST = handler;
-export const DELETE = handler;
-export const PATCH = handler;
-export const PUT = handler;
