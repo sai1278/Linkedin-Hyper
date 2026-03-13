@@ -160,7 +160,10 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
     res.json(result);
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({ error: err.message, code: err.code });
+    res.status(status).json({
+      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      code: err.code,
+    });
   }
 });
 
@@ -174,7 +177,10 @@ app.get('/messages/inbox', async (req, res) => {
     res.json(result);
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({ error: err.message, code: err.code });
+    res.status(status).json({
+      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      code: err.code,
+    });
   }
 });
 
@@ -189,7 +195,10 @@ app.get('/messages/thread', async (req, res) => {
     res.json(result);
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({ error: err.message, code: err.code });
+    res.status(status).json({
+      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      code: err.code,
+    });
   }
 });
 
@@ -206,7 +215,10 @@ app.post('/messages/send', async (req, res) => {
     res.json(result);
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({ error: err.message, code: err.code });
+    res.status(status).json({
+      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      code: err.code,
+    });
   }
 });
 
@@ -223,7 +235,10 @@ app.post('/messages/send-new', async (req, res) => {
     res.json(result);
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({ error: err.message, code: err.code });
+    res.status(status).json({
+      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      code: err.code,
+    });
   }
 });
 
@@ -239,7 +254,10 @@ app.post('/connections/send', async (req, res) => {
     res.json(result);
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({ error: err.message, code: err.code });
+    res.status(status).json({
+      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      code: err.code,
+    });
   }
 });
 
