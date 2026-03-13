@@ -127,7 +127,7 @@ app.get('/accounts/:accountId/limits', async (req, res) => {
 
 // ── Job helper (local only — NOT exported) ────────────────────────────────────
 
-async function runJob(name, data, timeoutMs = 120000) {
+async function runJob(name, data, timeoutMs = 300000) {
   const queue       = getQueue();
   const queueEvents = getQueueEvents();
   const jobId       = uuidv4();
