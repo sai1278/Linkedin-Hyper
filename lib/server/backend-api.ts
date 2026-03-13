@@ -8,19 +8,31 @@ const API_SECRET = process.env.API_SECRET ?? '';
  * Enforces Same-Origin and optional API_ROUTE_AUTH_TOKEN.
  */
 export function authenticateCaller(req: NextRequest): NextResponse | null {
-  // 1. Origin header present → must equal req.nextUrl.origin
+  // 1. Origin check — skip if no origin header (SSR/server-to-server calls)
+  //    When present, allow same-origin OR trusted Ngrok/proxy origins.
   const origin = req.headers.get('origin');
-  if (origin && origin !== req.nextUrl.origin) {
-    return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
+  if (origin) {
+    const requestOrigin = req.nextUrl.origin;
+    const trustedOrigins = (process.env.TRUSTED_ORIGINS ?? '')
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean);
+
+    const isTrusted =
+      origin === requestOrigin || trustedOrigins.includes(origin);
+
+    if (!isTrusted) {
+      return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
+    }
   }
 
-  // 2. Sec-Fetch-Site present → must be same-origin, same-site, or none
+  // 2. Sec-Fetch-Site — only block explicitly cross-site requests
   const secFetchSite = req.headers.get('sec-fetch-site');
   if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
     return NextResponse.json({ error: 'Forbidden: Invalid Sec-Fetch-Site' }, { status: 403 });
   }
 
-  // 3. API_ROUTE_AUTH_TOKEN if set → Bearer must match
+  // 3. API_ROUTE_AUTH_TOKEN — if set, enforce Bearer token
   const expectedToken = process.env.API_ROUTE_AUTH_TOKEN;
   if (expectedToken) {
     const authHeader = req.headers.get('authorization');
@@ -30,13 +42,6 @@ export function authenticateCaller(req: NextRequest): NextResponse | null {
   }
 
   return null;
-}
-
-interface ForwardOptions {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
-  path: string;
-  query?: URLSearchParams;
-  body?: unknown;
 }
 
 /**
