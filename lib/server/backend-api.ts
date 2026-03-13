@@ -3,13 +3,13 @@ import { NextRequest, NextResponse } from 'next/server';
 const API_URL    = process.env.API_URL    ?? 'http://localhost:3001';
 const API_SECRET = process.env.API_SECRET ?? '';
 
-/** 
+/**
  * Authenticate incoming requests to the BFF.
  * Enforces Same-Origin and optional API_ROUTE_AUTH_TOKEN.
+ * Supports TRUSTED_ORIGINS for Ngrok/reverse-proxy setups.
  */
 export function authenticateCaller(req: NextRequest): NextResponse | null {
-  // 1. Origin check — skip if no origin header (SSR/server-to-server calls)
-  //    When present, allow same-origin OR trusted Ngrok/proxy origins.
+  // 1. Origin check — skip if no origin header (SSR/server calls have none)
   const origin = req.headers.get('origin');
   if (origin) {
     const requestOrigin = req.nextUrl.origin;
@@ -18,21 +18,19 @@ export function authenticateCaller(req: NextRequest): NextResponse | null {
       .map((o) => o.trim())
       .filter(Boolean);
 
-    const isTrusted =
-      origin === requestOrigin || trustedOrigins.includes(origin);
-
+    const isTrusted = origin === requestOrigin || trustedOrigins.includes(origin);
     if (!isTrusted) {
       return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
     }
   }
 
-  // 2. Sec-Fetch-Site — only block explicitly cross-site requests
+  // 2. Sec-Fetch-Site present → must be same-origin, same-site, or none
   const secFetchSite = req.headers.get('sec-fetch-site');
   if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
     return NextResponse.json({ error: 'Forbidden: Invalid Sec-Fetch-Site' }, { status: 403 });
   }
 
-  // 3. API_ROUTE_AUTH_TOKEN — if set, enforce Bearer token
+  // 3. API_ROUTE_AUTH_TOKEN if set → Bearer must match
   const expectedToken = process.env.API_ROUTE_AUTH_TOKEN;
   if (expectedToken) {
     const authHeader = req.headers.get('authorization');
@@ -44,6 +42,13 @@ export function authenticateCaller(req: NextRequest): NextResponse | null {
   return null;
 }
 
+interface ForwardOptions {
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  path: string;
+  query?: URLSearchParams;
+  body?: unknown;
+}
+
 /**
  * Forward a request to the worker Express API.
  * Adds X-Api-Key header automatically.
@@ -51,8 +56,8 @@ export function authenticateCaller(req: NextRequest): NextResponse | null {
  */
 export async function forwardToBackend(opts: ForwardOptions): Promise<NextResponse> {
   const { method, path, query, body } = opts;
-  const qs    = query ? `?${query.toString()}` : '';
-  const url   = `${API_URL}${path}${qs}`;
+  const qs  = query ? `?${query.toString()}` : '';
+  const url = `${API_URL}${path}${qs}`;
 
   try {
     const res = await fetch(url, {
@@ -121,7 +126,6 @@ export function requireInteger(
 
 /** Return a 400 JSON response from a caught Error or unknown. */
 export function badRequest(error: unknown): NextResponse {
-  const message =
-    error instanceof Error ? error.message : 'Bad request';
+  const message = error instanceof Error ? error.message : 'Bad request';
   return NextResponse.json({ error: message }, { status: 400 });
 }
