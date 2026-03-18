@@ -8,7 +8,7 @@ services:
       redis-server
       --requirepass ${REDIS_PASSWORD}
       --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
     # FIXED: removed host port exposure — Redis must be internal only
     # ports: - "6379:6379"   ← do NOT expose Redis to host
     restart: always
