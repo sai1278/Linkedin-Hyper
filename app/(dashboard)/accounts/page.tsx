@@ -6,6 +6,7 @@ import { AccountCard } from '@/components/accounts/AccountCard';
 import { AddAccountModal } from '@/components/accounts/AddAccountModal';
 import { Plus, Loader2 } from 'lucide-react';
 import type { Account } from '@/types/dashboard';
+import { ExportButton } from '@/components/ui/ExportButton';
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -56,14 +57,21 @@ export default function AccountsPage() {
             Manage your LinkedIn account sessions and view rate limits
           </p>
         </div>
-        <button
-          onClick={() => handleOpenAddModal()}
+        <div className="flex items-center gap-3">
+          <ExportButton 
+            type="activity" 
+            label="Export Data"
+            size="sm"
+          />
+          <button
+            onClick={() => handleOpenAddModal()}
           className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all hover:opacity-90"
           style={{ background: 'var(--accent)', color: 'white' }}
         >
-          <Plus size={18} />
-          Add Account
-        </button>
+            <Plus size={18} />
+            Add Account
+          </button>
+        </div>
       </div>
 
       {/* Loading State */}

@@ -3,6 +3,9 @@
 const { getAccountContext }        = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanScroll }       = require('../humanBehavior');
+const { filterRecentMessages }     = require('../utils/messageFilter');
+const { emitNewMessage }           = require('../utils/websocket');
+const { getRedis }                 = require('../redisClient');
 
 async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
   // No rate limit — reading is passive
@@ -82,9 +85,37 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
       }
     });
 
+    // Filter to only include messages from the last hour
+    const recentMessages = filterRecentMessages(messages);
+    
+    // Check for new messages and emit WebSocket events
+    const redis = getRedis();
+    const cacheKey = `thread:cache:${accountId}:${chatId}`;
+    try {
+      const cachedCount = await redis.get(cacheKey);
+      const previousCount = cachedCount ? parseInt(cachedCount, 10) : 0;
+      
+      if (recentMessages.length > previousCount) {
+        // New messages detected - emit event for each new message
+        const newMessages = recentMessages.slice(previousCount);
+        newMessages.forEach((msg) => {
+          emitNewMessage(accountId, {
+            chatId,
+            message: msg,
+            senderName: msg.senderName,
+          });
+        });
+      }
+      
+      // Update cache with new count (expires in 5 minutes)
+      await redis.setex(cacheKey, 300, recentMessages.length.toString());
+    } catch (err) {
+      console.error('[readThread] Failed to check for new messages:', err);
+    }
+
     await saveCookies(accountId, await context.cookies());
 
-    return { items: messages, cursor: null, hasMore: false };
+    return { items: recentMessages, cursor: null, hasMore: false };
   } finally {
     if (page) await page.close().catch(() => {});
   }

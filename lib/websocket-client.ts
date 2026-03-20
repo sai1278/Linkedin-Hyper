@@ -1,74 +1,86 @@
 // FILE: lib/websocket-client.ts
 'use client';
 
+import { io, Socket } from 'socket.io-client';
+
 type EventCallback = (data: any) => void;
 
 export class WebSocketClient {
-  private ws: WebSocket | null = null;
+  private socket: Socket | null = null;
   private listeners: Map<string, Set<EventCallback>> = new Map();
-  private reconnectTimeout: NodeJS.Timeout | null = null;
   private url: string = '';
-  private isIntentionallyClosed: boolean = false;
+  private reconnectAttempts: number = 0;
+  private maxReconnectDelay: number = 30000; // 30 seconds
+  private _isConnected: boolean = false;
+
+  get isConnected(): boolean {
+    return this._isConnected;
+  }
 
   connect(url: string): void {
     if (!url || typeof window === 'undefined') return;
     
     this.url = url;
-    this.isIntentionallyClosed = false;
 
     try {
-      this.ws = new WebSocket(url);
+      this.socket = io(url, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: this.maxReconnectDelay,
+        reconnectionAttempts: Infinity,
+      });
 
-      this.ws.onopen = () => {
+      this.socket.on('connect', () => {
         console.log('[WebSocket] Connected');
-      };
+        this._isConnected = true;
+        this.reconnectAttempts = 0;
+        this.notifyStatusListeners('connected');
+      });
 
-      this.ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          const eventType = data.type || data.event;
-          
-          if (eventType && this.listeners.has(eventType)) {
-            this.listeners.get(eventType)?.forEach((callback) => {
-              callback(data.payload || data);
-            });
-          }
-        } catch (err) {
-          console.error('[WebSocket] Failed to parse message:', err);
+      this.socket.on('disconnect', (reason) => {
+        console.log('[WebSocket] Disconnected:', reason);
+        this._isConnected = false;
+        this.notifyStatusListeners('disconnected');
+      });
+
+      this.socket.on('connect_error', (error) => {
+        console.error('[WebSocket] Connection error:', error.message);
+        this.reconnectAttempts++;
+        this.notifyStatusListeners('reconnecting');
+      });
+
+      this.socket.on('reconnect', (attemptNumber) => {
+        console.log(`[WebSocket] Reconnected after ${attemptNumber} attempts`);
+        this._isConnected = true;
+        this.reconnectAttempts = 0;
+        this.notifyStatusListeners('connected');
+      });
+
+      this.socket.on('reconnect_attempt', (attemptNumber) => {
+        console.log(`[WebSocket] Reconnection attempt ${attemptNumber}`);
+        this.notifyStatusListeners('reconnecting');
+      });
+
+      // Listen for all custom events
+      this.socket.onAny((event, data) => {
+        if (this.listeners.has(event)) {
+          this.listeners.get(event)?.forEach((callback) => {
+            callback(data);
+          });
         }
-      };
+      });
 
-      this.ws.onerror = (error) => {
-        console.error('[WebSocket] Error:', error);
-      };
-
-      this.ws.onclose = () => {
-        console.log('[WebSocket] Disconnected');
-        
-        // Auto-reconnect unless intentionally closed
-        if (!this.isIntentionallyClosed) {
-          this.reconnectTimeout = setTimeout(() => {
-            console.log('[WebSocket] Attempting to reconnect...');
-            this.connect(this.url);
-          }, 5000);
-        }
-      };
     } catch (err) {
       console.error('[WebSocket] Connection failed:', err);
     }
   }
 
   disconnect(): void {
-    this.isIntentionallyClosed = true;
-    
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
-
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+      this._isConnected = false;
     }
   }
 
@@ -92,8 +104,24 @@ export class WebSocketClient {
   }
 
   emit(event: string, data: any): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: event, payload: data }));
+    if (this.socket && this.socket.connected) {
+      this.socket.emit(event, data);
+    }
+  }
+
+  joinAccountRoom(accountId: string): void {
+    this.emit('join:account', accountId);
+  }
+
+  leaveAccountRoom(accountId: string): void {
+    this.emit('leave:account', accountId);
+  }
+
+  private notifyStatusListeners(status: 'connected' | 'disconnected' | 'reconnecting'): void {
+    if (this.listeners.has('status:changed')) {
+      this.listeners.get('status:changed')?.forEach((callback) => {
+        callback({ status });
+      });
     }
   }
 }

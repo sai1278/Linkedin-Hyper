@@ -4,6 +4,8 @@ const { getAccountContext }        = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanScroll }       = require('../humanBehavior');
 const { checkAndIncrement }        = require('../rateLimit');
+const { filterRecentConversations } = require('../utils/messageFilter');
+const { emitInboxUpdate }          = require('../utils/websocket');
 
 async function readMessages({ accountId, proxyUrl, limit = 20 }) {
   await checkAndIncrement(accountId, 'inboxReads'); // FIRST — before any browser work
@@ -89,9 +91,19 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
     // Inject accountId server-side — not available inside browser context
     chats.forEach((c) => { c.accountId = accountId; });
 
+    // Filter to only include conversations from the last hour
+    const recentChats = filterRecentConversations(chats);
+    
+    // Emit WebSocket event for real-time updates
+    emitInboxUpdate(accountId, {
+      conversations: recentChats,
+      total: recentChats.length,
+      filteredFrom: chats.length,
+    });
+
     await saveCookies(accountId, await context.cookies());
 
-    return { items: chats, cursor: null, hasMore: false };
+    return { items: recentChats, cursor: null, hasMore: false };
   } finally {
     if (page) await page.close().catch(() => {});
   }

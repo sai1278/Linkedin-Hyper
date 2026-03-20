@@ -7,6 +7,9 @@ import { ConversationList } from '@/components/inbox/ConversationList';
 import { MessageThread } from '@/components/inbox/MessageThread';
 import { Spinner } from '@/components/ui/Spinner';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { wsClient } from '@/lib/websocket-client';
+import { getTimeWindowLabel } from '@/lib/time-utils';
+import { ExportButton } from '@/components/ui/ExportButton';
 
 export default function InboxPage() {
   const [accounts,      setAccounts]      = useState<Account[]>([]);
@@ -15,6 +18,7 @@ export default function InboxPage() {
   const [filter,        setFilter]        = useState<string>('all');
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState<string | null>(null);
+  const [isLive,        setIsLive]        = useState(false);
 
   // B2 — Accounts are stable; fetch once on mount (5-min ISR cache in api-client).
   const loadAccounts = useCallback(async () => {
@@ -45,10 +49,42 @@ export default function InboxPage() {
 
   useEffect(() => {
     void loadInbox();
-    // Silent background refresh every 120 s — does NOT reset loading state
-    const interval = setInterval(() => void loadInbox(), 120_000);
-    return () => clearInterval(interval);
-  }, [loadInbox]);
+    
+    // Set up WebSocket listeners for real-time updates
+    const unsubscribeInboxUpdate = wsClient.on('inbox:updated', (data) => {
+      console.log('[Inbox] Real-time update received:', data);
+      if (data.conversations) {
+        setConversations(data.conversations);
+      } else {
+        // Refresh if update doesn't include full data
+        void loadInbox();
+      }
+    });
+
+    const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data) => {
+      console.log('[Inbox] New message received:', data);
+      // Refresh the current thread if it's the one receiving the message
+      if (selected && data.chatId === selected.conversationId) {
+        void handleSelect(selected);
+      } else {
+        // Refresh inbox to update last message preview
+        void loadInbox();
+      }
+    });
+
+    const unsubscribeStatus = wsClient.on('status:changed', (data) => {
+      setIsLive(data.status === 'connected');
+    });
+
+    // Set initial status
+    setIsLive(wsClient.isConnected);
+
+    return () => {
+      unsubscribeInboxUpdate();
+      unsubscribeNewMessage();
+      unsubscribeStatus();
+    };
+  }, [loadInbox, selected]);
 
   const filtered =
     filter === 'all'
@@ -81,26 +117,69 @@ export default function InboxPage() {
   }
 
   return (
-    <div className="flex h-full">
-      <ConversationList
-        conversations={filtered}
-        accounts={accounts}
-        selected={selected}
-        filter={filter}
-        onFilterChange={setFilter}
-        onSelect={handleSelect}
-      />
-      <MessageThread
-        conversation={selected}
-        onMessageSent={(updatedConv) => {
-          setConversations((prev) =>
-            prev.map((c) =>
-              c.conversationId === updatedConv.conversationId ? updatedConv : c
-            )
-          );
-          setSelected(updatedConv);
-        }}
-      />
+    <div className="flex flex-col h-full">
+      {/* Header with time filter badge and live indicator */}
+      <div className="flex items-center justify-between px-6 py-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Inbox
+          </h1>
+          <span 
+            className="px-2 py-1 text-xs rounded-full" 
+            style={{ 
+              backgroundColor: 'var(--color-primary-100, #dbeafe)', 
+              color: 'var(--color-primary-700, #1d4ed8)' 
+            }}
+          >
+            {getTimeWindowLabel()}
+          </span>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div 
+              className="w-2 h-2 rounded-full" 
+              style={{ 
+                backgroundColor: isLive ? '#10b981' : '#6b7280',
+                boxShadow: isLive ? '0 0 8px rgba(16, 185, 129, 0.6)' : 'none',
+              }}
+            />
+            <span className="text-sm" style={{ color: 'var(--text-muted)' }}>
+              {isLive ? 'Live' : 'Offline'}
+            </span>
+          </div>
+          
+          {/* Export button */}
+          <ExportButton 
+            type="messages" 
+            accountId={filter !== 'all' ? filter : undefined}
+            label="Export"
+            size="sm"
+          />
+        </div>
+      </div>
+
+      {/* Main content */}
+      <div className="flex flex-1 overflow-hidden">
+        <ConversationList
+          conversations={filtered}
+          accounts={accounts}
+          selected={selected}
+          filter={filter}
+          onFilterChange={setFilter}
+          onSelect={handleSelect}
+        />
+        <MessageThread
+          conversation={selected}
+          onMessageSent={(updatedConv) => {
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.conversationId === updatedConv.conversationId ? updatedConv : c
+              )
+            );
+            setSelected(updatedConv);
+          }}
+        />
+      </div>
     </div>
   );
 }

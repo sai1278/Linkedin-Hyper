@@ -61,6 +61,10 @@ app.get('/health', (_req, res) => {
 app.use(requireApiKey);
 
 const { getRedis } = require('./redisClient');
+const exportRoutes = require('./routes/export');
+
+// Mount export routes
+app.use('/export', exportRoutes);
 
 // GET /accounts
 app.get('/accounts', async (_req, res) => {
@@ -430,8 +434,16 @@ app.get('/people/search', async (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
+const http = require('http');
+const { initializeWebSocket } = require('./utils/websocket');
+
 startWorker();
 
-app.listen(PORT, '0.0.0.0', () => {
+// Create HTTP server and attach Socket.IO
+const server = http.createServer(app);
+initializeWebSocket(server);
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`[API] Worker API listening on port ${PORT}`);
+  console.log(`[WebSocket] WebSocket server ready on port ${PORT}`);
 });
