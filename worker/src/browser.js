@@ -54,6 +54,10 @@ async function createContext(browser) {
     permissions:       ['notifications'],
   });
 
+  // Hardcode 60s absolute maximum timeout on all Playwright methods matching BullMQ wrapper to kill Ghost tasks.
+  context.setDefaultTimeout(60000);
+  context.setDefaultNavigationTimeout(60000);
+
   // Patch all automation fingerprint vectors before any navigation
   await context.addInitScript(() => {
     // Remove webdriver flag
@@ -99,6 +103,21 @@ async function getAccountContext(accountId, proxyUrl) {
     existing.lastUsed = Date.now();
     existing.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
     return { browser: existing.browser, context: existing.context, cookiesLoaded: true };
+  }
+
+  // Enforce Max Size (LRU with cap of 5 entries)
+  if (activeContexts.size >= 5) {
+    let oldestId = null;
+    let oldestTime = Infinity;
+    for (const [id, ctx] of activeContexts.entries()) {
+      if (ctx.lastUsed < oldestTime) {
+        oldestTime = ctx.lastUsed;
+        oldestId = id;
+      }
+    }
+    if (oldestId) {
+      await cleanupContext(oldestId);
+    }
   }
 
   // Cache miss — launch new browser + context

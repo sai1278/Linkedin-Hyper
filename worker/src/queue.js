@@ -3,24 +3,28 @@
 const { Queue, QueueEvents } = require('bullmq');
 const { createRedisClient }  = require('./redisClient');
 
-let _queue            = null;
-let _queueClient      = null;
-let _queueEvents      = null;
-let _queueEventsClient = null;
+let _queues            = new Map();
+let _queueClients      = new Map();
+let _queueEvents       = new Map();
+let _queueEventsClients = new Map();
 
-function getQueue() {
-  if (_queue) return _queue;
+function getQueue(accountId = 'default') {
+  if (_queues.has(accountId)) return _queues.get(accountId);
   // Store client alongside singleton so its connection is never orphaned.
-  _queueClient = createRedisClient();
-  _queue = new Queue('linkedin-jobs', { connection: _queueClient });
-  return _queue;
+  const client = createRedisClient();
+  const q = new Queue(`linkedin-jobs:${accountId}`, { connection: client });
+  _queues.set(accountId, q);
+  _queueClients.set(accountId, client);
+  return q;
 }
 
-function getQueueEvents() {
-  if (_queueEvents) return _queueEvents;
-  _queueEventsClient = createRedisClient();
-  _queueEvents = new QueueEvents('linkedin-jobs', { connection: _queueEventsClient });
-  return _queueEvents;
+function getQueueEvents(accountId = 'default') {
+  if (_queueEvents.has(accountId)) return _queueEvents.get(accountId);
+  const client = createRedisClient();
+  const qe = new QueueEvents(`linkedin-jobs:${accountId}`, { connection: client });
+  _queueEvents.set(accountId, qe);
+  _queueEventsClients.set(accountId, client);
+  return qe;
 }
 
 module.exports = { getQueue, getQueueEvents };

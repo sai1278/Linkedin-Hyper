@@ -23,15 +23,16 @@ async function checkAndIncrement(accountId, action) {
   const limit = LIMITS[action];
   if (limit === undefined) throw new Error(`Unknown rate-limit action: ${action}`);
 
-  const redis   = getRedis();
-  const key     = `ratelimit:${accountId}:${action}:${todayKey()}`;
-  const current = await redis.incr(key);
+  const secondsUntilMidnight = 86400 - (Math.floor(Date.now() / 1000) % 86400);
 
-  if (current === 1) {
-    // New counter — set TTL to expire at end of UTC day
-    const secondsUntilMidnight = 86400 - (Math.floor(Date.now() / 1000) % 86400);
-    await redis.expire(key, secondsUntilMidnight + 60); // +60s buffer
-  }
+  // Lua script ensures atomicity: INCR then EXPIRE only if counter == 1
+  const current = await redis.eval(`
+    local count = redis.call("INCR", KEYS[1])
+    if count == 1 then
+      redis.call("EXPIRE", KEYS[1], ARGV[1])
+    end
+    return count
+  `, 1, key, secondsUntilMidnight + 60);
 
   if (current > limit) {
     const err = new Error(

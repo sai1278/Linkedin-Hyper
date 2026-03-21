@@ -12,55 +12,64 @@ const { sendConnectionRequest } = require('./actions/connect');
 const { searchPeople }          = require('./actions/searchPeople');
 const { syncAllAccounts }       = require('./services/messageSyncService');
 
-// Hard-clamped to 1: LinkedIn will flag parallel browser sessions from the same IP/account.
+// Concurrency 1 per account: LinkedIn triggers bans on parallel browser instances for the same IP/account.
 const CONCURRENCY = 1;
 
 function startWorker() {
-  const worker = new Worker(
-    'linkedin-jobs',  // MUST match queue name in queue.js
-    async (job) => {
-      const { name, data } = job;
-      console.log(`[Worker] Processing job ${job.id}: ${name}`);
+  const ids = (process.env.ACCOUNT_IDS || 'default').split(',').map(s => s.trim()).filter(Boolean);
+  if (ids.length === 0) ids.push('default');
+  
+  const workers = [];
 
-      switch (name) {
-        case 'verifySession':         return verifySession(data);
-        case 'readMessages':          return readMessages(data);
-        case 'readThread':            return readThread(data);
-        case 'sendMessage':           return sendMessage(data);
-        case 'sendMessageNew':        return sendMessageNew(data);
-        case 'sendConnectionRequest': return sendConnectionRequest(data);
-        case 'searchPeople':          return searchPeople(data);
-        case 'messageSync':           return syncAllAccounts(data.proxyUrl);
-        default:
-          throw new Error(`Unknown job type: ${name}`);
+  for (const accountId of ids) {
+    const worker = new Worker(
+      `linkedin-jobs:${accountId}`,
+      async (job) => {
+        const { name, data } = job;
+        console.log(`[Worker:${accountId}] Processing job ${job.id}: ${name}`);
+
+        switch (name) {
+          case 'verifySession':         return verifySession(data);
+          case 'readMessages':          return readMessages(data);
+          case 'readThread':            return readThread(data);
+          case 'sendMessage':           return sendMessage(data);
+          case 'sendMessageNew':        return sendMessageNew(data);
+          case 'sendConnectionRequest': return sendConnectionRequest(data);
+          case 'searchPeople':          return searchPeople(data);
+          case 'messageSync':           return syncAllAccounts(data.proxyUrl);
+          default:
+            throw new Error(`Unknown job type: ${name}`);
+        }
+      },
+      {
+        connection:    createRedisClient(), // dedicated connection for BullMQ worker
+        concurrency:   CONCURRENCY,
+        lockDuration:  120_000, // auto-release lock after 2 min if no heartbeat (crash recovery)
+        lockRenewTime:  60_000, // renew every 60 s for long-running jobs
       }
-    },
-    {
-      connection:    createRedisClient(), // dedicated connection for BullMQ worker
-      concurrency:   CONCURRENCY,
-      lockDuration:  120_000, // auto-release lock after 2 min if no heartbeat (crash recovery)
-      lockRenewTime:  60_000, // renew every 60 s for long-running jobs
-    }
-  );
+    );
 
-  worker.on('completed', (job) => {
-    console.log(`[Worker] Job ${job.id} (${job.name}) completed`);
-  });
+    worker.on('completed', (job) => {
+      console.log(`[Worker:${accountId}] Job ${job.id} (${job.name}) completed`);
+    });
 
-  worker.on('failed', (job, err) => {
-    console.error(`[Worker] Job ${job.id} (${job?.name}) failed:`, err.message);
-  });
+    worker.on('failed', (job, err) => {
+      console.error(`[Worker:${accountId}] Job ${job.id} (${job?.name}) failed:`, err.message);
+    });
 
-  worker.on('error', (err) => {
-    console.error('[Worker] Worker error:', err);
-  });
+    worker.on('error', (err) => {
+      console.error(`[Worker:${accountId}] Worker error:`, err);
+    });
+    
+    workers.push(worker);
+  }
 
-  console.log(`[Worker] Started with concurrency ${CONCURRENCY}`);
+  console.log(`[Worker] Started ${workers.length} worker threads with concurrency ${CONCURRENCY} per worker.`);
   
   // Schedule background message sync (every 10 minutes, staggered between accounts)
   scheduleMessageSync();
   
-  return worker;
+  return workers;
 }
 
 /**

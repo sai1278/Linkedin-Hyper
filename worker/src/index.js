@@ -18,6 +18,14 @@ const {
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
+// Startup validation for ACCOUNT_IDS
+if (process.env.ACCOUNT_IDS) {
+  const ids = process.env.ACCOUNT_IDS.split(',');
+  if (ids.some(id => !id || !id.trim())) {
+    throw new Error('ACCOUNT_IDS contains empty string segments. Check for trailing commas.');
+  }
+}
+
 app.use(express.json({ limit: '2mb' }));
 
 // ── Global request timeout ───────────────────────────────────────────────────
@@ -130,10 +138,10 @@ app.get('/accounts', async (_req, res) => {
 // POST /accounts/:accountId/session
 app.post('/accounts/:accountId/session', async (req, res) => {
   try {
-    const { accountId } = req.params;
+    const accountId = validateId(req.params.accountId, { field: 'accountId' });
     const cookies = req.body;
-    if (!Array.isArray(cookies) || cookies.length === 0) {
-      return res.status(400).json({ error: 'Body must be a non-empty array of cookies' });
+    if (!Array.isArray(cookies) || cookies.length === 0 || !cookies.every(c => c && typeof c === 'object' && !Array.isArray(c))) {
+      return res.status(400).json({ error: 'Body must be a non-empty array of valid cookie objects' });
     }
     await saveCookies(accountId, cookies);
     res.json({ success: true, accountId, cookieCount: cookies.length });
@@ -146,7 +154,8 @@ app.post('/accounts/:accountId/session', async (req, res) => {
 // GET /accounts/:accountId/session/status
 app.get('/accounts/:accountId/session/status', async (req, res) => {
   try {
-    const meta = await sessionMeta(req.params.accountId);
+    const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    const meta = await sessionMeta(accountId);
     if (!meta) return res.status(404).json({ exists: false });
     res.json({ exists: true, ...meta });
   } catch (err) {
@@ -157,7 +166,8 @@ app.get('/accounts/:accountId/session/status', async (req, res) => {
 // DELETE /accounts/:accountId/session
 app.delete('/accounts/:accountId/session', async (req, res) => {
   try {
-    await deleteSession(req.params.accountId);
+    const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    await deleteSession(accountId);
     res.status(204).end();
   } catch (err) {
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
@@ -167,7 +177,8 @@ app.delete('/accounts/:accountId/session', async (req, res) => {
 // GET /accounts/:accountId/limits
 app.get('/accounts/:accountId/limits', async (req, res) => {
   try {
-    const limits = await getLimits(req.params.accountId);
+    const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    const limits = await getLimits(accountId);
     res.json(limits);
   } catch (err) {
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
@@ -177,17 +188,20 @@ app.get('/accounts/:accountId/limits', async (req, res) => {
 // ── Job helper (local only — NOT exported) ────────────────────────────────────
 
 async function runJob(name, data, timeoutMs = 120_000) {
-  const queue       = getQueue();
-  const queueEvents = getQueueEvents();
-  // Q2 — Deterministic jobId deduplicates the same job within a 30-second window.
+  const accountId   = data.accountId || 'default';
+  const queue       = getQueue(accountId);
+  const queueEvents = getQueueEvents(accountId);
+  
+  // Deterministic jobId deduplicates the same job within a 30-second window.
   // BullMQ silently drops adds with a jobId that already exists in the queue.
-  const jobId = `${name}:${data.accountId ?? 'global'}:${Math.floor(Date.now() / 30_000)}`;
-  const job   = await queue.add(name, data, {
+  const jobId = `${name}:${accountId}:${Math.floor(Date.now() / 30_000)}`;
+  
+  const job = await queue.add(name, data, {
     jobId,
-    // Q1 — Bounded job retention so Redis doesn't accumulate gigabytes of job history.
+    // Bounded job retention so Redis doesn't accumulate gigabytes of job history.
     removeOnComplete: { count: 50 },
     removeOnFail:     { count: 100 },
-    // Q3 — Retry once with exponential backoff (5 s, then 10 s).
+    // Retry once with exponential backoff (5 s, then 10 s).
     attempts: 2,
     backoff:  { type: 'exponential', delay: 5000 },
   });
@@ -424,7 +438,7 @@ app.get('/stats/:accountId/activity', async (req, res) => {
   try {
     const accountId = validateId(req.params.accountId, { field: 'accountId' });
     const page  = parseInt(req.query.page  ?? '0',  10);
-    const limit = parseInt(req.query.limit ?? '50', 10);
+    const limit = Math.min(parseInt(req.query.limit ?? '50', 10), 200);
     const redis = getRedis();
     const key   = `activity:log:${accountId}`;
     const total = await redis.llen(key);
@@ -445,7 +459,8 @@ app.get('/stats/:accountId/activity', async (req, res) => {
 app.get('/people/search', async (req, res) => {
   try {
     const accountId = validateId(req.query.accountId, { field: 'accountId' });
-    const { q, limit } = req.query;
+    const { limit } = req.query;
+    const q = sanitizeText(req.query.q, { maxLength: 200 });
     if (!q) return res.status(400).json({ error: 'q is required' });
 
     const result = await runJob('searchPeople', {
@@ -454,7 +469,7 @@ app.get('/people/search', async (req, res) => {
     });
     res.json(result);
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message, code: err.code });
+    res.status(err.status || 500).json({ error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message, code: err.code });
   }
 });
 

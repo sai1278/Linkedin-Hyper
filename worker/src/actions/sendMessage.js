@@ -76,7 +76,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
       accountId,
       targetName: participantName,
       targetProfileUrl: profileUrl || '',
-      message: text,
+      messageLength: text ? text.length : 0,
       timestamp: Date.now(),
     });
     await redis.lpush(`activity:log:${accountId}`, entry);

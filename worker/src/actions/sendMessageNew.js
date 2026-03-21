@@ -90,7 +90,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
       accountId,
       targetName: participantName,
       targetProfileUrl: profileUrl, // correct: real profile URL
-      message: text,
+      messageLength: text ? text.length : 0,
       timestamp: Date.now(),
     });
     await redis.lpush(`activity:log:${accountId}`, entry);

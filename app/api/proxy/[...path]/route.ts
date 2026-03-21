@@ -77,7 +77,7 @@ const ALLOWLIST: readonly RouteRule[] = [
     injectApiKey: true,
   },
   {
-    pattern:      /^stats\/[a-zA-Z0-9_-]+\/activity$/,
+    pattern:      /^stats\/[a-zA-Z0-9._:-]+\/activity$/,
     methods:      new Set(['GET']),
     roles:        new Set(['user', 'admin']),
     injectApiKey: true,
@@ -147,6 +147,31 @@ async function handler(
   // 1. Authenticate — Bearer token or session cookie
   const auth = authenticate(req);
   if (!auth) return jsonError(401, 'Unauthorized');
+
+  // Enforce CSRF protection for POST/write methods
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    const origin = req.headers.get('origin');
+    const host = req.headers.get('host');
+    const csrfToken = req.headers.get('x-csrf-token');
+    
+    // If not using a Bearer token (meaning we rely on proxy_session cookie)
+    if (getBearerToken(req) === null) {
+      // Validate Origin matches Host if present
+      if (origin && host) {
+        try {
+          const originUrl = new URL(origin);
+          if (originUrl.host !== host) {
+            return jsonError(403, 'CSRF Origin Mismatch');
+          }
+        } catch {
+          return jsonError(403, 'CSRF Origin Mismatch');
+        }
+      } else if (!csrfToken) {
+        // Fallback: strictly require custom CSRF header when relying on cookies and missing origin
+        return jsonError(403, 'Missing CSRF Token or Valid Origin');
+      }
+    }
+  }
 
   // 2. Normalise path — reject traversal sequences
   const { path } = await params;

@@ -19,6 +19,7 @@ function delay(minMs, maxMs) {
 async function humanClick(page, selector, options = {}) {
   const timeout = options.timeout || 15000;
   const el  = await page.waitForSelector(selector, { timeout, state: 'visible' });
+  await el.scrollIntoViewIfNeeded().catch(() => {}); // Ensure element is inside viewport
   const box = await el.boundingBox();
   if (!box) throw new Error(`Element not visible: ${selector}`);
 
