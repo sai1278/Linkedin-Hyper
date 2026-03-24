@@ -39,6 +39,7 @@
   "exclude": [
     "node_modules",
     "backend",
-    "linkedin-chat-tracker"
+    "linkedin-chat-tracker",
+    "worker"
   ]
 }

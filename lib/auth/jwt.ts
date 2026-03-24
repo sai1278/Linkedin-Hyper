@@ -10,6 +10,8 @@ const SESSION_MAX_AGE = parseInt(process.env.SESSION_MAX_AGE || '86400', 10);
 
 export interface JWTPayload {
   authenticated: boolean;
+  userId?: string;
+  role?: string;
   iat: number;
   exp: number;
   jti?: string; // JWT ID for blacklist tracking
@@ -18,12 +20,13 @@ export interface JWTPayload {
 /**
  * Sign a JWT token with session data
  */
-export async function signToken(): Promise<string> {
+export async function signToken(payload: Partial<JWTPayload> = {}): Promise<string> {
   const jti = crypto.randomUUID(); // Unique token ID for revocation
   
   return await new SignJWT({ 
     authenticated: true,
-    jti 
+    jti,
+    ...payload
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
