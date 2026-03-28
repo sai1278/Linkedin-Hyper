@@ -1,8 +1,8 @@
-FROM mcr.microsoft.com/playwright:v1.44.0-jammy
+FROM mcr.microsoft.com/playwright:v1.56.1-jammy
 
 WORKDIR /app
 
-# Install real Google Chrome Stable (NOT Chromium — LinkedIn detects it)
+# Install real Google Chrome Stable (not Chromium)
 RUN apt-get update && apt-get install -y wget gnupg \
   && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
   && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" \
@@ -10,12 +10,16 @@ RUN apt-get update && apt-get install -y wget gnupg \
   && apt-get update && apt-get install -y google-chrome-stable \
   && rm -rf /var/lib/apt/lists/*
 
-# Xvfb for virtual display (headed mode without a real screen)
+# Xvfb for virtual display
 RUN apt-get update && apt-get install -y xvfb x11-utils \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json ./
+COPY package*.json ./
 RUN npm install --omit=dev
+
+# Prisma client must be generated inside the image.
+COPY prisma/ ./prisma/
+RUN npx prisma generate --schema=prisma/schema.prisma
 
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh

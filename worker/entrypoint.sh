@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# Clear stale lock/socket files from previous crash loops.
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 || true
+pkill -f "Xvfb :99" >/dev/null 2>&1 || true
+
 # Start virtual display for headed Chrome (LinkedIn detects headless)
 Xvfb :99 -screen 0 1366x768x24 -ac +extension GLX +render -noreset &
 XVFB_PID=$!
