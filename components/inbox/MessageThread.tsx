@@ -5,10 +5,9 @@ import type { Conversation, Message } from '@/types/dashboard';
 import { Avatar } from '@/components/ui/Avatar';
 import { AccountBadge } from '@/components/ui/AccountBadge';
 import { ReplyInput } from '@/components/inbox/ReplyInput';
-import { groupByDate, timeAgo } from '@/lib/utils';
 import { sendMessage } from '@/lib/api-client';
-import { formatTimestamp, formatRelativeTime } from '@/lib/time-utils';
-import { Check, CheckCheck } from 'lucide-react';
+import { formatRelativeTime } from '@/lib/time-utils';
+import { CheckCheck } from 'lucide-react';
 
 interface MessageThreadProps {
   conversation: Conversation | null;
@@ -68,7 +67,6 @@ export function MessageThread({ conversation, onMessageSent }: MessageThreadProp
   }
 
   const { participant, accountId, messages } = conversation;
-  const groups = groupByDate(messages);
 
   async function handleSend(text: string) {
     if (!conversation) return;

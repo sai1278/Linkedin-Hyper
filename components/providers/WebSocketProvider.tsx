@@ -1,26 +1,33 @@
 // FILE: components/providers/WebSocketProvider.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { wsClient } from '@/lib/websocket-client';
 import toast from 'react-hot-toast';
 
-export function WebSocketProvider({ children }: { children: React.ReactNode }) {
-  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'reconnecting'>('disconnected');
+type StatusChangedPayload = {
+  status?: 'connected' | 'disconnected' | 'reconnecting';
+};
 
+type InboxNewMessagePayload = {
+  senderName?: string;
+  message?: {
+    senderName?: string;
+  };
+};
+
+export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Use worker API URL (default: localhost:3001)
     const url = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001';
-    
+
     console.log('[WebSocket] Connecting to:', url);
 
     // Connect to WebSocket
     wsClient.connect(url);
 
     // Set up connection status listener
-    const unsubscribeStatus = wsClient.on('status:changed', (data) => {
-      setConnectionStatus(data.status);
-      
+    const unsubscribeStatus = wsClient.on('status:changed', (data: StatusChangedPayload) => {
       if (data.status === 'connected') {
         toast.success('Connected to real-time updates', { duration: 2000 });
       } else if (data.status === 'disconnected') {
@@ -34,13 +41,13 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       // Trigger global refresh if needed
     });
 
-    const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data) => {
+    const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data: InboxNewMessagePayload) => {
       console.log('[WebSocket] New message received:', data);
-      
+
       const senderName = data.message?.senderName || data.senderName || 'Someone';
       if (senderName !== '__self__' && !senderName.includes('account')) {
         toast.success(`New message from ${senderName}`, {
-          icon: '💬',
+          icon: 'MSG',
           duration: 4000,
         });
       }
@@ -57,7 +64,6 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
     const unsubscribeConnected = wsClient.on('connected', (data) => {
       console.log('[WebSocket] Connection confirmed:', data);
-      setConnectionStatus('connected');
     });
 
     // Cleanup on unmount

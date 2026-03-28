@@ -3,11 +3,12 @@
 
 import { io, Socket } from 'socket.io-client';
 
-type EventCallback = (data: any) => void;
+type SocketEventPayload = unknown;
+type ListenerCallback = (data: SocketEventPayload) => void;
 
 export class WebSocketClient {
   private socket: Socket | null = null;
-  private listeners: Map<string, Set<EventCallback>> = new Map();
+  private listeners: Map<string, Set<ListenerCallback>> = new Map();
   private url: string = '';
   private reconnectAttempts: number = 0;
   private maxReconnectDelay: number = 30000; // 30 seconds
@@ -100,18 +101,19 @@ export class WebSocketClient {
     }
   }
 
-  on(event: string, callback: EventCallback): () => void {
+  on<T = unknown>(event: string, callback: (data: T) => void): () => void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
     }
-    
-    this.listeners.get(event)!.add(callback);
+
+    const wrapped = callback as ListenerCallback;
+    this.listeners.get(event)!.add(wrapped);
 
     // Return unsubscribe function
     return () => {
       const callbacks = this.listeners.get(event);
       if (callbacks) {
-        callbacks.delete(callback);
+        callbacks.delete(wrapped);
         if (callbacks.size === 0) {
           this.listeners.delete(event);
         }
@@ -119,7 +121,7 @@ export class WebSocketClient {
     };
   }
 
-  emit(event: string, data: any): void {
+  emit(event: string, data: SocketEventPayload): void {
     if (this.socket && this.socket.connected) {
       this.socket.emit(event, data);
     }

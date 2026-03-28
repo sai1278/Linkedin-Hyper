@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     });
     
     return response;
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       { error: 'Logout failed' },
       { status: 500 }

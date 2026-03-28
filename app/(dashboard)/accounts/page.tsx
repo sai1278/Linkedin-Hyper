@@ -102,7 +102,7 @@ export default function AccountsPage() {
             No Accounts Yet
           </h3>
           <p className="text-sm mb-6 max-w-md mx-auto" style={{ color: 'var(--text-muted)' }}>
-            Add your first LinkedIn account to get started. You'll need to import session cookies from your browser.
+            Add your first LinkedIn account to get started. You&apos;ll need to import session cookies from your browser.
           </p>
           <button
             onClick={() => handleOpenAddModal()}

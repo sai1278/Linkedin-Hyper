@@ -1,5 +1,5 @@
 // FILE: app/api/accounts/[id]/limits/route.ts
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { authenticateCaller, forwardToBackend } from '@/lib/server/backend-api';
 
 export async function GET(

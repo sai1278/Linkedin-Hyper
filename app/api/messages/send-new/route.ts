@@ -1,5 +1,5 @@
 // FILE: app/api/messages/send-new/route.ts
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { authenticateCaller, forwardToBackend, badRequest } from '@/lib/server/backend-api';
 
 export async function POST(req: NextRequest) {

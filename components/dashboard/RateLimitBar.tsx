@@ -1,4 +1,6 @@
 // FILE: components/dashboard/RateLimitBar.tsx
+import { useEffect, useState } from 'react';
+
 interface RateLimitBarProps {
   label: string;
   current: number;
@@ -8,6 +10,17 @@ interface RateLimitBarProps {
 
 export function RateLimitBar({ label, current, limit, resetsAt }: RateLimitBarProps) {
   const percentage = Math.min((current / limit) * 100, 100);
+  const [nowMs, setNowMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!resetsAt) return;
+
+    const intervalId = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1_000);
+
+    return () => clearInterval(intervalId);
+  }, [resetsAt]);
   
   const getColor = () => {
     if (percentage < 50) return '#22c55e';
@@ -16,9 +29,8 @@ export function RateLimitBar({ label, current, limit, resetsAt }: RateLimitBarPr
   };
 
   const formatResetTime = () => {
-    if (!resetsAt) return '';
-    const now = Date.now();
-    const diffMs = resetsAt - now;
+    if (!resetsAt || nowMs === null) return '';
+    const diffMs = resetsAt - nowMs;
     if (diffMs <= 0) return 'Reset now';
     
     const hours = Math.floor(diffMs / 3600000);

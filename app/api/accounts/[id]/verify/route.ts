@@ -1,5 +1,5 @@
 // FILE: app/api/accounts/[id]/verify/route.ts
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { authenticateCaller, forwardToBackend } from '@/lib/server/backend-api';
 
 export async function POST(

@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+
 export default function NotFound() {
   return (
     <main
@@ -23,7 +25,7 @@ export default function NotFound() {
           Sorry, we couldn&apos;t find the page you&apos;re looking for. It might have
           been moved or doesn&apos;t exist.
         </p>
-        <a
+        <Link
           href="/"
           className="inline-flex items-center px-6 py-3 rounded-lg text-sm font-medium text-white transition-colors"
           style={{ background: 'var(--accent)' }}
@@ -37,7 +39,7 @@ export default function NotFound() {
           }
         >
           Return Home
-        </a>
+        </Link>
       </div>
     </main>
   );

@@ -53,10 +53,17 @@ export function Sidebar() {
   }
 
   useEffect(() => {
-    void fetchCounts();
-    const id = setInterval(() => void fetchCounts(), 60_000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const runFetch = () => {
+      void fetchCounts();
+    };
+
+    const timeoutId = setTimeout(runFetch, 0);
+    const intervalId = setInterval(runFetch, 60_000);
+
+    return () => {
+      clearTimeout(timeoutId);
+      clearInterval(intervalId);
+    };
   }, []);
 
   const navItems = [

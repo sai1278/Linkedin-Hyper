@@ -29,7 +29,7 @@ function getPool(): Pool {
 }
 
 // Helper for executing queries
-export async function query(text: string, params?: any[]) {
+export async function query(text: string, params?: unknown[]) {
   const start = Date.now();
   try {
     const res = await getPool().query(text, params);

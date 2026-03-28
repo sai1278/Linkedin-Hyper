@@ -55,7 +55,7 @@ export function AccountCard({ account, onRefresh, onImport }: AccountCardProps) 
         const data = await res.json();
         toast.error(data.error || 'Verification failed');
       }
-    } catch (err) {
+    } catch {
       toast.error('Network error during verification');
     } finally {
       setIsVerifying(false);
@@ -77,7 +77,7 @@ export function AccountCard({ account, onRefresh, onImport }: AccountCardProps) 
       } else {
         toast.error('Failed to delete session');
       }
-    } catch (err) {
+    } catch {
       toast.error('Network error during deletion');
     } finally {
       setIsDeleting(false);

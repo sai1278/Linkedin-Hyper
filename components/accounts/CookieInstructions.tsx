@@ -24,7 +24,7 @@ export function CookieInstructions() {
               Open LinkedIn in your browser
             </p>
             <p style={{ color: 'var(--text-muted)' }}>
-              Navigate to linkedin.com and ensure you're logged in to the account you want to add.
+              Navigate to linkedin.com and ensure you&apos;re logged in to the account you want to add.
             </p>
           </div>
         </div>
@@ -59,7 +59,7 @@ export function CookieInstructions() {
               Navigate to Cookies
             </p>
             <p style={{ color: 'var(--text-muted)' }}>
-              Go to <strong>Application</strong> tab → <strong>Cookies</strong> → <strong>https://www.linkedin.com</strong>
+              Go to <strong>Application</strong> tab -&gt; <strong>Cookies</strong> -&gt; <strong>https://www.linkedin.com</strong>
             </p>
           </div>
         </div>
@@ -76,7 +76,10 @@ export function CookieInstructions() {
               Export as JSON
             </p>
             <div style={{ color: 'var(--text-muted)' }}>
-              <p className="mb-2">Option 1: Use a browser extension like "EditThisCookie" or "Cookie-Editor"</p>
+              <p className="mb-2">
+                Option 1: Use a browser extension like <code className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)' }}>EditThisCookie</code> or{' '}
+                <code className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)' }}>Cookie-Editor</code>
+              </p>
               <p className="mb-2">Option 2: Manually copy cookies in this format:</p>
               <pre
                 className="p-3 rounded text-xs overflow-x-auto"
@@ -129,8 +132,8 @@ export function CookieInstructions() {
         style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
       >
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          <strong style={{ color: 'var(--accent)' }}>Note:</strong> Cookies expire after ~2 weeks. 
-          You'll need to re-import them when your session expires.
+          <strong style={{ color: 'var(--accent)' }}>Note:</strong> Cookies expire after ~2 weeks.
+          You&apos;ll need to re-import them when your session expires.
         </p>
       </div>
     </div>

@@ -10,6 +10,18 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { wsClient } from '@/lib/websocket-client';
 import { ExportButton } from '@/components/ui/ExportButton';
 
+type InboxUpdatedPayload = {
+  conversations?: Conversation[];
+};
+
+type InboxNewMessagePayload = {
+  chatId?: string;
+};
+
+type StatusChangedPayload = {
+  status?: 'connected' | 'disconnected' | 'reconnecting';
+};
+
 export default function InboxPage() {
   const [accounts,      setAccounts]      = useState<Account[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -50,7 +62,7 @@ export default function InboxPage() {
     void loadInbox();
     
     // Set up WebSocket listeners for real-time updates
-    const unsubscribeInboxUpdate = wsClient.on('inbox:updated', (data) => {
+    const unsubscribeInboxUpdate = wsClient.on('inbox:updated', (data: InboxUpdatedPayload) => {
       console.log('[Inbox] Real-time update received:', data);
       if (data.conversations) {
         setConversations(data.conversations);
@@ -60,7 +72,7 @@ export default function InboxPage() {
       }
     });
 
-    const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data) => {
+    const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data: InboxNewMessagePayload) => {
       console.log('[Inbox] New message received:', data);
       // Refresh the current thread if it's the one receiving the message
       if (selected && data.chatId === selected.conversationId) {
@@ -71,7 +83,7 @@ export default function InboxPage() {
       }
     });
 
-    const unsubscribeStatus = wsClient.on('status:changed', (data) => {
+    const unsubscribeStatus = wsClient.on('status:changed', (data: StatusChangedPayload) => {
       setIsLive(data.status === 'connected');
     });
 
@@ -105,7 +117,7 @@ export default function InboxPage() {
       <div className="flex-1 flex flex-col items-center justify-center gap-3 h-full">
         <Spinner size="lg" />
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Fetching messages from all accounts…
+                    Fetching messages from all accounts...
         </p>
       </div>
     );

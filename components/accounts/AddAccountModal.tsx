@@ -122,7 +122,7 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts, in
       setStep(3);
       // Auto-start verification
       handleVerify();
-    } catch (err) {
+    } catch {
       toast.error('Network error during import');
       setIsImporting(false);
     }

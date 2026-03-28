@@ -5,7 +5,6 @@ import type { Conversation, Account } from '@/types/dashboard';
 import { Avatar } from '@/components/ui/Avatar';
 import { UnreadBadge } from '@/components/ui/UnreadBadge';
 import { AccountBadge } from '@/components/ui/AccountBadge';
-import { timeAgo } from '@/lib/utils';
 import { formatRelativeTime } from '@/lib/time-utils';
 
 interface ConversationListProps {
