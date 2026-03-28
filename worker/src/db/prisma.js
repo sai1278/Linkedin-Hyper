@@ -4,6 +4,7 @@
 'use strict';
 
 const { PrismaClient } = require('@prisma/client');
+const { PrismaPg } = require('@prisma/adapter-pg');
 
 let prisma = null;
 
@@ -19,10 +20,12 @@ function getPrisma() {
       throw new Error('DATABASE_URL environment variable is not set');
     }
 
+    const adapter = new PrismaPg({ connectionString: databaseUrl });
+
     prisma = new PrismaClient({
-      datasourceUrl: databaseUrl,
-      log: process.env.NODE_ENV === 'development' 
-        ? ['query', 'error', 'warn'] 
+      adapter,
+      log: process.env.NODE_ENV === 'development'
+        ? ['query', 'error', 'warn']
         : ['error'],
     });
 

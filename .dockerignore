@@ -1,0 +1,32 @@
+# Dependencies and build outputs
+node_modules
+.next
+out
+dist
+build
+
+# Local environment and logs
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# VCS and docs not needed for image build
+.git
+.github
+deployment
+README.md
+README_ENHANCED.md
+DEPLOYMENT.md
+DEVELOPER_KNOWLEDGE_BASE.md
+
+# Tool/editor/cache artifacts
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.swp

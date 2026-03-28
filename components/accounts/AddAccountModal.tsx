@@ -1,7 +1,7 @@
 // FILE: components/accounts/AddAccountModal.tsx
 'use client';
 
-import { useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../ui/dialog';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/tabs';
 import { CookieInstructions } from './CookieInstructions';
@@ -15,9 +15,10 @@ interface AddAccountModalProps {
   onClose: () => void;
   onSuccess: () => void;
   existingAccounts: string[];
+  initialAccountId?: string | null;
 }
 
-export function AddAccountModal({ open, onClose, onSuccess, existingAccounts }: AddAccountModalProps) {
+export function AddAccountModal({ open, onClose, onSuccess, existingAccounts, initialAccountId = null }: AddAccountModalProps) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [accountId, setAccountId] = useState('');
   const [cookiesJson, setCookiesJson] = useState('');
@@ -26,6 +27,17 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts }: 
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationResult, setVerificationResult] = useState<'success' | 'error' | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    if (initialAccountId) {
+      setAccountId(initialAccountId);
+      setStep(2);
+      return;
+    }
+    setStep(1);
+    setAccountId('');
+  }, [open, initialAccountId]);
 
   const handleClose = () => {
     setStep(1);
@@ -78,6 +90,12 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts }: 
   };
 
   const handleStep2Next = async () => {
+    if (!accountId.trim()) {
+      toast.error('Please enter an account ID');
+      setStep(1);
+      return;
+    }
+
     if (!validation?.isValid) {
       toast.error('Please fix cookie validation errors');
       return;
@@ -100,6 +118,7 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts }: 
       }
 
       toast.success('Cookies imported successfully');
+      onSuccess();
       setStep(3);
       // Auto-start verification
       handleVerify();
@@ -252,6 +271,12 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts }: 
 
                 <TabsContent value="paste">
                   <div className="space-y-4">
+                    <div
+                      className="text-sm px-3 py-2 rounded-lg border"
+                      style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                    >
+                      Importing for account: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{accountId || '(not set)'}</span>
+                    </div>
                     <textarea
                       value={cookiesJson}
                       onChange={(e) => {

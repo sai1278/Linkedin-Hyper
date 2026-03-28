@@ -47,7 +47,9 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
     await checkAndIncrement(accountId, 'messagesSent');
     await delay(1500, 3000);
 
-    await saveCookies(accountId, await context.cookies());
+    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+      await saveCookies(accountId, await context.cookies());
+    }
 
     const msgId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -76,6 +78,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
       accountId,
       targetName: participantName,
       targetProfileUrl: profileUrl || '',
+      textPreview: (text || '').slice(0, 200),
       messageLength: text ? text.length : 0,
       timestamp: Date.now(),
     });

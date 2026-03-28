@@ -4,11 +4,66 @@ import { verifyToken, type JWTPayload } from './jwt';
 import { Redis } from 'ioredis';
 
 let redis: Redis | null = null;
+let redisWarningShown = false;
+let redisUnavailableUntil = 0;
+let redisDisabledNoticeShown = false;
 
-function getRedis(): Redis {
-  if (!redis) {
-    redis = new Redis(process.env.REDIS_URL || '');
+function isRedisDisabled(): boolean {
+  return process.env.DISABLE_REDIS === '1';
+}
+
+function markRedisUnavailable(error: unknown): void {
+  // Avoid hammering DNS/connection retries when Redis is unavailable in local dev.
+  redisUnavailableUntil = Date.now() + 60_000;
+  if (!redisWarningShown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[auth/session] Redis unavailable, skipping token blacklist checks: ${message}`);
+    redisWarningShown = true;
   }
+}
+
+function createRedisClient(): Redis {
+  const url = process.env.REDIS_URL?.trim();
+  const options = {
+    lazyConnect: true,
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1 as const,
+    retryStrategy: () => null,
+  };
+
+  const client = url
+    ? new Redis(url, options)
+    : new Redis({
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: Number(process.env.REDIS_PORT || '6379'),
+        password: process.env.REDIS_PASSWORD || undefined,
+        ...options,
+      });
+
+  client.on('error', (error) => {
+    markRedisUnavailable(error);
+  });
+
+  return client;
+}
+
+function getRedis(): Redis | null {
+  if (isRedisDisabled()) {
+    if (!redisDisabledNoticeShown) {
+      redisDisabledNoticeShown = true;
+      console.warn('[auth/session] DISABLE_REDIS=1 enabled, skipping token blacklist checks');
+    }
+    return null;
+  }
+
+  if (Date.now() < redisUnavailableUntil) {
+    return null;
+  }
+
+  if (!redis) {
+    redis = createRedisClient();
+  }
+
   return redis;
 }
 
@@ -25,8 +80,16 @@ export async function getSession(req: NextRequest): Promise<JWTPayload | null> {
   // Check if token is blacklisted (for logout)
   if (payload.jti) {
     const redisClient = getRedis();
-    const isBlacklisted = await redisClient.get(`jwt:blacklist:${payload.jti}`);
-    if (isBlacklisted) return null;
+    if (redisClient) {
+      try {
+        const isBlacklisted = await redisClient.get(`jwt:blacklist:${payload.jti}`);
+        if (isBlacklisted) return null;
+      } catch (error) {
+        markRedisUnavailable(error);
+        redis?.disconnect();
+        redis = null;
+      }
+    }
   }
   
   return payload;
@@ -37,5 +100,15 @@ export async function getSession(req: NextRequest): Promise<JWTPayload | null> {
  */
 export async function blacklistToken(jti: string, expiresIn: number): Promise<void> {
   const redisClient = getRedis();
-  await redisClient.setex(`jwt:blacklist:${jti}`, expiresIn, '1');
+  if (!redisClient) {
+    return;
+  }
+
+  try {
+    await redisClient.setex(`jwt:blacklist:${jti}`, expiresIn, '1');
+  } catch (error) {
+    markRedisUnavailable(error);
+    redis?.disconnect();
+    redis = null;
+  }
 }

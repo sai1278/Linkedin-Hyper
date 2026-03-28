@@ -1,11 +1,34 @@
 'use strict';
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { getRedis } = require('./redisClient');
 
 const ALGORITHM   = 'aes-256-gcm';
 const SESSION_TTL = 86400 * 30; // 30 days
 const META_TTL    = 86400 * 30;
+
+// Local fallback when Redis is unavailable (dev convenience).
+const memorySessions = new Map();
+const memoryMeta = new Map();
+const knownAccountIds = new Set(
+  (process.env.ACCOUNT_IDS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+);
+let redisWarningShown = false;
+let diskStoreWarningShown = false;
+
+const DISK_STORE_PATH = path.join(__dirname, '..', '.local-sessions.json');
+
+function warnRedisFallback(err) {
+  if (redisWarningShown) return;
+  redisWarningShown = true;
+  const message = err instanceof Error ? err.message : String(err);
+  console.warn(`[Session] Redis unavailable, using in-memory session store: ${message}`);
+}
 
 function getKey() {
   const hex = process.env.SESSION_ENCRYPTION_KEY;
@@ -16,6 +39,121 @@ function getKey() {
     );
   }
   return Buffer.from(hex, 'hex');
+}
+
+function useDiskSessionStore() {
+  return process.env.DISABLE_REDIS === '1' || process.env.PERSIST_LOCAL_SESSIONS === '1';
+}
+
+function warnDiskStore(err) {
+  if (diskStoreWarningShown) return;
+  diskStoreWarningShown = true;
+  const message = err instanceof Error ? err.message : String(err);
+  console.warn(`[Session] Local disk session store unavailable: ${message}`);
+}
+
+function readDiskStore() {
+  if (!useDiskSessionStore()) return { sessions: {}, meta: {} };
+  try {
+    if (!fs.existsSync(DISK_STORE_PATH)) {
+      return { sessions: {}, meta: {} };
+    }
+    const raw = fs.readFileSync(DISK_STORE_PATH, 'utf8');
+    if (!raw.trim()) return { sessions: {}, meta: {} };
+    const parsed = JSON.parse(raw);
+    return {
+      sessions: parsed?.sessions && typeof parsed.sessions === 'object' ? parsed.sessions : {},
+      meta: parsed?.meta && typeof parsed.meta === 'object' ? parsed.meta : {},
+    };
+  } catch (err) {
+    warnDiskStore(err);
+    return { sessions: {}, meta: {} };
+  }
+}
+
+function writeDiskStore(store) {
+  if (!useDiskSessionStore()) return;
+  try {
+    fs.writeFileSync(
+      DISK_STORE_PATH,
+      JSON.stringify(store),
+      { encoding: 'utf8' }
+    );
+  } catch (err) {
+    warnDiskStore(err);
+  }
+}
+
+function saveSessionToDisk(accountId, normalisedCookies, savedAt) {
+  if (!useDiskSessionStore()) return;
+  try {
+    const store = readDiskStore();
+    store.sessions[accountId] = encrypt(JSON.stringify(normalisedCookies));
+    store.meta[accountId] = { savedAt };
+    writeDiskStore(store);
+  } catch (err) {
+    warnDiskStore(err);
+  }
+}
+
+function loadSessionFromDisk(accountId) {
+  if (!useDiskSessionStore()) return null;
+  try {
+    const store = readDiskStore();
+    const raw = store.sessions[accountId];
+    if (!raw) return null;
+    return JSON.parse(decrypt(raw));
+  } catch (err) {
+    warnDiskStore(err);
+    return null;
+  }
+}
+
+function loadMetaFromDisk(accountId) {
+  if (!useDiskSessionStore()) return null;
+  try {
+    const store = readDiskStore();
+    const meta = store.meta[accountId];
+    if (!meta?.savedAt) return null;
+    return { savedAt: meta.savedAt };
+  } catch (err) {
+    warnDiskStore(err);
+    return null;
+  }
+}
+
+function deleteSessionFromDisk(accountId) {
+  if (!useDiskSessionStore()) return;
+  try {
+    const store = readDiskStore();
+    delete store.sessions[accountId];
+    delete store.meta[accountId];
+    writeDiskStore(store);
+  } catch (err) {
+    warnDiskStore(err);
+  }
+}
+
+function listAccountIdsFromDisk() {
+  if (!useDiskSessionStore()) return [];
+  try {
+    const store = readDiskStore();
+    const sessionIds = Object.keys(store.sessions || {});
+    const metaIds = Object.keys(store.meta || {});
+    return Array.from(new Set([...sessionIds, ...metaIds]))
+      .map((id) => String(id).trim())
+      .filter(Boolean);
+  } catch (err) {
+    warnDiskStore(err);
+    return [];
+  }
+}
+
+function configuredAccountIds() {
+  return (process.env.ACCOUNT_IDS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
 }
 
 function encrypt(plaintext) {
@@ -44,49 +182,140 @@ function decrypt(payload) {
 
 /** Normalise sameSite values to what Playwright accepts */
 function normaliseCookies(cookies) {
-  return cookies.map((c) => ({
-    ...c,
-    sameSite: (() => {
-      const v = (c.sameSite || '').toLowerCase();
-      if (v === 'strict') return 'Strict';
-      if (v === 'lax')    return 'Lax';
-      return 'None';  // default fallback — NOT 'Lax'
-    })(),
-  }));
+  return cookies.map((c) => {
+    const normalized = {
+      ...c,
+      sameSite: (() => {
+        const v = (c.sameSite || '').toLowerCase();
+        if (v === 'strict') return 'Strict';
+        if (v === 'lax') return 'Lax';
+        return 'None'; // default fallback — NOT 'Lax'
+      })(),
+    };
+
+    // Playwright expects `expires` as unix timestamp (seconds) when present.
+    // For session cookies, remove `expires` entirely instead of passing -1/0.
+    const exp = Number(normalized.expires);
+    if (!Number.isFinite(exp) || exp <= 0) {
+      delete normalized.expires;
+    }
+
+    return normalized;
+  });
 }
 
 async function saveCookies(accountId, cookies) {
-  const redis     = getRedis();
   const normalised = normaliseCookies(cookies);
-  const encrypted  = encrypt(JSON.stringify(normalised));
   const now        = Date.now();
+  knownAccountIds.add(accountId);
+  saveSessionToDisk(accountId, normalised, now);
 
-  // Pipeline both writes into a single round-trip
-  const pipeline = redis.pipeline();
-  pipeline.set(`session:${accountId}`,      encrypted,                         'EX', SESSION_TTL);
-  pipeline.set(`session:meta:${accountId}`, JSON.stringify({ savedAt: now }), 'EX', META_TTL);
-  await pipeline.exec();
+  try {
+    const redis = getRedis();
+    const encrypted = encrypt(JSON.stringify(normalised));
+    await Promise.all([
+      redis.set(`session:${accountId}`, encrypted, 'EX', SESSION_TTL),
+      redis.set(`session:meta:${accountId}`, JSON.stringify({ savedAt: now }), 'EX', META_TTL),
+      redis.sadd('session:accounts', accountId),
+    ]);
+
+    // Keep memory store hot for local dev even when Redis is reachable.
+    memorySessions.set(accountId, normalised);
+    memoryMeta.set(accountId, { savedAt: now });
+  } catch (err) {
+    warnRedisFallback(err);
+    memorySessions.set(accountId, normalised);
+    memoryMeta.set(accountId, { savedAt: now });
+  }
 }
 
 async function loadCookies(accountId) {
-  const redis = getRedis();
-  const raw   = await redis.get(`session:${accountId}`);
-  if (!raw) return null;
-  return JSON.parse(decrypt(raw));
+  try {
+    const redis = getRedis();
+    const raw   = await redis.get(`session:${accountId}`);
+    if (raw) knownAccountIds.add(accountId);
+    if (!raw) {
+      const diskCookies = loadSessionFromDisk(accountId);
+      if (diskCookies) {
+        knownAccountIds.add(accountId);
+        const normalized = normaliseCookies(diskCookies);
+        memorySessions.set(accountId, normalized);
+        return normalized;
+      }
+      const fromMemory = memorySessions.get(accountId);
+      return fromMemory ? normaliseCookies(fromMemory) : null;
+    }
+    return normaliseCookies(JSON.parse(decrypt(raw)));
+  } catch (err) {
+    warnRedisFallback(err);
+    const diskCookies = loadSessionFromDisk(accountId);
+    if (diskCookies) {
+      knownAccountIds.add(accountId);
+      const normalized = normaliseCookies(diskCookies);
+      memorySessions.set(accountId, normalized);
+      return normalized;
+    }
+    const fromMemory = memorySessions.get(accountId);
+    return fromMemory ? normaliseCookies(fromMemory) : null;
+  }
 }
 
 async function sessionMeta(accountId) {
-  const redis = getRedis();
-  const raw   = await redis.get(`session:meta:${accountId}`);
-  if (!raw) return null;
-  const meta  = JSON.parse(raw);
-  const ageMs = Date.now() - meta.savedAt;
-  return { savedAt: meta.savedAt, ageSeconds: Math.floor(ageMs / 1000) };
+  try {
+    const redis = getRedis();
+    const raw   = await redis.get(`session:meta:${accountId}`);
+    if (raw) knownAccountIds.add(accountId);
+    const meta  = raw
+      ? JSON.parse(raw)
+      : (memoryMeta.get(accountId) || loadMetaFromDisk(accountId));
+    if (!meta) return null;
+    const ageMs = Date.now() - meta.savedAt;
+    return { savedAt: meta.savedAt, ageSeconds: Math.floor(ageMs / 1000) };
+  } catch (err) {
+    warnRedisFallback(err);
+    const meta = memoryMeta.get(accountId) || loadMetaFromDisk(accountId);
+    if (!meta) return null;
+    const ageMs = Date.now() - meta.savedAt;
+    return { savedAt: meta.savedAt, ageSeconds: Math.floor(ageMs / 1000) };
+  }
 }
 
 async function deleteSession(accountId) {
-  const redis = getRedis();
-  await redis.del(`session:${accountId}`, `session:meta:${accountId}`);
+  try {
+    const redis = getRedis();
+    await Promise.all([
+      redis.del(`session:${accountId}`, `session:meta:${accountId}`),
+      redis.srem('session:accounts', accountId),
+    ]);
+  } catch (err) {
+    warnRedisFallback(err);
+  }
+  memorySessions.delete(accountId);
+  memoryMeta.delete(accountId);
+  knownAccountIds.delete(accountId);
+  deleteSessionFromDisk(accountId);
 }
 
-module.exports = { saveCookies, loadCookies, sessionMeta, deleteSession };
+async function listKnownAccountIds() {
+  const ids = new Set();
+
+  for (const id of configuredAccountIds()) ids.add(id);
+  for (const id of knownAccountIds) ids.add(id);
+  for (const id of memorySessions.keys()) ids.add(id);
+  for (const id of memoryMeta.keys()) ids.add(id);
+  for (const id of listAccountIdsFromDisk()) ids.add(id);
+
+  try {
+    const redis = getRedis();
+    const indexed = await redis.smembers('session:accounts');
+    for (const id of indexed) {
+      if (id && String(id).trim()) ids.add(String(id).trim());
+    }
+  } catch (err) {
+    warnRedisFallback(err);
+  }
+
+  return Array.from(ids).sort((a, b) => a.localeCompare(b));
+}
+
+module.exports = { saveCookies, loadCookies, sessionMeta, deleteSession, listKnownAccountIds };

@@ -10,6 +10,41 @@ const messageRepo = require('../db/repositories/MessageRepository');
 const { emitInboxUpdate, emitNewMessage } = require('../utils/websocket');
 const { getRedis } = require('../redisClient');
 
+function isDatabaseUnavailable(err) {
+  if (!err) return false;
+  const code = err.code || err?.meta?.code;
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    code === 'DB_TIMEOUT' ||
+    code === 'ECONNREFUSED' ||
+    code === 'P1001' ||
+    code === 'P2021' ||
+    code === 'P2022' ||
+    message.includes('ECONNREFUSED') ||
+    message.includes("Can't reach database server") ||
+    message.includes('does not exist in the current database') ||
+    message.includes('timeout expired') ||
+    message.includes('Connection terminated unexpectedly')
+  );
+}
+
+async function withTimeout(promise, timeoutMs, code = 'DB_TIMEOUT') {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const err = new Error(`Operation timed out after ${timeoutMs}ms`);
+      err.code = code;
+      reject(err);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 /**
  * Sync messages for a single account
  * @param {string} accountId - Account ID to sync
@@ -30,7 +65,23 @@ async function syncAccount(accountId, proxyUrl = null) {
 
   try {
     // Ensure account exists in database
-    await accountRepo.upsertAccount(accountId, accountId);
+    try {
+      await withTimeout(accountRepo.upsertAccount(accountId, accountId), 4000);
+    } catch (dbErr) {
+      if (isDatabaseUnavailable(dbErr)) {
+        const message = `[MessageSync] Database unavailable for ${accountId}; skipping persistence sync.`;
+        console.warn(message);
+        stats.errors.push({
+          fatal: true,
+          code: dbErr.code || 'DB_UNAVAILABLE',
+          error: dbErr.message || String(dbErr),
+        });
+        stats.completedAt = new Date();
+        stats.durationMs = stats.completedAt - stats.startedAt;
+        return stats;
+      }
+      throw dbErr;
+    }
 
     // Fetch conversations from LinkedIn
     console.log(`[MessageSync] Fetching conversations for ${accountId}...`);
@@ -55,7 +106,7 @@ async function syncAccount(accountId, proxyUrl = null) {
         const participantAvatarUrl = conv.participants[0]?.avatarUrl || null;
 
         // Upsert conversation
-        await messageRepo.upsertConversation({
+        await withTimeout(messageRepo.upsertConversation({
           id: conversationId,
           accountId,
           participantName,
@@ -64,7 +115,7 @@ async function syncAccount(accountId, proxyUrl = null) {
           lastMessageAt: new Date(conv.lastMessage?.createdAt || conv.createdAt || Date.now()),
           lastMessageText: conv.lastMessage?.text || '',
           lastMessageSentByMe: conv.lastMessage?.senderId === '__self__',
-        });
+        }), 4000);
         stats.updatedConversations++;
 
         // Fetch thread messages
@@ -73,13 +124,16 @@ async function syncAccount(accountId, proxyUrl = null) {
 
         if (threadData && threadData.items && threadData.items.length > 0) {
           // Get existing message count before sync
-          const existingCount = await messageRepo.countMessagesByConversation(conversationId);
+          const existingCount = await withTimeout(
+            messageRepo.countMessagesByConversation(conversationId),
+            4000
+          );
 
           // Upsert each message
           let newMessagesInThread = 0;
           for (const msg of threadData.items) {
             try {
-              const result = await messageRepo.upsertMessage({
+              const result = await withTimeout(messageRepo.upsertMessage({
                 conversationId,
                 accountId,
                 senderId: msg.senderId || '__unknown__',
@@ -88,7 +142,7 @@ async function syncAccount(accountId, proxyUrl = null) {
                 sentAt: new Date(msg.createdAt || Date.now()),
                 isSentByMe: msg.senderId === '__self__',
                 linkedinMessageId: msg.id || null,
-              });
+              }), 4000);
 
               // If message was newly created (not a duplicate)
               if (result) {
@@ -106,7 +160,10 @@ async function syncAccount(accountId, proxyUrl = null) {
           stats.newMessages += newMessagesInThread;
           
           // Get new count after sync
-          const newCount = await messageRepo.countMessagesByConversation(conversationId);
+          const newCount = await withTimeout(
+            messageRepo.countMessagesByConversation(conversationId),
+            4000
+          );
           const actualNew = newCount - existingCount;
 
           if (actualNew > 0) {
@@ -125,6 +182,17 @@ async function syncAccount(accountId, proxyUrl = null) {
         await delay(500, 1000);
 
       } catch (convError) {
+        if (isDatabaseUnavailable(convError)) {
+          stats.errors.push({
+            fatal: true,
+            code: convError.code || 'DB_UNAVAILABLE',
+            error: convError.message || String(convError),
+          });
+          stats.completedAt = new Date();
+          stats.durationMs = stats.completedAt - stats.startedAt;
+          console.warn(`[MessageSync] Stopping sync for ${accountId} due to database unavailability.`);
+          return stats;
+        }
         console.error(`[MessageSync] Error processing conversation ${conv.id}:`, convError.message);
         stats.errors.push({
           conversationId: conv.id,
@@ -134,7 +202,7 @@ async function syncAccount(accountId, proxyUrl = null) {
     }
 
     // Update account's last synced timestamp
-    await accountRepo.updateLastSyncedAt(accountId);
+    await withTimeout(accountRepo.updateLastSyncedAt(accountId), 4000);
 
     // Emit WebSocket event for completed sync
     emitInboxUpdate(accountId, {

@@ -22,10 +22,27 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
     }
     page = await context.newPage();
 
-    await page.goto(`https://www.linkedin.com/messaging/thread/${chatId}/`, {
-      waitUntil: 'domcontentloaded',
-      timeout:   30000,
-    });
+    try {
+      await page.goto(`https://www.linkedin.com/messaging/thread/${chatId}/`, {
+        waitUntil: 'domcontentloaded',
+        timeout:   30000,
+      });
+    } catch (navErr) {
+      const msg = navErr instanceof Error ? navErr.message : String(navErr);
+      if (msg.includes('ERR_TOO_MANY_REDIRECTS')) {
+        const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+        err.code = 'SESSION_EXPIRED'; err.status = 401;
+        throw err;
+      }
+      throw navErr;
+    }
+
+    const landingUrl = page.url();
+    if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
+      const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+      err.code = 'SESSION_EXPIRED'; err.status = 401;
+      throw err;
+    }
 
     await delay(2000, 3500);
 
@@ -82,7 +99,9 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
       }
     });
 
-    await saveCookies(accountId, await context.cookies());
+    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+      await saveCookies(accountId, await context.cookies());
+    }
 
     return { items: messages, cursor: null, hasMore: false };
   } finally {

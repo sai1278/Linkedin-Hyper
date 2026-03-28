@@ -71,15 +71,21 @@ export async function forwardToBackend(opts: ForwardOptions): Promise<NextRespon
     });
 
     const data = await res.text();
+    const isNoContentStatus = res.status === 204 || res.status === 205 || res.status === 304;
 
-    // Add Cache-Control on successful GET responses so the CDN / Next.js
-    // edge cache can serve stale data while revalidating in the background.
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (method === 'GET' && res.ok) {
-      headers['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=30';
+    const headers = new Headers();
+    // Dashboard state is user-driven and should reflect writes immediately
+    // (session import/delete/verify). Disable response caching in BFF.
+    headers.set('Cache-Control', 'no-store');
+
+    const upstreamType = res.headers.get('content-type');
+    if (!isNoContentStatus) {
+      headers.set('Content-Type', upstreamType ?? 'application/json');
+      return new NextResponse(data, { status: res.status, headers });
     }
 
-    return new NextResponse(data, { status: res.status, headers });
+    // 204/205/304 must not include a response body.
+    return new NextResponse(null, { status: res.status, headers });
   } catch (err) {
     const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
     return NextResponse.json(

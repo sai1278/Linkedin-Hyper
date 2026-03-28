@@ -1,43 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getUserByEmail } from '@/lib/models/user';
 import { signToken } from '@/lib/auth/jwt';
-import bcrypt from 'bcrypt';
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { email, password } = body;
+    const { password } = body;
     
-    if (!email || !password) {
+    if (!password) {
       return NextResponse.json(
-        { error: 'Email and password are required' }, 
+        { error: 'Password is required' }, 
         { status: 400 }
       );
     }
     
-    const user = await getUserByEmail(email);
-    if (!user) {
+    // Validate against DASHBOARD_PASSWORD
+    const dashboardPassword = process.env.DASHBOARD_PASSWORD;
+    if (!dashboardPassword) {
+      console.error('DASHBOARD_PASSWORD environment variable is not set');
       return NextResponse.json(
-        { error: 'Invalid email or password' }, 
+        { error: 'Server configuration error' }, 
+        { status: 500 }
+      );
+    }
+    
+    if (password !== dashboardPassword) {
+      return NextResponse.json(
+        { error: 'Invalid password' }, 
         { status: 401 }
       );
     }
     
-    const isValid = await bcrypt.compare(password, user.password_hash);
-    if (!isValid) {
-      return NextResponse.json(
-        { error: 'Invalid email or password' }, 
-        { status: 401 }
-      );
-    }
-    
-    // Generate JWT specific to the user
-    const token = await signToken({ userId: user.id, role: user.role });
+    // Generate JWT for authenticated session
+    const token = await signToken({ role: 'admin' });
     
     // Set HTTP-only cookie
     const response = NextResponse.json({ 
       ok: true, 
-      user: { id: user.id, name: user.name, email: user.email, role: user.role } 
+      message: 'Login successful' 
     });
     
     response.cookies.set('app_session', token, {

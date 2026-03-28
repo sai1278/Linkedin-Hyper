@@ -1,82 +1,68 @@
-#!/bin/bash
-# Post-deployment health check script for LinkedIn Hyper-V
-# Run this script with: bash deployment/healthcheck.sh
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 
-echo "🏥 LinkedIn Hyper-V - Health Check"
-echo "==================================="
+ENV_FILE="${1:-.env}"
+COMPOSE_ARGS=(-f docker-compose.yml -f docker-compose.prod.yml)
 
-# Load .env if exists
-if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  source "$ENV_FILE"
+  set +a
 fi
 
-PASSED=0
-FAILED=0
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker not found"
+  exit 1
+fi
 
-# Helper function
+if ! docker compose version >/dev/null 2>&1; then
+  echo "docker compose plugin not found"
+  exit 1
+fi
+
+passed=0
+failed=0
+
 check() {
-    local name="$1"
-    local command="$2"
-    
-    echo -n "Checking $name... "
-    if eval "$command" > /dev/null 2>&1; then
-        echo "✅ PASS"
-        ((PASSED++))
-    else
-        echo "❌ FAIL"
-        ((FAILED++))
-    fi
+  local name="$1"
+  local cmd="$2"
+  echo -n "Checking ${name}... "
+  if eval "$cmd" >/dev/null 2>&1; then
+    echo "PASS"
+    passed=$((passed + 1))
+  else
+    echo "FAIL"
+    failed=$((failed + 1))
+  fi
 }
 
-echo ""
-echo "🐳 Docker Services"
-echo "-------------------"
+compose() {
+  docker compose "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" "$@"
+}
+
 check "Docker daemon" "docker ps"
-check "Docker Compose" "docker-compose ps"
-check "Redis container" "docker-compose ps | grep redis | grep -q healthy"
-check "Worker container" "docker-compose ps | grep worker | grep -q healthy"
-check "Frontend container" "docker-compose ps | grep frontend | grep -q Up"
-
-echo ""
-echo "🔌 Service Connectivity"
-echo "------------------------"
-check "Redis ping" "docker-compose exec -T redis redis-cli -a \"\$REDIS_PASSWORD\" ping | grep -q PONG"
-check "Worker API health" "curl -f -s http://localhost:3001/health | grep -q ok"
-check "Frontend response" "curl -f -s -o /dev/null http://localhost:3000"
-
-echo ""
-echo "🌐 Nginx"
-echo "---------"
+check "Compose status" "compose ps"
+check "Redis healthy" "compose ps | grep -E 'redis.+healthy'"
+check "Worker healthy" "compose ps | grep -E 'worker.+healthy'"
+check "Frontend up" "compose ps | grep -E 'frontend.+Up'"
+check "Worker /health" "curl -fsS http://127.0.0.1:3001/health"
+check "Frontend HTTP" "curl -fsS http://127.0.0.1:3000"
 check "Nginx running" "sudo systemctl is-active nginx"
-check "Nginx config valid" "sudo nginx -t"
+check "Nginx config" "sudo nginx -t"
 
-echo ""
-echo "🔒 SSL Certificate"
-echo "-------------------"
-if [ -d "/etc/letsencrypt/live" ]; then
-    CERT_DIR=$(sudo ls /etc/letsencrypt/live | grep -v README | head -1)
-    if [ -n "$CERT_DIR" ]; then
-        check "SSL certificate exists" "sudo test -f /etc/letsencrypt/live/$CERT_DIR/fullchain.pem"
-        check "SSL certificate valid" "sudo openssl x509 -in /etc/letsencrypt/live/$CERT_DIR/fullchain.pem -noout -checkend 2592000"
-    fi
+if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+  check "Redis auth ping" "compose exec -T redis redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"
 else
-    echo "⚠️  No SSL certificates found (run certbot-setup.sh)"
+  echo "Skipping Redis auth ping (REDIS_PASSWORD missing in $ENV_FILE)"
 fi
 
-echo ""
-echo "📊 Summary"
-echo "----------"
-echo "Passed: $PASSED"
-echo "Failed: $FAILED"
+echo
+echo "Passed: $passed"
+echo "Failed: $failed"
 
-if [ $FAILED -eq 0 ]; then
-    echo ""
-    echo "✅ All checks passed! Your deployment is healthy."
-    exit 0
-else
-    echo ""
-    echo "❌ Some checks failed. Please review the output above."
-    exit 1
+if [[ $failed -gt 0 ]]; then
+  exit 1
 fi

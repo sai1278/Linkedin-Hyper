@@ -134,6 +134,7 @@ export default function AccountsPage() {
         onClose={handleCloseAddModal}
         onSuccess={fetchAccounts}
         existingAccounts={accounts.map((a) => a.id)}
+        initialAccountId={selectedAccountId}
       />
     </div>
   );

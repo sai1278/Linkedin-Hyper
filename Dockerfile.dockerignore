@@ -1,0 +1,35 @@
+# Keep frontend build context minimal and deterministic.
+# This file is Dockerfile-specific and takes precedence for `Dockerfile`.
+
+# Dependencies and build artifacts
+node_modules
+.next
+out
+dist
+build
+
+# Local environment, logs, and caches
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Repository and docs not required for image build
+.git
+.github
+deployment
+README.md 
+README_ENHANCED.md
+DEPLOYMENT.md
+DEVELOPER_KNOWLEDGE_BASE.md
+
+# Editor/OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp

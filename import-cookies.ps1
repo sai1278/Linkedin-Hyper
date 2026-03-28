@@ -1,0 +1,211 @@
+param(
+  [Parameter(Mandatory = $true)][string]$AccountId,
+  [string]$CookieFile = "",
+  [switch]$AutoCapture,
+  [ValidateSet("chrome", "edge")][string]$Browser = "chrome",
+  [int]$CaptureTimeoutSec = 240,
+  [string]$CaptureProfile = "",
+  [string]$ApiKey = "dev-api-secret-key-change-in-production",
+  [string]$BaseUrl = "http://localhost:3001"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+function Resolve-CandidateCookieFiles {
+  param([string]$PreferredPath)
+
+  $candidates = New-Object System.Collections.Generic.List[string]
+  if ($PreferredPath -and $PreferredPath.Trim()) {
+    $candidates.Add($PreferredPath)
+  }
+
+  $defaults = @(
+    (Join-Path $repoRoot "linkedin-cookies-plain.json"),
+    (Join-Path $env:USERPROFILE "Downloads\\linkedin-cookies-plain.json"),
+    (Join-Path $env:USERPROFILE "Downloads\\cookies.json")
+  )
+
+  foreach ($p in $defaults) {
+    if (-not $candidates.Contains($p)) {
+      $candidates.Add($p)
+    }
+  }
+
+  return @($candidates)
+}
+
+function Get-CookieArrayFromFile {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    throw "Cookie file not found: $Path"
+  }
+
+  $raw = Get-Content -LiteralPath $Path -Raw
+  if (-not $raw -or -not $raw.Trim()) {
+    throw "Cookie file is empty: $Path"
+  }
+
+  $parsed = $raw | ConvertFrom-Json
+
+  if ($parsed -is [System.Array]) {
+    return $parsed
+  }
+
+  # Some tools export { cookies: [...] }
+  if ($parsed.PSObject.Properties.Name -contains 'cookies' -and $parsed.cookies -is [System.Array]) {
+    return $parsed.cookies
+  }
+
+  # Some tools export { data: "[...]" } (JSON string payload)
+  if ($parsed.PSObject.Properties.Name -contains 'data' -and ($parsed.data -is [string])) {
+    $data = $parsed.data.Trim()
+    if ($data.StartsWith('[')) {
+      $inner = $data | ConvertFrom-Json
+      if ($inner -is [System.Array]) {
+        return $inner
+      }
+    }
+
+    # Known encrypted Cookie-Editor/HotCleaner wrapper
+    if (($parsed.PSObject.Properties.Name -contains 'url') -and ($parsed.url -like '*hotcleaner.com*')) {
+      throw @"
+Detected encrypted HotCleaner/Cookie-Editor export format.
+This app needs plain JSON array cookies.
+Export again as plain JSON cookies (array of objects with name/value/domain/path), not encrypted backup format.
+"@
+    }
+  }
+
+  throw "Unsupported cookie JSON format. Expected a JSON array of cookie objects."
+}
+
+function Try-LoadCookiesFromFile {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $null
+  }
+
+  try {
+    $cookies = Get-CookieArrayFromFile -Path $Path
+    Validate-CookieShape -Cookies $cookies
+    return @{
+      path = $Path
+      cookies = $cookies
+    }
+  } catch {
+    Write-Warning "Skipping cookie file '$Path': $($_.Exception.Message)"
+    return $null
+  }
+}
+
+function Validate-CookieShape {
+  param([Parameter(Mandatory = $true)][object[]]$Cookies)
+
+  if ($Cookies.Count -eq 0) {
+    throw "Cookie array is empty."
+  }
+
+  $liAt = $false
+  $jsession = $false
+
+  foreach ($c in $Cookies) {
+    if (-not $c.name -or -not $c.value -or -not $c.domain) {
+      throw "Each cookie must include at least: name, value, domain."
+    }
+    if ($c.name -eq 'li_at') { $liAt = $true }
+    if ($c.name -eq 'JSESSIONID') { $jsession = $true }
+  }
+
+  if (-not $liAt -or -not $jsession) {
+    throw "Missing required LinkedIn cookies. Need both li_at and JSESSIONID."
+  }
+}
+
+function Invoke-AutoCapture {
+  param(
+    [Parameter(Mandatory = $true)][string]$OutputFile
+  )
+
+  $captureScript = Join-Path $repoRoot "scripts\\capture-linkedin-cookies.mjs"
+  if (-not (Test-Path -LiteralPath $captureScript)) {
+    throw "Auto-capture script not found: $captureScript"
+  }
+
+  $args = @(
+    $captureScript,
+    "--browser", $Browser,
+    "--timeoutSec", $CaptureTimeoutSec.ToString(),
+    "--output", $OutputFile,
+    "--use-temp-copy"
+  )
+  if ($CaptureProfile -and $CaptureProfile.Trim()) {
+    $args += @("--profile", $CaptureProfile)
+  }
+
+  Write-Host "Starting automatic LinkedIn cookie capture via $Browser..."
+  & node $args
+  if ($LASTEXITCODE -ne 0) {
+    throw "Auto-capture failed. Please ensure LinkedIn login can be completed in the launched browser window."
+  }
+}
+
+try {
+  $selected = $null
+  if ($AutoCapture) {
+    # Force fresh capture first when explicitly requested.
+    $capturedPath = if ($CookieFile -and $CookieFile.Trim()) {
+      $CookieFile
+    } else {
+      Join-Path $repoRoot "linkedin-cookies-plain.json"
+    }
+    Invoke-AutoCapture -OutputFile $capturedPath
+    $selected = Try-LoadCookiesFromFile -Path $capturedPath
+  }
+
+  if (-not $selected) {
+    foreach ($candidate in (Resolve-CandidateCookieFiles -PreferredPath $CookieFile)) {
+      $loaded = Try-LoadCookiesFromFile -Path $candidate
+      if ($loaded) {
+        $selected = $loaded
+        break
+      }
+    }
+  }
+
+  if (-not $selected) {
+    $hint = if ($AutoCapture) {
+      "Auto-capture did not produce valid li_at + JSESSIONID cookies."
+    } else {
+      "No usable cookie file found. Pass -AutoCapture to capture from browser automatically."
+    }
+    throw $hint
+  }
+
+  $cookies = $selected.cookies
+
+  $body = $cookies | ConvertTo-Json -Depth 8 -Compress
+  $headers = @{ "X-Api-Key" = $ApiKey }
+
+  Write-Host "Importing cookies for account '$AccountId' from '$($selected.path)'..."
+  $import = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/session" -Headers $headers -ContentType "application/json" -Body $body
+  $import | ConvertTo-Json -Depth 6 | Write-Host
+
+  Write-Host ""
+  Write-Host "Verifying session..."
+  $verify = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify" -Headers $headers
+  $verify | ConvertTo-Json -Depth 6 | Write-Host
+
+  Write-Host ""
+  Write-Host "Done."
+} catch {
+  if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+    Write-Host $_.ErrorDetails.Message
+    exit 1
+  }
+  Write-Host $_.Exception.Message
+  exit 1
+}

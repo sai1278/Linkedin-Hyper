@@ -2,6 +2,7 @@
 
 const { Worker } = require('bullmq');
 const { createRedisClient }             = require('./redisClient');
+const { getQueueName } = require('./queue');
 
 const { verifySession }         = require('./actions/login');
 const { readMessages }          = require('./actions/readMessages');
@@ -16,6 +17,11 @@ const { syncAllAccounts }       = require('./services/messageSyncService');
 const CONCURRENCY = 1;
 
 function startWorker() {
+  if (process.env.DISABLE_QUEUE === '1') {
+    console.log('[Worker] Queue workers disabled by DISABLE_QUEUE=1');
+    return [];
+  }
+
   const ids = (process.env.ACCOUNT_IDS || 'default').split(',').map(s => s.trim()).filter(Boolean);
   if (ids.length === 0) ids.push('default');
   
@@ -23,7 +29,7 @@ function startWorker() {
 
   for (const accountId of ids) {
     const worker = new Worker(
-      `linkedin-jobs:${accountId}`,
+      getQueueName(accountId),
       async (job) => {
         const { name, data } = job;
         console.log(`[Worker:${accountId}] Processing job ${job.id}: ${name}`);
@@ -66,6 +72,11 @@ function startWorker() {
 
   console.log(`[Worker] Started ${workers.length} worker threads with concurrency ${CONCURRENCY} per worker.`);
   
+  if (process.env.DISABLE_MESSAGE_SYNC === '1') {
+    console.log('[Worker] Message sync scheduler disabled by DISABLE_MESSAGE_SYNC=1');
+    return workers;
+  }
+
   // Schedule background message sync (every 10 minutes, staggered between accounts)
   scheduleMessageSync();
   
@@ -109,8 +120,12 @@ async function scheduleMessageSync() {
 
     // Trigger initial sync after 30 seconds (give system time to start)
     setTimeout(async () => {
-      await queue.add('messageSync', { proxyUrl }, { jobId: 'messageSync-initial' });
-      console.log('[Worker] Triggered initial message sync');
+      try {
+        await queue.add('messageSync', { proxyUrl }, { jobId: 'messageSync-initial' });
+        console.log('[Worker] Triggered initial message sync');
+      } catch (error) {
+        console.error('[Worker] Initial message sync skipped:', error.message);
+      }
     }, 30000);
 
   } catch (error) {

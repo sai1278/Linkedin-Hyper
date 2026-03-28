@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const { chromium } = require('rebrowser-playwright');
 
 const CHROME_ARGS = [
@@ -23,15 +24,43 @@ const CHROME_ARGS = [
 
 /**
  * Launch a stealth Chrome browser instance.
- * @param {string|undefined} proxyUrl  Optional proxy e.g. "http://user:pass@host:port"
+ * @param {string|undefined} proxyUrl Optional proxy e.g. "http://user:pass@host:port"
  */
+function resolveChromeExecutablePath() {
+  if (process.platform === 'linux') {
+    return '/usr/bin/google-chrome-stable';
+  }
+
+  if (process.platform === 'win32') {
+    const candidates = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      process.env.LOCALAPPDATA
+        ? `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
+        : null,
+    ].filter(Boolean);
+
+    return candidates.find((p) => fs.existsSync(p)) || null;
+  }
+
+  return null;
+}
+
 async function createBrowser(proxyUrl) {
+  const headless = process.env.BROWSER_HEADLESS === '0' ? false : true;
   const opts = {
-    headless:       false, // NEVER headless — LinkedIn detects it
-    executablePath: '/usr/bin/google-chrome-stable',
-    channel:        'chrome',
-    args:           CHROME_ARGS,
+    headless,
+    args: CHROME_ARGS,
   };
+
+  const executablePath = resolveChromeExecutablePath();
+  if (executablePath) {
+    opts.executablePath = executablePath;
+  } else {
+    // Fallback to installed Chrome channel when explicit path is unavailable.
+    opts.channel = 'chrome';
+  }
+
   if (proxyUrl) opts.proxy = { server: proxyUrl };
   return chromium.launch(opts);
 }
@@ -42,51 +71,49 @@ async function createBrowser(proxyUrl) {
  */
 async function createContext(browser) {
   const context = await browser.newContext({
-    userAgent:         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    viewport:          { width: 1366, height: 768 },
-    locale:            'en-US',
-    timezoneId:        'America/New_York',
-    colorScheme:       'light',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    viewport: { width: 1366, height: 768 },
+    locale: 'en-US',
+    timezoneId: 'America/New_York',
+    colorScheme: 'light',
     deviceScaleFactor: 1,
-    hasTouch:          false,
-    isMobile:          false,
+    hasTouch: false,
+    isMobile: false,
     javaScriptEnabled: true,
-    permissions:       ['notifications'],
+    permissions: ['notifications'],
   });
 
-  // Hardcode 60s absolute maximum timeout on all Playwright methods matching BullMQ wrapper to kill Ghost tasks.
+  // Keep actions bounded to avoid stuck playwright calls.
   context.setDefaultTimeout(60000);
   context.setDefaultNavigationTimeout(60000);
 
-  // Patch all automation fingerprint vectors before any navigation
+  // Patch automation fingerprint vectors before any navigation.
   await context.addInitScript(() => {
-    // Remove webdriver flag
-    try { delete Object.getPrototypeOf(navigator).webdriver; } catch (_) {}
+    try {
+      delete Object.getPrototypeOf(navigator).webdriver;
+    } catch (_) {}
 
-    // Realistic plugin list
     Object.defineProperty(navigator, 'plugins', {
       get: () => [
-        { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer',             description: 'Portable Document Format' },
-        { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-        { name: 'Native Client',      filename: 'internal-nacl-plugin',            description: '' },
+        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
       ],
     });
 
-    Object.defineProperty(navigator, 'languages',           { get: () => ['en-US', 'en'] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4 });
 
-    // Realistic screen dimensions
-    Object.defineProperty(screen, 'width',       { get: () => 1366 });
-    Object.defineProperty(screen, 'height',      { get: () => 768 });
-    Object.defineProperty(screen, 'availWidth',  { get: () => 1366 });
+    Object.defineProperty(screen, 'width', { get: () => 1366 });
+    Object.defineProperty(screen, 'height', { get: () => 768 });
+    Object.defineProperty(screen, 'availWidth', { get: () => 1366 });
     Object.defineProperty(screen, 'availHeight', { get: () => 728 });
   });
 
-  // W6 — Block unnecessary resources to reduce page load time by 30-60%.
-  // LinkedIn profile pages are image-heavy; we only need the DOM.
+  // Block heavy assets and analytics to speed up navigation.
   await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,woff,woff2}', (r) => r.abort());
-  await context.route('**/li/track**',  (r) => r.abort()); // LinkedIn analytics
-  await context.route('**/beacon**',    (r) => r.abort());
+  await context.route('**/li/track**', (r) => r.abort());
+  await context.route('**/beacon**', (r) => r.abort());
   await context.route('**/analytics**', (r) => r.abort());
 
   return context;
@@ -94,18 +121,28 @@ async function createContext(browser) {
 
 const activeContexts = new Map();
 
+function evictContext(accountId, expectedEntry) {
+  const current = activeContexts.get(accountId);
+  if (!current) return;
+  if (expectedEntry && current !== expectedEntry) return;
+  clearTimeout(current.timer);
+  activeContexts.delete(accountId);
+}
+
 async function getAccountContext(accountId, proxyUrl) {
   const existing = activeContexts.get(accountId);
   if (existing) {
-    // Cache hit — cookies are already set from the previous job's saveCookies().
-    // Return cookiesLoaded:true so action files skip the Redis GET + addCookies IPC.
-    clearTimeout(existing.timer);
-    existing.lastUsed = Date.now();
-    existing.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
-    return { browser: existing.browser, context: existing.context, cookiesLoaded: true };
+    if (!existing.browser?.isConnected()) {
+      await cleanupContext(accountId);
+    } else {
+      clearTimeout(existing.timer);
+      existing.lastUsed = Date.now();
+      existing.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
+      return { browser: existing.browser, context: existing.context, cookiesLoaded: true };
+    }
   }
 
-  // Enforce Max Size (LRU with cap of 5 entries)
+  // LRU cache cap of 5 active contexts.
   if (activeContexts.size >= 5) {
     let oldestId = null;
     let oldestTime = Infinity;
@@ -120,20 +157,29 @@ async function getAccountContext(accountId, proxyUrl) {
     }
   }
 
-  // Cache miss — launch new browser + context
   const browser = await createBrowser(proxyUrl);
   const context = await createContext(browser);
 
-  const timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
-  activeContexts.set(accountId, { browser, context, lastUsed: Date.now(), timer });
+  const entry = {
+    browser,
+    context,
+    lastUsed: Date.now(),
+    timer: null,
+  };
+  entry.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
 
-  // Cache miss — caller must load cookies from Redis and call addCookies.
+  browser.on('disconnected', () => evictContext(accountId, entry));
+  context.on('close', () => evictContext(accountId, entry));
+
+  activeContexts.set(accountId, entry);
+
   return { browser, context, cookiesLoaded: false };
 }
 
 async function cleanupContext(accountId) {
   const existing = activeContexts.get(accountId);
   if (existing) {
+    clearTimeout(existing.timer);
     activeContexts.delete(accountId);
     await existing.context.close().catch(() => {});
     await existing.browser.close().catch(() => {});
@@ -146,7 +192,6 @@ async function cleanupAllContexts() {
   }
 }
 
-// Ensure Chrome processes are not orphaned on container shutdown
 process.on('SIGTERM', async () => {
   await cleanupAllContexts();
   process.exit(0);

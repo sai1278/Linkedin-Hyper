@@ -71,7 +71,9 @@ async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) 
     await checkAndIncrement(accountId, 'connectRequests');
     await delay(1500, 3000);
 
-    await saveCookies(accountId, await context.cookies());
+    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+      await saveCookies(accountId, await context.cookies());
+    }
 
     // Activity log — this is what populates the Connections page
     const redis = getRedis();

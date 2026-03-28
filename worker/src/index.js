@@ -5,7 +5,14 @@ const crypto     = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { getQueue, getQueueEvents }   = require('./queue');
 const { startWorker }  = require('./worker');
-const { saveCookies, loadCookies, sessionMeta, deleteSession } = require('./session');
+const { saveCookies, loadCookies, sessionMeta, deleteSession, listKnownAccountIds } = require('./session');
+const { verifySession } = require('./actions/login');
+const { readMessages } = require('./actions/readMessages');
+const { readThread } = require('./actions/readThread');
+const { sendMessage } = require('./actions/sendMessage');
+const { sendMessageNew } = require('./actions/sendMessageNew');
+const { sendConnectionRequest } = require('./actions/connect');
+const { searchPeople } = require('./actions/searchPeople');
 const { getLimits }    = require('./rateLimit');
 const {
   sanitizeText,
@@ -28,7 +35,15 @@ if (process.env.ACCOUNT_IDS) {
 
 app.use(express.json({ limit: '2mb' }));
 
-// ── Global request timeout ───────────────────────────────────────────────────
+// Return JSON for malformed request bodies instead of Express HTML error page.
+app.use((err, _req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ error: 'Invalid JSON body. Ensure request payload is valid JSON.' });
+  }
+  return next(err);
+});
+
+// â”€â”€ Global request timeout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Set to 130 s so Express always responds before the BFF AbortSignal (120 s)
 // fires, giving the client a meaningful 504 instead of a connection reset.
 app.use((req, res, next) => {
@@ -38,7 +53,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ── Auth middleware ──────────────────────────────────────────────────────────
+// â”€â”€ Auth middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function requireApiKey(req, res, next) {
   const secret = process.env.API_SECRET;
@@ -58,17 +73,247 @@ function requireApiKey(req, res, next) {
   next();
 }
 
-// ── Health (no auth) ─────────────────────────────────────────────────────────
+function isDatabaseUnavailable(err) {
+  if (!err) return false;
+  const code = err.code || err?.meta?.code;
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    code === 'DB_TIMEOUT' ||
+    code === 'ECONNREFUSED' ||
+    code === 'P1001' ||
+    code === 'P2021' || // table does not exist
+    code === 'P2022' || // column does not exist
+    message.includes('ECONNREFUSED') ||
+    message.includes("Can't reach database server") ||
+    message.includes('does not exist in the current database')
+  );
+}
+
+async function withTimeout(promise, timeoutMs, code = 'DB_TIMEOUT') {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const err = new Error(`Operation timed out after ${timeoutMs}ms`);
+      err.code = code;
+      reject(err);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// â”€â”€ Health (no auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+async function buildUnifiedInboxFromActivity(limit = 100) {
+  const ids = await listKnownAccountIds();
+  const redis = getRedis();
+  const latestByConversation = new Map();
+
+  for (const accountId of ids) {
+    let entries = [];
+    try {
+      entries = await redis.lrange(`activity:log:${accountId}`, 0, 500);
+    } catch {
+      continue;
+    }
+
+    for (const raw of entries) {
+      try {
+        const item = JSON.parse(raw);
+        if (item?.type !== 'messageSent') continue;
+
+        const participantName = String(item.targetName || 'Unknown');
+        const participantProfileUrl = String(item.targetProfileUrl || '');
+        const sentAt = Number(item.timestamp) || Date.now();
+        const textPreview = typeof item.textPreview === 'string' && item.textPreview.length > 0
+          ? item.textPreview
+          : `Sent message (${Number(item.messageLength) || 0} chars)`;
+
+        const key = `${accountId}|${participantName}|${participantProfileUrl}`;
+        const previous = latestByConversation.get(key);
+        if (previous && previous.lastMessage?.sentAt >= sentAt) continue;
+
+        latestByConversation.set(key, {
+          conversationId: `activity-${Buffer.from(key).toString('base64').replace(/=/g, '')}`,
+          accountId,
+          participant: {
+            name: participantName,
+            profileUrl: participantProfileUrl,
+          },
+          lastMessage: {
+            text: textPreview,
+            sentAt,
+            sentByMe: true,
+          },
+          unreadCount: 0,
+          messages: [],
+        });
+      } catch {
+        // Ignore malformed activity rows.
+      }
+    }
+  }
+
+  const conversations = Array.from(latestByConversation.values())
+    .sort((a, b) => (b.lastMessage?.sentAt || 0) - (a.lastMessage?.sentAt || 0))
+    .slice(0, limit);
+
+  return { conversations };
+}
+
+const UNIFIED_INBOX_CACHE_TTL_MS = 60_000;
+let unifiedInboxCache = {
+  expiresAt: 0,
+  payload: { conversations: [] },
+};
+let unifiedInboxInFlight = null;
+
+function normalizeConversationFromInboxItem(accountId, item) {
+  const participantName = String(item?.participants?.[0]?.name || 'Unknown');
+  const participantProfileUrl = String(item?.participants?.[0]?.profileUrl || '');
+  const rawId = String(item?.id || `unknown-${Date.now()}`);
+  const createdAt = item?.lastMessage?.createdAt || item?.createdAt || new Date().toISOString();
+  const sentAt = Number(new Date(createdAt).getTime()) || Date.now();
+
+  return {
+    conversationId: `${accountId}:${rawId}`,
+    accountId,
+    participant: {
+      name: participantName,
+      profileUrl: participantProfileUrl,
+    },
+    lastMessage: {
+      text: String(item?.lastMessage?.text || ''),
+      sentAt,
+      sentByMe: item?.lastMessage?.senderId === '__self__',
+    },
+    unreadCount: Number(item?.unreadCount) || 0,
+    messages: [],
+  };
+}
+
+function dedupeAndSortConversations(conversations) {
+  const latestByConversation = new Map();
+
+  for (const conv of conversations) {
+    if (!conv?.accountId) continue;
+    const key = `${conv.accountId}|${conv.participant?.name || ''}|${conv.participant?.profileUrl || ''}`;
+    const previous = latestByConversation.get(key);
+    const currentSentAt = Number(conv?.lastMessage?.sentAt) || 0;
+    const previousSentAt = Number(previous?.lastMessage?.sentAt) || 0;
+    if (!previous || currentSentAt >= previousSentAt) {
+      latestByConversation.set(key, conv);
+    }
+  }
+
+  return Array.from(latestByConversation.values()).sort(
+    (a, b) => (Number(b?.lastMessage?.sentAt) || 0) - (Number(a?.lastMessage?.sentAt) || 0)
+  );
+}
+
+async function buildUnifiedInboxFromLive(limit = 100) {
+  const ids = await listKnownAccountIds();
+  const proxyUrl = process.env.PROXY_URL || null;
+  const perAccountLimit = Math.max(10, Math.ceil(limit / Math.max(ids.length, 1)) * 2);
+  const conversations = [];
+  const sessionFailures = [];
+
+  for (const accountId of ids) {
+    try {
+      const inbox = await withTimeout(
+        readMessages({ accountId, limit: perAccountLimit, proxyUrl }),
+        30_000,
+        'READ_INBOX_TIMEOUT'
+      );
+      for (const item of inbox?.items || []) {
+        conversations.push(normalizeConversationFromInboxItem(accountId, item));
+      }
+    } catch (err) {
+      const code = err?.code;
+      if (code === 'NO_SESSION' || code === 'SESSION_EXPIRED') {
+        sessionFailures.push({ accountId, code });
+      } else if (code !== 'READ_INBOX_TIMEOUT') {
+        console.warn(`[Inbox] Live read failed for ${accountId}:`, err?.message || String(err));
+      }
+    }
+  }
+
+  return {
+    conversations: dedupeAndSortConversations(conversations).slice(0, limit),
+    sessionFailures,
+    attemptedAccounts: ids.length,
+  };
+}
+
+async function buildUnifiedInboxWithFallback(limit = 100) {
+  const now = Date.now();
+  if (unifiedInboxCache.expiresAt > now) {
+    return { conversations: unifiedInboxCache.payload.conversations.slice(0, limit) };
+  }
+
+  if (unifiedInboxInFlight) {
+    const payload = await unifiedInboxInFlight;
+    return { conversations: payload.conversations.slice(0, limit) };
+  }
+
+  unifiedInboxInFlight = (async () => {
+    const activityPayload = await buildUnifiedInboxFromActivity(limit);
+    let combined = activityPayload.conversations;
+    let liveMeta = { sessionFailures: [], attemptedAccounts: 0 };
+
+    if (combined.length < limit) {
+      const livePayload = await buildUnifiedInboxFromLive(limit);
+      liveMeta = {
+        sessionFailures: livePayload.sessionFailures || [],
+        attemptedAccounts: livePayload.attemptedAccounts || 0,
+      };
+      combined = dedupeAndSortConversations([...combined, ...livePayload.conversations]);
+    } else {
+      combined = dedupeAndSortConversations(combined);
+    }
+
+    if (
+      combined.length === 0 &&
+      liveMeta.attemptedAccounts > 0 &&
+      liveMeta.sessionFailures.length === liveMeta.attemptedAccounts
+    ) {
+      const err = new Error('All LinkedIn sessions are missing or expired. Re-import cookies for each account.');
+      err.status = 401;
+      err.code = 'NO_ACTIVE_SESSION';
+      throw err;
+    }
+
+    const payload = { conversations: combined.slice(0, limit) };
+    unifiedInboxCache = {
+      expiresAt: Date.now() + UNIFIED_INBOX_CACHE_TTL_MS,
+      payload,
+    };
+    return payload;
+  })();
+
+  try {
+    const payload = await unifiedInboxInFlight;
+    return { conversations: payload.conversations.slice(0, limit) };
+  } finally {
+    unifiedInboxInFlight = null;
+  }
+}
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ts: new Date().toISOString() });
 });
 
-// ── All routes below require API key ─────────────────────────────────────────
+// â”€â”€ All routes below require API key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 app.use(requireApiKey);
 
 const { getRedis } = require('./redisClient');
+const { cleanupContext } = require('./browser');
+const accountRepo = require('./db/repositories/AccountRepository');
 const exportRoutes = require('./routes/export');
 const { syncAccount, syncAllAccounts } = require('./services/messageSyncService');
 
@@ -112,20 +357,28 @@ app.post('/sync/messages', async (req, res) => {
 // GET /accounts
 app.get('/accounts', async (_req, res) => {
   try {
-    const ids   = (process.env.ACCOUNT_IDS ?? '').split(',').filter(Boolean);
-    const redis = getRedis();
+    const ids = new Set(await listKnownAccountIds());
+
+    try {
+      const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+      for (const acc of dbAccounts) {
+        if (acc?.id) ids.add(acc.id);
+      }
+    } catch (dbErr) {
+      if (!isDatabaseUnavailable(dbErr)) {
+        console.warn('[Accounts] Could not read account list from database:', dbErr.message);
+      }
+    }
 
     const accounts = await Promise.all(
-      ids.map(async (id) => {
-        let isActive = false;
-        let lastSeen = null;
-        try {
-          const metaRaw = await redis.get(`session:meta:${id}`);
-          const meta    = metaRaw ? JSON.parse(metaRaw) : null;
-          isActive      = !!meta;
-          lastSeen      = meta?.savedAt ?? null;
-        } catch (_err) { /* Redis unavailable — degrade gracefully */ }
-        return { id, displayName: id, isActive, lastSeen };
+      Array.from(ids).sort((a, b) => a.localeCompare(b)).map(async (id) => {
+        const meta = await sessionMeta(id).catch(() => null);
+        return {
+          id,
+          displayName: id,
+          isActive: !!meta,
+          lastSeen: meta?.savedAt ?? null,
+        };
       })
     );
 
@@ -139,11 +392,19 @@ app.get('/accounts', async (_req, res) => {
 app.post('/accounts/:accountId/session', async (req, res) => {
   try {
     const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    await cleanupContext(accountId).catch(() => {});
     const cookies = req.body;
     if (!Array.isArray(cookies) || cookies.length === 0 || !cookies.every(c => c && typeof c === 'object' && !Array.isArray(c))) {
       return res.status(400).json({ error: 'Body must be a non-empty array of valid cookie objects' });
     }
     await saveCookies(accountId, cookies);
+    try {
+      await withTimeout(accountRepo.upsertAccount(accountId, accountId), 4000);
+    } catch (dbErr) {
+      if (!isDatabaseUnavailable(dbErr)) {
+        console.warn('[Session Import] Failed to upsert account in database:', dbErr.message);
+      }
+    }
     res.json({ success: true, accountId, cookieCount: cookies.length });
   } catch (err) {
     console.error('[Session Import]', err.message);
@@ -167,6 +428,7 @@ app.get('/accounts/:accountId/session/status', async (req, res) => {
 app.delete('/accounts/:accountId/session', async (req, res) => {
   try {
     const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    await cleanupContext(accountId).catch(() => {});
     await deleteSession(accountId);
     res.status(204).end();
   } catch (err) {
@@ -185,30 +447,62 @@ app.get('/accounts/:accountId/limits', async (req, res) => {
   }
 });
 
-// ── Job helper (local only — NOT exported) ────────────────────────────────────
+// â”€â”€ Job helper (local only â€” NOT exported) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function runJob(name, data, timeoutMs = 120_000) {
+  const runDirectly = process.env.DIRECT_EXECUTION === '1' || process.env.DISABLE_QUEUE === '1';
+  if (runDirectly) {
+    return runDirectJob(name, data);
+  }
+
   const accountId   = data.accountId || 'default';
   const queue       = getQueue(accountId);
   const queueEvents = getQueueEvents(accountId);
+
+  const toQueueUnavailableError = (originalErr) => {
+    const msg = originalErr instanceof Error ? originalErr.message : String(originalErr);
+    const err = new Error('Background queue unavailable. Start Redis and retry.');
+    err.status = 503;
+    err.code = 'QUEUE_UNAVAILABLE';
+    err.cause = msg;
+    return err;
+  };
+
+  const isQueueConnectivityError = (err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    return (
+      msg.includes('Connection is closed') ||
+      msg.includes('ECONNREFUSED') ||
+      msg.includes('ENOTFOUND') ||
+      msg.includes('getaddrinfo')
+    );
+  };
   
   // Deterministic jobId deduplicates the same job within a 30-second window.
   // BullMQ silently drops adds with a jobId that already exists in the queue.
   const jobId = `${name}:${accountId}:${Math.floor(Date.now() / 30_000)}`;
-  
-  const job = await queue.add(name, data, {
-    jobId,
-    // Bounded job retention so Redis doesn't accumulate gigabytes of job history.
-    removeOnComplete: { count: 50 },
-    removeOnFail:     { count: 100 },
-    // Retry once with exponential backoff (5 s, then 10 s).
-    attempts: 2,
-    backoff:  { type: 'exponential', delay: 5000 },
-  });
+
+  let job;
+  try {
+    job = await queue.add(name, data, {
+      jobId,
+      // Bounded job retention so Redis doesn't accumulate gigabytes of job history.
+      removeOnComplete: { count: 50 },
+      removeOnFail: { count: 100 },
+      // Retry once with exponential backoff (5 s, then 10 s).
+      attempts: 2,
+      backoff: { type: 'exponential', delay: 5000 },
+    });
+  } catch (err) {
+    if (isQueueConnectivityError(err)) throw toQueueUnavailableError(err);
+    throw err;
+  }
 
   try {
     return await job.waitUntilFinished(queueEvents, timeoutMs);
   } catch (err) {
+    if (isQueueConnectivityError(err)) throw toQueueUnavailableError(err);
+
     if (err.message && err.message.includes('timed out')) {
       await job.remove().catch(() => {});
       const toErr    = new Error(`Job ${name} timed out after ${timeoutMs}ms`);
@@ -222,14 +516,59 @@ async function runJob(name, data, timeoutMs = 120_000) {
   }
 }
 
-// ── LinkedIn action endpoints ─────────────────────────────────────────────────
+async function runDirectJob(name, data) {
+  switch (name) {
+    case 'verifySession':
+      return verifySession(data);
+    case 'readMessages':
+      return readMessages(data);
+    case 'readThread':
+      return readThread(data);
+    case 'sendMessage':
+      return sendMessage(data);
+    case 'sendMessageNew':
+      return sendMessageNew(data);
+    case 'sendConnectionRequest':
+      return sendConnectionRequest(data);
+    case 'searchPeople':
+      return searchPeople(data);
+    case 'messageSync':
+      return syncAllAccounts(data.proxyUrl);
+    default:
+      throw new Error(`Unknown job type: ${name}`);
+  }
+}
+
+// â”€â”€ LinkedIn action endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 app.post('/accounts/:accountId/verify', async (req, res) => {
   try {
-    const result = await runJob('verifySession', {
-      accountId: req.params.accountId,
-      proxyUrl:  process.env.PROXY_URL || null,
-    });
+    const accountId = req.params.accountId;
+    const proxyUrl = process.env.PROXY_URL || null;
+
+    // Local dev mode: bypass BullMQ queue so verification can run without Redis.
+    const useDirectVerify = process.env.DIRECT_VERIFY === '1' || process.env.DISABLE_MESSAGE_SYNC === '1';
+    let result;
+    if (useDirectVerify) {
+      result = await verifySession({ accountId, proxyUrl });
+    } else {
+      try {
+        result = await runJob('verifySession', { accountId, proxyUrl });
+      } catch (queueErr) {
+        const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+        const isRedisConnectivityError =
+          msg.includes('Connection is closed') ||
+          msg.includes('ECONNREFUSED') ||
+          msg.includes('ENOTFOUND') ||
+          msg.includes('getaddrinfo');
+
+        if (!isRedisConnectivityError) throw queueErr;
+
+        console.warn('[Verify] Queue unavailable, falling back to direct verification:', msg);
+        result = await verifySession({ accountId, proxyUrl });
+      }
+    }
+
     res.json(result);
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
@@ -257,7 +596,7 @@ app.get('/messages/inbox', async (req, res) => {
   }
 });
 
-// GET /messages/thread — Query thread messages from database
+// GET /messages/thread â€” Query thread messages from database
 app.get('/messages/thread', async (req, res) => {
   try {
     const messageRepo = require('./db/repositories/MessageRepository');
@@ -267,7 +606,10 @@ app.get('/messages/thread', async (req, res) => {
     const offset    = parseInt(req.query.offset) || 0;
 
     // Query messages from database
-    const messages = await messageRepo.getMessagesByConversation(chatId, limit, offset);
+    const messages = await withTimeout(
+      messageRepo.getMessagesByConversation(chatId, limit, offset),
+      4000
+    );
 
     // Transform to match expected frontend format
     const result = {
@@ -284,6 +626,10 @@ app.get('/messages/thread', async (req, res) => {
 
     res.json(result);
   } catch (err) {
+    if (isDatabaseUnavailable(err)) {
+      return res.json({ items: [], cursor: null, hasMore: false });
+    }
+
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
       error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
@@ -302,8 +648,11 @@ app.post('/messages/send', async (req, res) => {
     const result = await runJob('sendMessage', {
       accountId, chatId, text, proxyUrl: process.env.PROXY_URL || null,
     });
-    res.json(result);
+    if (!res.headersSent) {
+      res.json(result);
+    }
   } catch (err) {
+    if (res.headersSent) return;
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
       error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
@@ -322,8 +671,11 @@ app.post('/messages/send-new', async (req, res) => {
     const result = await runJob('sendMessageNew', {
       accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
     });
-    res.json(result);
+    if (!res.headersSent) {
+      res.json(result);
+    }
   } catch (err) {
+    if (res.headersSent) return;
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
       error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
@@ -351,15 +703,18 @@ app.post('/connections/send', async (req, res) => {
   }
 });
 
-// GET /inbox/unified — Query conversations from database (all accounts)
+// GET /inbox/unified â€” Query conversations from database (all accounts)
 app.get('/inbox/unified', async (req, res) => {
   try {
     const messageRepo = require('./db/repositories/MessageRepository');
-    const limit = parseInt(req.query.limit) || 100;
+    const limit = parseLimit(req.query.limit, 100, 200);
     const offset = parseInt(req.query.offset) || 0;
 
     // Query all conversations from database
-    const conversations = await messageRepo.getAllConversations(limit, offset);
+    const conversations = await withTimeout(
+      messageRepo.getAllConversations(limit, offset),
+      4000
+    );
 
     // Transform to match expected frontend format
     const payload = {
@@ -380,8 +735,38 @@ app.get('/inbox/unified', async (req, res) => {
       })),
     };
 
+    if (payload.conversations.length === 0) {
+      const livePayload = await buildUnifiedInboxWithFallback(limit);
+      return res.json(livePayload);
+    }
+
     res.json(payload);
   } catch (err) {
+    if (isDatabaseUnavailable(err)) {
+      try {
+        const livePayload = await buildUnifiedInboxWithFallback(parseLimit(req.query.limit, 100, 200));
+        return res.json(livePayload);
+      } catch (fallbackErr) {
+        if (fallbackErr?.status) {
+          return res.status(fallbackErr.status).json({
+            error: process.env.NODE_ENV === 'production' ? 'Operation failed' : fallbackErr.message,
+            code: fallbackErr.code,
+          });
+        }
+        console.error('[API] Error in fallback unified inbox:', fallbackErr);
+        return res.status(500).json({
+          error: process.env.NODE_ENV === 'production' ? 'Internal error' : fallbackErr.message,
+        });
+      }
+    }
+
+    if (err?.status) {
+      return res.status(err.status).json({
+        error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+        code: err.code,
+      });
+    }
+
     console.error('[API] Error fetching unified inbox:', err);
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
   }
@@ -441,10 +826,10 @@ app.get('/stats/:accountId/activity', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit ?? '50', 10), 200);
     const redis = getRedis();
     const key   = `activity:log:${accountId}`;
-    const total = await redis.llen(key);
+    const total = await redis.llen(key).catch(() => 0);
     const start = page * limit;
     const stop  = start + limit - 1;
-    const raw   = await redis.lrange(key, start, stop);
+    const raw   = await redis.lrange(key, start, stop).catch(() => []);
 
     const entries = raw.map(r => {
       try { return JSON.parse(r); } catch { return null; }
@@ -473,7 +858,7 @@ app.get('/people/search', async (req, res) => {
   }
 });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const http = require('http');
 const { initializeWebSocket } = require('./utils/websocket');
@@ -488,3 +873,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`[API] Worker API listening on port ${PORT}`);
   console.log(`[WebSocket] WebSocket server ready on port ${PORT}`);
 });
+
+

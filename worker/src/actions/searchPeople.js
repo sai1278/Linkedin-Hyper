@@ -25,7 +25,25 @@ async function searchPeople({ accountId, query, proxyUrl, limit = 10 }) {
     page = await context.newPage();
 
     const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(query)}&origin=GLOBAL_SEARCH_HEADER`;
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    try {
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch (navErr) {
+      const msg = navErr instanceof Error ? navErr.message : String(navErr);
+      if (msg.includes('ERR_TOO_MANY_REDIRECTS')) {
+        const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+        err.code = 'SESSION_EXPIRED'; err.status = 401;
+        throw err;
+      }
+      throw navErr;
+    }
+
+    const landingUrl = page.url();
+    if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
+      const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+      err.code = 'SESSION_EXPIRED'; err.status = 401;
+      throw err;
+    }
+
     await delay(2000, 4000);
 
     await page.waitForSelector('.reusable-search__result-container, .search-results-container', {
@@ -67,7 +85,9 @@ async function searchPeople({ accountId, query, proxyUrl, limit = 10 }) {
       return results;
     }, limit);
 
-    await saveCookies(accountId, await context.cookies());
+    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+      await saveCookies(accountId, await context.cookies());
+    }
 
     return profiles; // returns array directly, not wrapped in { items }
   } finally {

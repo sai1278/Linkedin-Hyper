@@ -26,6 +26,7 @@ REDIS_PASSWORD=<output of openssl rand -hex 16>
 
 # Worker only
 SESSION_ENCRYPTION_KEY=<output of openssl rand -hex 32>
+DB_PASSWORD=<output of openssl rand -hex 16>
 ACCOUNT_IDS=alice,bob
 
 # Frontend only
@@ -259,9 +260,9 @@ Enter your domain and email when prompted. The script will:
 - Enable HTTPS
 - Setup auto-renewal
 
-**7. Build and start services:**
+**7. Build and start services (production profile):**
 ```bash
-docker-compose up -d --build
+bash deployment/deploy-prod.sh
 ```
 
 **8. Verify deployment:**
@@ -283,11 +284,11 @@ Navigate to `https://your-domain.com` and login with `DASHBOARD_PASSWORD`.
 **Monitor Services:**
 ```bash
 # View all logs
-docker-compose logs -f
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f
 
 # View specific service
-docker-compose logs -f frontend
-docker-compose logs -f worker
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f frontend
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f worker
 
 # Check health
 bash deployment/healthcheck.sh
@@ -301,16 +302,15 @@ sudo tail -f /var/log/nginx/linkedin-hyper-v-error.log
 ```bash
 cd ~/linkedin-hyper-v
 git pull origin main
-docker-compose down
-docker-compose up -d --build
+bash deployment/deploy-prod.sh
 bash deployment/healthcheck.sh
 ```
 
 **Backup:**
 ```bash
 # Backup Redis data
-docker exec $(docker-compose ps -q redis) redis-cli -a "$REDIS_PASSWORD" BGSAVE
-docker cp $(docker-compose ps -q redis):/data/dump.rdb ./backup-$(date +%Y%m%d).rdb
+docker exec $(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q redis) redis-cli -a "$REDIS_PASSWORD" BGSAVE
+docker cp $(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q redis):/data/dump.rdb ./backup-$(date +%Y%m%d).rdb
 
 # Backup .env file
 cp .env .env.backup-$(date +%Y%m%d)

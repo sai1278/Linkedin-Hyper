@@ -17,13 +17,27 @@ export class WebSocketClient {
     return this._isConnected;
   }
 
+  private normalizeSocketOrigin(rawUrl: string): string {
+    try {
+      const parsed = new URL(rawUrl);
+      // Socket.IO expects HTTP(S) origin; WS(S) can cause client-side edge-case failures.
+      if (parsed.protocol === 'ws:') parsed.protocol = 'http:';
+      if (parsed.protocol === 'wss:') parsed.protocol = 'https:';
+      return parsed.origin;
+    } catch {
+      return rawUrl;
+    }
+  }
+
   connect(url: string): void {
     if (!url || typeof window === 'undefined') return;
     
-    this.url = url;
+    const origin = this.normalizeSocketOrigin(url);
+    this.url = origin;
 
     try {
-      this.socket = io(url, {
+      this.socket = io(origin, {
+        path: '/socket.io',
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionDelay: 1000,
@@ -45,7 +59,9 @@ export class WebSocketClient {
       });
 
       this.socket.on('connect_error', (error) => {
-        console.error('[WebSocket] Connection error:', error.message);
+        // In dev mode this can happen during worker restarts or transport fallback.
+        // Use warn instead of error to avoid noisy Next.js error overlays.
+        console.warn('[WebSocket] Connection warning:', error.message);
         this.reconnectAttempts++;
         this.notifyStatusListeners('reconnecting');
       });

@@ -35,16 +35,30 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
 
     let usedDirectUrl = false;
     if (directUrl) {
-      await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      const composeBox = await page
-        .waitForSelector('.msg-form__contenteditable, [contenteditable][role="textbox"]', { timeout: 8000 })
-        .catch(() => null);
-      usedDirectUrl = !!composeBox;
+      try {
+        await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        const directUrlLanding = page.url();
+        if (!directUrlLanding.includes('/login') && !directUrlLanding.includes('/checkpoint') && !directUrlLanding.includes('/authwall')) {
+          const composeBox = await page
+            .waitForSelector('.msg-form__contenteditable, [contenteditable][role="textbox"]', { timeout: 8000 })
+            .catch(() => null);
+          usedDirectUrl = !!composeBox;
+        }
+      } catch (_) {
+        // Fall back to profile-page flow below.
+        usedDirectUrl = false;
+      }
     }
 
     if (!usedDirectUrl) {
       // Fallback: navigate to recipient's profile page and click "Message"
       await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      const landingUrl = page.url();
+      if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
+        const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+        err.code = 'SESSION_EXPIRED'; err.status = 401;
+        throw err;
+      }
       await delay(2500, 5000); // simulate reading the profile
 
       await humanScroll(page, 200);
@@ -62,7 +76,14 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
         });
       } catch (_) {}
 
-      await humanClick(page, 'button[aria-label*="Message"], a[aria-label*="Message"]', { timeout: 10000 });
+      try {
+        await humanClick(page, 'button[aria-label*="Message"], a[aria-label*="Message"]', { timeout: 10000 });
+      } catch (_) {
+        const err = new Error('Could not open message composer from profile. Ensure target profile is messageable and you are connected.');
+        err.code = 'NOT_MESSAGEABLE';
+        err.status = 400;
+        throw err;
+      }
       await delay(1500, 3000);
     }
 
@@ -80,7 +101,9 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     const idMatch  = finalUrl.match(/\/messaging\/thread\/([^/?]+)/);
     const chatId   = idMatch ? idMatch[1] : `new-${Date.now()}`; // fallback if no redirect
 
-    await saveCookies(accountId, await context.cookies());
+    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+      await saveCookies(accountId, await context.cookies());
+    }
 
     const msgId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -90,6 +113,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
       accountId,
       targetName: participantName,
       targetProfileUrl: profileUrl, // correct: real profile URL
+      textPreview: (text || '').slice(0, 200),
       messageLength: text ? text.length : 0,
       timestamp: Date.now(),
     });

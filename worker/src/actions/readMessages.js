@@ -24,10 +24,27 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
     }
     page = await context.newPage();
 
-    await page.goto('https://www.linkedin.com/messaging/', {
-      waitUntil: 'domcontentloaded',
-      timeout:   30000,
-    });
+    try {
+      await page.goto('https://www.linkedin.com/messaging/', {
+        waitUntil: 'domcontentloaded',
+        timeout:   30000,
+      });
+    } catch (navErr) {
+      const msg = navErr instanceof Error ? navErr.message : String(navErr);
+      if (msg.includes('ERR_TOO_MANY_REDIRECTS')) {
+        const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+        err.code = 'SESSION_EXPIRED'; err.status = 401;
+        throw err;
+      }
+      throw navErr;
+    }
+
+    const landingUrl = page.url();
+    if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
+      const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+      err.code = 'SESSION_EXPIRED'; err.status = 401;
+      throw err;
+    }
 
     // Wait for the actual thread list instead of sleeping blindly.
     // Falls back gracefully if the selector never appears (e.g. empty inbox).
@@ -48,7 +65,7 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
         '.msg-conversation-listitem, [data-view-name="messaging-thread-list-item"]'
       );
 
-      for (const thread of Array.from(threads).slice(0, maxItems)) {
+      for (const [idx, thread] of Array.from(threads).slice(0, maxItems).entries()) {
         try {
           const nameEl    = thread.querySelector('.msg-conversation-listitem__participant-names, .truncate');
           const previewEl = thread.querySelector('.msg-conversation-listitem__message-snippet, .truncate.t-12');
@@ -57,9 +74,9 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
           const linkEl    = thread.closest('a') || thread.querySelector('a');
           const avatarEl  = thread.querySelector('img');
 
-          const href    = linkEl?.href || '';
-          const idMatch = href.match(/\/messaging\/thread\/([^/]+)/);
-          const chatId  = idMatch ? idMatch[1] : `unknown-${Date.now()}`;
+          const href = linkEl?.href || '';
+          const idMatch = href.match(/\/messaging\/thread\/([^/?]+)/);
+          const chatId = idMatch ? idMatch[1] : `unknown-${Date.now()}-${idx}`;
 
           items.push({
             id:           chatId,
@@ -89,7 +106,9 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
     // Inject accountId server-side — not available inside browser context
     chats.forEach((c) => { c.accountId = accountId; });
 
-    await saveCookies(accountId, await context.cookies());
+    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+      await saveCookies(accountId, await context.cookies());
+    }
 
     return { items: chats, cursor: null, hasMore: false };
   } finally {
