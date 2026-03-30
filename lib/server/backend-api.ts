@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const API_URL    = process.env.API_URL    ?? 'http://localhost:3001';
+const API_URL = process.env.API_URL ?? 'http://localhost:3001';
 const API_SECRET = process.env.API_SECRET ?? '';
 
 /**
  * Authenticate incoming requests to the BFF.
  * Enforces Same-Origin and optional API_ROUTE_AUTH_TOKEN.
- * Supports TRUSTED_ORIGINS for Ngrok/reverse-proxy setups.
+ * Supports TRUSTED_ORIGINS for reverse-proxy setups.
  */
 export function authenticateCaller(req: NextRequest): NextResponse | null {
-  // 1. Origin check — skip if no origin header (SSR/server calls have none)
+  // 1. Origin check - skip if no origin header (SSR/server calls have none)
   const origin = req.headers.get('origin');
   if (origin) {
     const requestOrigin = req.nextUrl.origin;
@@ -24,17 +24,21 @@ export function authenticateCaller(req: NextRequest): NextResponse | null {
     }
   }
 
-  // 2. Sec-Fetch-Site present → must be same-origin, same-site, or none
+  // 2. Sec-Fetch-Site present -> must be same-origin, same-site, or none
   const secFetchSite = req.headers.get('sec-fetch-site');
   if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
     return NextResponse.json({ error: 'Forbidden: Invalid Sec-Fetch-Site' }, { status: 403 });
   }
 
-  // 3. API_ROUTE_AUTH_TOKEN if set → Bearer must match
-  const expectedToken = process.env.API_ROUTE_AUTH_TOKEN;
+  // 3. API_ROUTE_AUTH_TOKEN if set:
+  // Allow either a matching bearer token (service calls) OR a session cookie (browser UI).
+  const expectedToken = process.env.API_ROUTE_AUTH_TOKEN?.trim();
   if (expectedToken) {
     const authHeader = req.headers.get('authorization');
-    if (!authHeader || authHeader !== `Bearer ${expectedToken}`) {
+    const hasValidBearer = authHeader === `Bearer ${expectedToken}`;
+    const hasSessionCookie = Boolean(req.cookies.get('app_session')?.value);
+
+    if (!hasValidBearer && !hasSessionCookie) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
   }
@@ -56,7 +60,7 @@ interface ForwardOptions {
  */
 export async function forwardToBackend(opts: ForwardOptions): Promise<NextResponse> {
   const { method, path, query, body } = opts;
-  const qs  = query ? `?${query.toString()}` : '';
+  const qs = query ? `?${query.toString()}` : '';
   const url = `${API_URL}${path}${qs}`;
 
   try {
