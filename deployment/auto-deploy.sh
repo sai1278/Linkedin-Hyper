@@ -147,6 +147,17 @@ if [[ -z "$DB_PASSWORD_VALUE" ]]; then
 fi
 
 DATABASE_URL_VALUE="postgresql://linkedinuser:${DB_PASSWORD_VALUE}@postgres:5432/linkedin_db"
+
+echo "Aligning database password with .env..."
+DB_PASSWORD_SQL="${DB_PASSWORD_VALUE//\'/''}"
+if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T postgres sh -lc \
+  "psql -v ON_ERROR_STOP=1 -U linkedinuser -d linkedin_db -c \"ALTER USER \\\"linkedinuser\\\" WITH PASSWORD '${DB_PASSWORD_SQL}';\"" >/dev/null 2>&1; then
+  echo "Could not update existing postgres password. Recreating postgres data volume..."
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file "$ENV_FILE" down -v
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file "$ENV_FILE" up -d --build
+  sleep 8
+fi
+
 docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T worker \
   npx prisma db push --schema=prisma/schema.prisma --url="$DATABASE_URL_VALUE"
 
