@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { signToken } from '@/lib/auth/jwt';
+import { shouldUseSecureCookie } from '@/lib/auth/cookie';
 
 export async function POST(req: NextRequest) {
   try {
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
     
     response.cookies.set('app_session', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: shouldUseSecureCookie(req),
       sameSite: 'strict',
       maxAge: parseInt(process.env.SESSION_MAX_AGE || '86400', 10),
       path: '/',

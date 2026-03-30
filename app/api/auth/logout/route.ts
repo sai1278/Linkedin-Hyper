@@ -1,6 +1,7 @@
 // FILE: app/api/auth/logout/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, blacklistToken } from '@/lib/auth/session';
+import { shouldUseSecureCookie } from '@/lib/auth/cookie';
 
 export async function POST(req: NextRequest) {
   try {
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
     // Clear the cookie
     response.cookies.set('app_session', '', {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: shouldUseSecureCookie(req),
       sameSite: 'strict',
       maxAge: 0,
       path: '/',
