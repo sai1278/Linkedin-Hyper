@@ -1,5 +1,5 @@
 services:
-  # PostgreSQL database for persistent message storage
+  # PostgreSQL database for persistent message storage.
   postgres:
     image: postgres:16-alpine
     environment:
@@ -16,12 +16,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # Internal only - not exposed to host
-    # Use for debugging: ports: - "5432:5432"
 
   redis:
     image: redis:alpine
-    # FIXED: added requirepass — never run Redis without auth in production
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD}
@@ -29,8 +26,6 @@ services:
       --maxmemory-policy noeviction
     ports:
       - "6379:6379"
-    # FIXED: removed host port exposure — Redis must be internal only
-    # ports: - "6379:6379"   ← do NOT expose Redis to host
     restart: always
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
@@ -41,34 +36,31 @@ services:
   worker:
     build:
       context: ./worker
-    shm_size: '1gb'   # NON-NEGOTIABLE — Chrome uses /dev/shm
+    shm_size: "1gb"
     environment:
-      # FIXED: added all 3 Redis vars (worker reads these separately, NOT REDIS_URL)
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
-      # FIXED: added SESSION_ENCRYPTION_KEY — fatal throw without it
       - SESSION_ENCRYPTION_KEY=${SESSION_ENCRYPTION_KEY}
       - ACCOUNT_IDS=${ACCOUNT_IDS:-}
       - API_SECRET=${API_SECRET}
-      #- API_KEY = ${API_KEY}
       - PROXY_URL=${PROXY_URL:-}
       - HTTP_PROXY=${PROXY_URL:-}
       - HTTPS_PROXY=${PROXY_URL:-}
       - DATABASE_URL=postgresql://linkedinuser:${DB_PASSWORD}@postgres:5432/linkedin_db
+      - POSTGRES_URL=postgresql://linkedinuser:${DB_PASSWORD}@postgres:5432/linkedin_db
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
     restart: always
-    # A5 — Resource limits so a runaway Chrome can't OOM the host
     deploy:
       resources:
         limits:
           memory: 2g
-          cpus: '1.5'
+          cpus: "1.5"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 15s
@@ -78,29 +70,27 @@ services:
   frontend:
     build:
       context: .
-    ports:
-      - "3000:3000"
+    # Keep ports in override files to avoid duplicate publish rules
+    # when using multiple compose files (base + prod).
     environment:
-      # FIXED: API_URL points to internal worker hostname
       - API_URL=http://worker:3001
       - API_SECRET=${API_SECRET}
       - PROXY_AUTH_TOKENS=${PROXY_AUTH_TOKENS}
-      #- API_KEY=${API_KEY}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
       - API_ROUTE_AUTH_TOKEN=${API_ROUTE_AUTH_TOKEN}
       - PROXY_AUTH_COOKIE_NAME=${PROXY_AUTH_COOKIE_NAME}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
-      # Dashboard authentication (NEW)
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
       - JWT_SECRET=${JWT_SECRET}
       - SESSION_MAX_AGE=${SESSION_MAX_AGE}
       - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+      - DATABASE_URL=postgresql://linkedinuser:${DB_PASSWORD}@postgres:5432/linkedin_db
+      - POSTGRES_URL=postgresql://linkedinuser:${DB_PASSWORD}@postgres:5432/linkedin_db
     depends_on:
       worker:
         condition: service_healthy
     restart: always
 
-# Persistent volumes
 volumes:
   postgres_data:
     driver: local
