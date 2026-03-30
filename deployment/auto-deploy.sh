@@ -140,8 +140,17 @@ echo "Waiting for worker..."
 sleep 8
 
 echo "Running Prisma db push..."
-docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T worker \
-  npx prisma db push --schema=prisma/schema.prisma
+DB_PASSWORD_VALUE="$(grep -E '^[[:space:]]*DB_PASSWORD[[:space:]]*=' "$ENV_FILE" | tail -n 1 | sed -E 's/^[[:space:]]*DB_PASSWORD[[:space:]]*=[[:space:]]*//')"
+if [[ -z "$DB_PASSWORD_VALUE" ]]; then
+  echo "FATAL: DB_PASSWORD is empty in ${ENV_FILE}"
+  exit 1
+fi
+
+DATABASE_URL_VALUE="postgresql://linkedinuser:${DB_PASSWORD_VALUE}@postgres:5432/linkedin_db"
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T \
+  -e DATABASE_URL="$DATABASE_URL_VALUE" \
+  -e POSTGRES_URL="$DATABASE_URL_VALUE" \
+  worker npx prisma db push --schema=prisma/schema.prisma
 
 echo
 echo "Deployment status:"
