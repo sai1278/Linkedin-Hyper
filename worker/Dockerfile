@@ -19,6 +19,7 @@ RUN npm install --omit=dev
 
 # Prisma client must be generated inside the image.
 COPY prisma/ ./prisma/
+COPY prisma.config.ts ./prisma.config.ts
 RUN npx prisma generate --schema=prisma/schema.prisma
 
 COPY entrypoint.sh ./

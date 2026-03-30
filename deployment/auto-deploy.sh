@@ -147,10 +147,8 @@ if [[ -z "$DB_PASSWORD_VALUE" ]]; then
 fi
 
 DATABASE_URL_VALUE="postgresql://linkedinuser:${DB_PASSWORD_VALUE}@postgres:5432/linkedin_db"
-docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T \
-  -e DATABASE_URL="$DATABASE_URL_VALUE" \
-  -e POSTGRES_URL="$DATABASE_URL_VALUE" \
-  worker npx prisma db push --schema=prisma/schema.prisma
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T worker \
+  npx prisma db push --schema=prisma/schema.prisma --url="$DATABASE_URL_VALUE"
 
 echo
 echo "Deployment status:"
