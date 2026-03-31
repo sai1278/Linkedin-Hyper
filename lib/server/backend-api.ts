@@ -9,9 +9,12 @@ const API_SECRET = process.env.API_SECRET ?? '';
  * Supports TRUSTED_ORIGINS for reverse-proxy setups.
  */
 export function authenticateCaller(req: NextRequest): NextResponse | null {
+  const hasSessionCookie = Boolean(req.cookies.get('app_session')?.value);
+
   // 1. Origin check - skip if no origin header (SSR/server calls have none)
+  // Also skip strict Origin validation when user has a dashboard session cookie.
   const origin = req.headers.get('origin');
-  if (origin) {
+  if (origin && !hasSessionCookie) {
     const requestOrigin = req.nextUrl.origin;
     const trustedOrigins = (process.env.TRUSTED_ORIGINS ?? '')
       .split(',')
@@ -25,8 +28,13 @@ export function authenticateCaller(req: NextRequest): NextResponse | null {
   }
 
   // 2. Sec-Fetch-Site present -> must be same-origin, same-site, or none
+  // Skip this strict check for authenticated dashboard session cookie traffic.
   const secFetchSite = req.headers.get('sec-fetch-site');
-  if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
+  if (
+    secFetchSite &&
+    !hasSessionCookie &&
+    !['same-origin', 'same-site', 'none'].includes(secFetchSite)
+  ) {
     return NextResponse.json({ error: 'Forbidden: Invalid Sec-Fetch-Site' }, { status: 403 });
   }
 
@@ -36,7 +44,6 @@ export function authenticateCaller(req: NextRequest): NextResponse | null {
   if (expectedToken) {
     const authHeader = req.headers.get('authorization');
     const hasValidBearer = authHeader === `Bearer ${expectedToken}`;
-    const hasSessionCookie = Boolean(req.cookies.get('app_session')?.value);
 
     if (!hasValidBearer && !hasSessionCookie) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
