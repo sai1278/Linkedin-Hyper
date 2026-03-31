@@ -7,6 +7,7 @@ param(
   [int]$CaptureTimeoutSec = 240,
   [string]$CaptureProfile = "",
   [string]$ApiKey = "dev-api-secret-key-change-in-production",
+  [string]$RouteAuthToken = "",
   [string]$BaseUrl = "http://localhost:3001"
 )
 
@@ -194,6 +195,9 @@ try {
 
   $body = $cookies | ConvertTo-Json -Depth 8 -Compress
   $headers = @{ "X-Api-Key" = $ApiKey }
+  if ($RouteAuthToken -and $RouteAuthToken.Trim()) {
+    $headers["Authorization"] = "Bearer $RouteAuthToken"
+  }
 
   Write-Host "Importing cookies for account '$AccountId' from '$($selected.path)'..."
   $import = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/session" -Headers $headers -ContentType "application/json" -Body $body

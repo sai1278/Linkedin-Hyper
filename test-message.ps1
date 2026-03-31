@@ -4,6 +4,7 @@ param(
   [string]$Text = "Hi, test message from automation",
   [switch]$AutoUseActiveAccount = $true,
   [string]$ApiKey = "dev-api-secret-key-change-in-production",
+  [string]$RouteAuthToken = "",
   [string]$BaseUrl = "http://localhost:3001"
 )
 
@@ -28,6 +29,9 @@ function Invoke-Api {
   )
 
   $headers = @{ "X-Api-Key" = $ApiKey }
+  if ($RouteAuthToken -and $RouteAuthToken.Trim()) {
+    $headers["Authorization"] = "Bearer $RouteAuthToken"
+  }
 
   try {
     if ($BodyJson) {
