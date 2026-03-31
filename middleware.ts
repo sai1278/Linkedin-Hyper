@@ -7,6 +7,12 @@ const publicPaths = ['/login', '/api/auth/login', '/api/auth/logout'];
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   
+  // API routes are protected by route-level auth checks (backend-api.ts).
+  // Do not redirect API requests to /login, or non-browser clients will get 405.
+  if (pathname.startsWith('/api')) {
+    return NextResponse.next();
+  }
+
   // Allow public paths
   if (publicPaths.some(path => pathname.startsWith(path))) {
     return NextResponse.next();

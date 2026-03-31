@@ -58,7 +58,14 @@ function Invoke-Api {
 
 function Get-ActiveAccountIds {
   $accountsResponse = Invoke-Api -Method "GET" -Uri "$BaseUrl/accounts"
-  if (-not $accountsResponse -or -not $accountsResponse.accounts) {
+  if (-not $accountsResponse) {
+    return @()
+  }
+  $hasAccountsProperty = $accountsResponse.PSObject.Properties.Name -contains 'accounts'
+  if (-not $hasAccountsProperty) {
+    throw "Unexpected response from $BaseUrl/accounts (missing 'accounts'). Ensure server is updated and API routes are accessible."
+  }
+  if (-not $accountsResponse.accounts) {
     return @()
   }
   return @($accountsResponse.accounts | Where-Object { $_.isActive } | ForEach-Object { $_.id })
