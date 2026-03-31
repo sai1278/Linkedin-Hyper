@@ -531,9 +531,27 @@ async function runJob(name, data, timeoutMs = 120_000) {
       toErr.status   = 504;
       throw toErr;
     }
-    const failErr  = new Error(job.failedReason || err.message || 'Job failed');
-    failErr.code   = job.data?.code;
-    failErr.status = job.data?.status || 500;
+    const reason = String(job.failedReason || err?.message || 'Job failed');
+    const failErr  = new Error(reason);
+
+    // Preserve explicit codes if available.
+    failErr.code = err?.code || job?.failedReasonCode || undefined;
+    failErr.status = err?.status || 500;
+
+    // BullMQ often stores only failedReason (message string), so infer safe codes.
+    if (!failErr.code) {
+      if (reason.includes('Session expired for account')) {
+        failErr.code = 'SESSION_EXPIRED';
+        failErr.status = 401;
+      } else if (reason.includes('No session for account')) {
+        failErr.code = 'NO_SESSION';
+        failErr.status = 401;
+      } else if (reason.includes('All LinkedIn sessions are missing or expired')) {
+        failErr.code = 'NO_ACTIVE_SESSION';
+        failErr.status = 401;
+      }
+    }
+
     throw failErr;
   }
 }
