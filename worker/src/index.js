@@ -106,6 +106,28 @@ async function withTimeout(promise, timeoutMs, code = 'DB_TIMEOUT') {
   }
 }
 
+function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
+  if (process.env.NODE_ENV !== 'production') {
+    return err?.message || fallbackMessage;
+  }
+
+  // Safe, actionable errors that help operators without exposing sensitive details.
+  const safeCodes = new Set([
+    'NO_ACTIVE_SESSION',
+    'NO_SESSION',
+    'SESSION_EXPIRED',
+    'NOT_MESSAGEABLE',
+    'QUEUE_UNAVAILABLE',
+    'READ_INBOX_TIMEOUT',
+  ]);
+
+  if (err?.code && safeCodes.has(err.code) && err?.message) {
+    return err.message;
+  }
+
+  return fallbackMessage;
+}
+
 // â”€â”€ Health (no auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function buildUnifiedInboxFromActivity(limit = 100) {
@@ -573,7 +595,7 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
-      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      error: toPublicOperationError(err),
       code: err.code,
     });
   }
@@ -590,7 +612,7 @@ app.get('/messages/inbox', async (req, res) => {
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
-      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      error: toPublicOperationError(err),
       code: err.code,
     });
   }
@@ -632,7 +654,7 @@ app.get('/messages/thread', async (req, res) => {
 
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
-      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      error: toPublicOperationError(err),
       code: err.code,
     });
   }
@@ -655,7 +677,7 @@ app.post('/messages/send', async (req, res) => {
     if (res.headersSent) return;
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
-      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      error: toPublicOperationError(err),
       code: err.code,
     });
   }
@@ -678,7 +700,7 @@ app.post('/messages/send-new', async (req, res) => {
     if (res.headersSent) return;
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
-      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      error: toPublicOperationError(err),
       code: err.code,
     });
   }
@@ -697,7 +719,7 @@ app.post('/connections/send', async (req, res) => {
   } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
-      error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+      error: toPublicOperationError(err),
       code: err.code,
     });
   }
@@ -749,7 +771,7 @@ app.get('/inbox/unified', async (req, res) => {
       } catch (fallbackErr) {
         if (fallbackErr?.status) {
           return res.status(fallbackErr.status).json({
-            error: process.env.NODE_ENV === 'production' ? 'Operation failed' : fallbackErr.message,
+            error: toPublicOperationError(fallbackErr),
             code: fallbackErr.code,
           });
         }
@@ -762,7 +784,7 @@ app.get('/inbox/unified', async (req, res) => {
 
     if (err?.status) {
       return res.status(err.status).json({
-        error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message,
+        error: toPublicOperationError(err),
         code: err.code,
       });
     }
@@ -854,7 +876,7 @@ app.get('/people/search', async (req, res) => {
     });
     res.json(result);
   } catch (err) {
-    res.status(err.status || 500).json({ error: process.env.NODE_ENV === 'production' ? 'Operation failed' : err.message, code: err.code });
+    res.status(err.status || 500).json({ error: toPublicOperationError(err), code: err.code });
   }
 });
 

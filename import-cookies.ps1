@@ -2,6 +2,7 @@ param(
   [Parameter(Mandatory = $true)][string]$AccountId,
   [string]$CookieFile = "",
   [switch]$AutoCapture,
+  [switch]$UseLiveProfile,
   [ValidateSet("chrome", "edge")][string]$Browser = "chrome",
   [int]$CaptureTimeoutSec = 240,
   [string]$CaptureProfile = "",
@@ -139,9 +140,13 @@ function Invoke-AutoCapture {
     $captureScript,
     "--browser", $Browser,
     "--timeoutSec", $CaptureTimeoutSec.ToString(),
-    "--output", $OutputFile,
-    "--use-temp-copy"
+    "--output", $OutputFile
   )
+  if (-not $UseLiveProfile) {
+    $args += @("--use-temp-copy")
+  } else {
+    $args += @("--use-live-profile")
+  }
   if ($CaptureProfile -and $CaptureProfile.Trim()) {
     $args += @("--profile", $CaptureProfile)
   }
