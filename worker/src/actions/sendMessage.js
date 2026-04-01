@@ -6,8 +6,54 @@ const { delay, humanClick, humanType } = require('../humanBehavior');
 const { checkAndIncrement } = require('../rateLimit');
 const { getRedis } = require('../redisClient');
 
+function normalizeText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isGenericUiLabel(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized) return true;
+
+  if (/^\d+$/.test(normalized)) return true;
+  if (/^\d+\s*(notification|notifications|message|messages)$/.test(normalized)) return true;
+
+  const blocked = new Set([
+    'unknown',
+    'inbox',
+    'messages',
+    'activity',
+    'notifications',
+    'notifications total',
+    'loading',
+    'linkedin',
+    'feed',
+    'search',
+  ]);
+  return blocked.has(normalized);
+}
+
+function deriveNameFromProfileUrl(profileUrl) {
+  const match = String(profileUrl || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
+  if (!match?.[1]) return 'Unknown';
+
+  const slugName = normalizeText(
+    decodeURIComponent(match[1])
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\d+\b/g, '')
+  );
+  return slugName || 'Unknown';
+}
+
+function normalizeParticipantName(candidate, profileUrl) {
+  const parsed = normalizeText(candidate);
+  if (parsed && !isGenericUiLabel(parsed)) {
+    return parsed;
+  }
+  return deriveNameFromProfileUrl(profileUrl);
+}
+
 async function verifyMessageEcho(page, text, timeoutMs = 12000) {
-  const target = String(text || '').replace(/\s+/g, ' ').trim();
+  const target = normalizeText(text);
   if (!target) return true;
 
   try {
@@ -98,7 +144,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
       const nameEl = await page.$('.msg-thread__name, .msg-entity-lockup__entity-title');
       if (nameEl) {
         const nameText = await nameEl.textContent();
-        if (nameText) participantName = nameText.trim();
+        if (nameText) participantName = normalizeText(nameText);
 
         const linkEl = await page.$(
           '.msg-entity-lockup__entity-title-container a[href*="/in/"], .msg-thread__link[href*="/in/"]'
@@ -109,6 +155,8 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
         }
       }
     } catch (_) {}
+
+    participantName = normalizeParticipantName(participantName, profileUrl);
 
     const redis = getRedis();
     const entry = JSON.stringify({

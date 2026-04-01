@@ -6,6 +6,7 @@ import { getAccounts, getAccountActivity } from '@/lib/api-client';
 import { ConnectionGrid } from '@/components/connections/ConnectionGrid';
 import { Spinner } from '@/components/ui/Spinner';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { deriveDisplayName } from '@/lib/display-name';
 
 export default function ConnectionsPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -35,7 +36,7 @@ export default function ConnectionsPage() {
             .filter((e) => e.type === 'connectionSent')
             .map((e): Connection => ({
               accountId:   a.id,
-              name:        e.targetName,
+              name:        deriveDisplayName(e.targetName, e.targetProfileUrl || ''),
               profileUrl:  e.targetProfileUrl,
               connectedAt: e.timestamp,
             }));

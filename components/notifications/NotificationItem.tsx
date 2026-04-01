@@ -4,6 +4,7 @@ import type { ActivityEntry } from '@/types/dashboard';
 import { Avatar } from '@/components/ui/Avatar';
 import { AccountBadge } from '@/components/ui/AccountBadge';
 import { timeAgo } from '@/lib/utils';
+import { deriveDisplayName } from '@/lib/display-name';
 import { MessageSquare, UserPlus, Eye } from 'lucide-react';
 
 const TYPE_META: Record<
@@ -23,6 +24,7 @@ const TYPE_META: Record<
 export function NotificationRow({ entry }: { entry: ActivityEntry }) {
   const meta = TYPE_META[entry.type];
   const Icon = meta.icon;
+  const displayName = deriveDisplayName(entry.targetName, entry.targetProfileUrl || '');
 
   return (
     <div
@@ -37,7 +39,7 @@ export function NotificationRow({ entry }: { entry: ActivityEntry }) {
     >
       {/* Avatar with type icon overlay at bottom-right */}
       <div className="relative flex-shrink-0">
-        <Avatar name={entry.targetName} size="sm" />
+        <Avatar name={displayName} size="sm" />
         <span
           className="absolute -bottom-0.5 -right-0.5 rounded-full p-0.5"
           style={{ background: 'var(--bg-panel)' }}
@@ -50,7 +52,7 @@ export function NotificationRow({ entry }: { entry: ActivityEntry }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-            {entry.targetName}
+            {displayName}
           </span>
           <AccountBadge name={entry.accountId} />
         </div>

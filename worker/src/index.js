@@ -164,6 +164,28 @@ function normalizeWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function isGenericUiLabel(value) {
+  const normalized = normalizeWhitespace(value).toLowerCase();
+  if (!normalized) return true;
+
+  if (/^\d+$/.test(normalized)) return true;
+  if (/^\d+\s*(notification|notifications|message|messages)$/.test(normalized)) return true;
+
+  const blocked = [
+    'unknown',
+    'inbox',
+    'messages',
+    'activity',
+    'notifications',
+    'notifications total',
+    'loading',
+    'linkedin',
+    'feed',
+    'search',
+  ];
+  return blocked.includes(normalized);
+}
+
 function deriveNameFromProfileUrl(profileUrl) {
   const match = String(profileUrl || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
   if (!match?.[1]) return '';
@@ -177,7 +199,7 @@ function deriveNameFromProfileUrl(profileUrl) {
 
 function normalizeParticipantName(name, profileUrl) {
   const parsedName = normalizeWhitespace(name);
-  if (parsedName && parsedName.toLowerCase() !== 'unknown') {
+  if (parsedName && !isGenericUiLabel(parsedName)) {
     return parsedName;
   }
   return deriveNameFromProfileUrl(profileUrl) || 'Unknown';
@@ -1075,7 +1097,13 @@ app.get('/stats/:accountId/activity', async (req, res) => {
 
     const entries = raw.map(r => {
       try { return JSON.parse(r); } catch { return null; }
-    }).filter(Boolean);
+    }).filter(Boolean).map((entry) => {
+      const profileUrl = String(entry.targetProfileUrl || '');
+      return {
+        ...entry,
+        targetName: normalizeParticipantName(entry.targetName, profileUrl),
+      };
+    });
 
     res.json({ entries, total });
   } catch (err) {

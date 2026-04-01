@@ -3,6 +3,7 @@
 
 import { MessageSquare, UserPlus, Eye, ExternalLink } from 'lucide-react';
 import type { ActivityEntry } from '@/types/dashboard';
+import { deriveDisplayName } from '@/lib/display-name';
 
 interface RecentActivityProps {
   activities: ActivityEntry[];
@@ -77,6 +78,7 @@ export function RecentActivity({ activities }: RecentActivityProps) {
       <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
         {activities.slice(0, 10).map((activity, index) => {
           const Icon = getIcon(activity.type);
+          const displayName = deriveDisplayName(activity.targetName, activity.targetProfileUrl || '');
           
           return (
             <div
@@ -101,7 +103,7 @@ export function RecentActivity({ activities }: RecentActivityProps) {
                 </div>
                 <div className="flex items-center gap-2">
                   <p className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
-                    {activity.targetName}
+                    {displayName}
                   </p>
                   {activity.targetProfileUrl && (
                     <a

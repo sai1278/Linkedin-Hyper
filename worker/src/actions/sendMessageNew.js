@@ -10,6 +10,28 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function isGenericUiLabel(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized) return true;
+
+  if (/^\d+$/.test(normalized)) return true;
+  if (/^\d+\s*(notification|notifications|message|messages)$/.test(normalized)) return true;
+
+  const blocked = new Set([
+    'unknown',
+    'inbox',
+    'messages',
+    'activity',
+    'notifications',
+    'notifications total',
+    'loading',
+    'linkedin',
+    'feed',
+    'search',
+  ]);
+  return blocked.has(normalized);
+}
+
 function slugToName(slug) {
   return normalizeText(
     String(slug || '')
@@ -23,6 +45,14 @@ function deriveNameFromProfileUrl(profileUrl) {
   if (!match?.[1]) return 'Unknown';
   const name = slugToName(match[1]);
   return name || 'Unknown';
+}
+
+function normalizeParticipantName(candidate, profileUrl) {
+  const parsed = normalizeText(candidate);
+  if (parsed && !isGenericUiLabel(parsed)) {
+    return parsed;
+  }
+  return deriveNameFromProfileUrl(profileUrl);
 }
 
 async function verifyMessageEcho(page, text, timeoutMs = 12000) {
@@ -70,7 +100,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     page = await context.newPage();
 
     // W3 — Try the direct messaging URL first to avoid loading the heavy profile page.
-    let participantName = deriveNameFromProfileUrl(profileUrl);
+    let participantName = normalizeParticipantName('', profileUrl);
     const memberIdMatch = profileUrl.match(/\/in\/([^/?#]+)/);
     const directUrl = memberIdMatch
       ? `https://www.linkedin.com/messaging/thread/new/?recipient=${memberIdMatch[1]}`
@@ -96,9 +126,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
                 );
                 return normalize(nameEl?.textContent);
               });
-              if (nameFromComposer && nameFromComposer !== 'Unknown') {
-                participantName = nameFromComposer;
-              }
+              participantName = normalizeParticipantName(nameFromComposer, profileUrl);
             } catch (_) {}
           }
         }
@@ -124,7 +152,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
 
       // Extract profile name near the Message button
       try {
-        participantName = await page.evaluate((fallbackName) => {
+        const candidateName = await page.evaluate((fallbackName) => {
           const messageButton = document.querySelector('button[aria-label*="Message"], a[aria-label*="Message"]');
           const nearestCard   = messageButton?.closest('.pv-top-card, .ph5, .artdeco-card, main, section');
           const scopedName    = nearestCard?.querySelector('h1, [data-anonymize="person-name"], .text-heading-xlarge');
@@ -133,6 +161,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
           const raw = scopedName?.textContent || fallbackEl?.textContent || '';
           return normalize(raw) || fallbackName || 'Unknown';
         }, participantName);
+        participantName = normalizeParticipantName(candidateName, profileUrl);
       } catch (_) {}
 
       try {
@@ -206,7 +235,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     const entry = JSON.stringify({
       type: 'messageSent',
       accountId,
-      targetName: participantName,
+      targetName: normalizeParticipantName(participantName, profileUrl),
       targetProfileUrl: profileUrl, // correct: real profile URL
       textPreview: (text || '').slice(0, 200),
       messageLength: text ? text.length : 0,

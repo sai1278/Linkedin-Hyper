@@ -1,26 +1,7 @@
 import type { Account, Conversation, ActivityEntry, Message } from '@/types/dashboard';
+import { deriveDisplayName } from '@/lib/display-name';
 
 const BASE = '/api';
-
-function normalizeName(value: string): string {
-  return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
-function deriveDisplayName(name: string, profileUrl: string): string {
-  const normalized = normalizeName(name);
-  if (normalized && normalized.toLowerCase() !== 'unknown') {
-    return normalized;
-  }
-
-  const match = String(profileUrl || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
-  if (!match?.[1]) return 'Unknown';
-  const fromSlug = normalizeName(
-    decodeURIComponent(match[1])
-      .replace(/[-_]+/g, ' ')
-      .replace(/\b\d+\b/g, '')
-  );
-  return fromSlug || 'Unknown';
-}
 
 // B1 — Tiered caching strategy per route:
 //  /accounts          → revalidate 300 s (rarely changes)
