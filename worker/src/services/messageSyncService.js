@@ -101,9 +101,12 @@ async function syncAccount(accountId, proxyUrl = null) {
 
         // Extract conversation data
         const conversationId = conv.id;
-        const participantName = conv.participants[0]?.name || 'Unknown';
-        const participantProfileUrl = conv.participants[0]?.profileUrl || null;
+        let participantName = conv.participants[0]?.name || 'Unknown';
+        let participantProfileUrl = conv.participants[0]?.profileUrl || null;
         const participantAvatarUrl = conv.participants[0]?.avatarUrl || null;
+        const initialLastMessageAt = new Date(conv.lastMessage?.createdAt || conv.createdAt || Date.now());
+        const initialLastMessageText = conv.lastMessage?.text || '';
+        const initialLastMessageSentByMe = conv.lastMessage?.senderId === '__self__';
 
         // Upsert conversation
         await withTimeout(messageRepo.upsertConversation({
@@ -112,15 +115,50 @@ async function syncAccount(accountId, proxyUrl = null) {
           participantName,
           participantProfileUrl,
           participantAvatarUrl,
-          lastMessageAt: new Date(conv.lastMessage?.createdAt || conv.createdAt || Date.now()),
-          lastMessageText: conv.lastMessage?.text || '',
-          lastMessageSentByMe: conv.lastMessage?.senderId === '__self__',
+          lastMessageAt: initialLastMessageAt,
+          lastMessageText: initialLastMessageText,
+          lastMessageSentByMe: initialLastMessageSentByMe,
         }), 4000);
         stats.updatedConversations++;
 
         // Fetch thread messages
         console.log(`[MessageSync] Fetching messages for conversation ${conversationId}...`);
         const threadData = await readThread({ accountId, chatId: conversationId, proxyUrl, limit: 100 });
+
+        // Enrich missing participant metadata from thread page.
+        const threadParticipantName = threadData?.participant?.name;
+        const threadParticipantProfileUrl = threadData?.participant?.profileUrl || null;
+        if (threadParticipantName && threadParticipantName !== 'Unknown' && participantName === 'Unknown') {
+          participantName = threadParticipantName;
+        }
+        if (threadParticipantProfileUrl && !participantProfileUrl) {
+          participantProfileUrl = threadParticipantProfileUrl;
+        }
+        if ((!participantName || participantName === 'Unknown') && Array.isArray(threadData?.items)) {
+          const firstOther = threadData.items.find(
+            (msg) => msg?.senderId !== '__self__' && msg?.senderName && msg.senderName !== 'Unknown'
+          );
+          if (firstOther?.senderName) {
+            participantName = firstOther.senderName;
+          }
+        }
+
+        // Persist enriched metadata if we improved anything.
+        if (
+          participantName !== (conv.participants[0]?.name || 'Unknown') ||
+          participantProfileUrl !== (conv.participants[0]?.profileUrl || null)
+        ) {
+          await withTimeout(messageRepo.upsertConversation({
+            id: conversationId,
+            accountId,
+            participantName,
+            participantProfileUrl,
+            participantAvatarUrl,
+            lastMessageAt: initialLastMessageAt,
+            lastMessageText: initialLastMessageText,
+            lastMessageSentByMe: initialLastMessageSentByMe,
+          }), 4000);
+        }
 
         if (threadData && threadData.items && threadData.items.length > 0) {
           // Get existing message count before sync
@@ -155,6 +193,16 @@ async function syncAccount(accountId, proxyUrl = null) {
                 messageError: msgError.message,
               });
             }
+          }
+
+          // Update conversation preview from latest thread message when available.
+          const latestThreadMessage = threadData.items[threadData.items.length - 1];
+          if (latestThreadMessage) {
+            await withTimeout(messageRepo.updateConversationLastMessage(conversationId, {
+              sentAt: latestThreadMessage.createdAt || Date.now(),
+              text: latestThreadMessage.text || initialLastMessageText,
+              sentByMe: latestThreadMessage.senderId === '__self__',
+            }), 4000);
           }
 
           stats.newMessages += newMessagesInThread;

@@ -106,7 +106,12 @@ export default function InboxPage() {
     setSelected(conv); // immediate optimistic UI update
     try {
       const thread = await getConversationThread(conv.accountId, conv.conversationId);
-      setSelected({ ...conv, messages: thread.messages });
+      const fallbackMessages = Array.isArray(conv.messages) ? conv.messages : [];
+      const hasThreadMessages = Array.isArray(thread.messages) && thread.messages.length > 0;
+      setSelected({
+        ...conv,
+        messages: hasThreadMessages ? thread.messages : fallbackMessages,
+      });
     } catch {
       // ignore — thread shows with previous messages or empty
     }

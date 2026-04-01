@@ -3,6 +3,29 @@ import { NextRequest, NextResponse } from 'next/server';
 const API_URL = process.env.API_URL ?? 'http://localhost:3001';
 const API_SECRET = process.env.API_SECRET ?? '';
 
+function buildAllowedOrigins(req: NextRequest): Set<string> {
+  const origins = new Set<string>();
+
+  // Next.js computed origin (works in most local deployments).
+  origins.add(req.nextUrl.origin);
+
+  // Forwarded headers are required when app is accessed via public IP/domain/reverse proxy.
+  const host =
+    req.headers.get('x-forwarded-host') ??
+    req.headers.get('host') ??
+    '';
+  const protoHeader =
+    req.headers.get('x-forwarded-proto') ??
+    req.nextUrl.protocol.replace(':', '');
+  const proto = protoHeader || 'http';
+
+  if (host) {
+    origins.add(`${proto}://${host}`);
+  }
+
+  return origins;
+}
+
 /**
  * Authenticate incoming requests to the BFF.
  * Enforces Same-Origin and optional API_ROUTE_AUTH_TOKEN.
@@ -15,13 +38,13 @@ export function authenticateCaller(req: NextRequest): NextResponse | null {
   // Also skip strict Origin validation when user has a dashboard session cookie.
   const origin = req.headers.get('origin');
   if (origin && !hasSessionCookie) {
-    const requestOrigin = req.nextUrl.origin;
+    const allowedOrigins = buildAllowedOrigins(req);
     const trustedOrigins = (process.env.TRUSTED_ORIGINS ?? '')
       .split(',')
       .map((o) => o.trim())
       .filter(Boolean);
 
-    const isTrusted = origin === requestOrigin || trustedOrigins.includes(origin);
+    const isTrusted = allowedOrigins.has(origin) || trustedOrigins.includes(origin);
     if (!isTrusted) {
       return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
     }

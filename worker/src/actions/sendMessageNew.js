@@ -6,6 +6,51 @@ const { delay, humanClick, humanScroll, humanType } = require('../humanBehavior'
 const { checkAndIncrement }                         = require('../rateLimit');
 const { getRedis }                                  = require('../redisClient');
 
+function normalizeText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function slugToName(slug) {
+  return normalizeText(
+    String(slug || '')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\d+\b/g, '')
+  );
+}
+
+function deriveNameFromProfileUrl(profileUrl) {
+  const match = String(profileUrl || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
+  if (!match?.[1]) return 'Unknown';
+  const name = slugToName(match[1]);
+  return name || 'Unknown';
+}
+
+async function verifyMessageEcho(page, text, timeoutMs = 12000) {
+  const target = normalizeText(text);
+  if (!target) return true;
+
+  try {
+    await page.waitForFunction(
+      (needle) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const candidates = Array.from(
+          document.querySelectorAll(
+            '.msg-s-message-list__event--own-turn .msg-s-event__content, [data-view-name="messaging-self-message"] .msg-s-event__content, .msg-s-event__content'
+          )
+        );
+        const lastOwn = [...candidates].reverse().find((el) => normalize(el?.textContent));
+        if (!lastOwn) return false;
+        return normalize(lastOwn.textContent).includes(normalize(needle));
+      },
+      text,
+      { timeout: timeoutMs }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
   // W2 — checkAndIncrement moved to AFTER successful send.
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
@@ -24,10 +69,8 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     }
     page = await context.newPage();
 
-    // W3 — Try the direct messaging URL first to avoid loading the heavy profile page
-    // (150–300 KB JS + image fetches + feed widgets). Fall back to profile-page
-    // navigation only when the compose box doesn't appear within 8 seconds.
-    let participantName = 'Unknown';
+    // W3 — Try the direct messaging URL first to avoid loading the heavy profile page.
+    let participantName = deriveNameFromProfileUrl(profileUrl);
     const memberIdMatch = profileUrl.match(/\/in\/([^/?#]+)/);
     const directUrl = memberIdMatch
       ? `https://www.linkedin.com/messaging/thread/new/?recipient=${memberIdMatch[1]}`
@@ -43,6 +86,21 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
             .waitForSelector('.msg-form__contenteditable, [contenteditable][role="textbox"]', { timeout: 8000 })
             .catch(() => null);
           usedDirectUrl = !!composeBox;
+
+          if (usedDirectUrl) {
+            try {
+              const nameFromComposer = await page.evaluate(() => {
+                const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+                const nameEl = document.querySelector(
+                  '.msg-thread__name, .msg-entity-lockup__entity-title, [data-anonymize="person-name"], h1, h2'
+                );
+                return normalize(nameEl?.textContent);
+              });
+              if (nameFromComposer && nameFromComposer !== 'Unknown') {
+                participantName = nameFromComposer;
+              }
+            } catch (_) {}
+          }
         }
       } catch (_) {
         // Fall back to profile-page flow below.
@@ -66,14 +124,15 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
 
       // Extract profile name near the Message button
       try {
-        participantName = await page.evaluate(() => {
+        participantName = await page.evaluate((fallbackName) => {
           const messageButton = document.querySelector('button[aria-label*="Message"], a[aria-label*="Message"]');
           const nearestCard   = messageButton?.closest('.pv-top-card, .ph5, .artdeco-card, main, section');
           const scopedName    = nearestCard?.querySelector('h1, [data-anonymize="person-name"], .text-heading-xlarge');
-          const fallbackName  = document.querySelector('h1, [data-anonymize="person-name"], .text-heading-xlarge');
-          const raw = scopedName?.textContent || fallbackName?.textContent || '';
-          return raw.trim() || 'Unknown';
-        });
+          const fallbackEl    = document.querySelector('h1, [data-anonymize="person-name"], .text-heading-xlarge');
+          const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const raw = scopedName?.textContent || fallbackEl?.textContent || '';
+          return normalize(raw) || fallbackName || 'Unknown';
+        }, participantName);
       } catch (_) {}
 
       try {
@@ -92,14 +151,50 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     await delay(800, 1800);
 
     await humanClick(page, '.msg-form__send-button, button[type="submit"][aria-label*="Send"]');
+    const verified = await verifyMessageEcho(page, text);
+    if (!verified) {
+      const err = new Error('Message send could not be confirmed in thread. Retry once with fresh session.');
+      err.code = 'SEND_NOT_CONFIRMED';
+      err.status = 502;
+      throw err;
+    }
+
     // W2 — Burn quota only after the send click succeeds.
     await checkAndIncrement(accountId, 'messagesSent');
     await delay(2000, 4000);
 
     // Extract new chat ID from URL — LinkedIn redirects to the thread after send
     const finalUrl = page.url();
-    const idMatch  = finalUrl.match(/\/messaging\/thread\/([^/?]+)/);
-    const chatId   = idMatch ? idMatch[1] : `new-${Date.now()}`; // fallback if no redirect
+    let chatId = '';
+    const idMatch = finalUrl.match(/\/messaging\/thread\/([^/?]+)/);
+    if (idMatch?.[1]) {
+      chatId = idMatch[1];
+    } else {
+      chatId = await page.evaluate(() => {
+        const candidates = Array.from(
+          document.querySelectorAll(
+            'a[href*="/messaging/thread/"], [data-conversation-id], [data-urn*="fs_conversation"]'
+          )
+        );
+        for (const node of candidates) {
+          const href = node.getAttribute?.('href') || '';
+          const fromHref = href.match(/\/messaging\/thread\/([^/?#]+)/i);
+          if (fromHref?.[1]) return fromHref[1];
+
+          const conversationId = node.getAttribute?.('data-conversation-id') || '';
+          if (conversationId) return conversationId;
+
+          const urn = node.getAttribute?.('data-urn') || '';
+          const urnMatch = urn.match(/fs_conversation:([^,\s)]+)/i);
+          if (urnMatch?.[1]) return urnMatch[1];
+        }
+        return '';
+      });
+    }
+
+    if (!chatId) {
+      chatId = `new-${Date.now()}`;
+    }
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
       await saveCookies(accountId, await context.cookies());

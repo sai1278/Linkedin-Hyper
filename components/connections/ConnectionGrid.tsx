@@ -90,7 +90,9 @@ export function ConnectionGrid({
       <div className="flex-1 overflow-y-auto">
         {connections.length === 0 ? (
           <div className="flex items-center justify-center h-40">
-            <p style={{ color: 'var(--text-muted)' }}>No connections found</p>
+            <p style={{ color: 'var(--text-muted)' }}>
+              No automated connection activity found yet
+            </p>
           </div>
         ) : (
           <table className="w-full" style={{ borderCollapse: 'collapse' }}>

@@ -128,6 +128,61 @@ function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
   return fallbackMessage;
 }
 
+function normalizeThreadId(accountId, conversationId) {
+  const raw = String(conversationId || '');
+  const prefix = `${accountId}:`;
+  if (raw.startsWith(prefix)) {
+    return raw.slice(prefix.length);
+  }
+  return raw;
+}
+
+function mapDbMessagesToApiItems(messages) {
+  return messages.map((msg) => ({
+    id: msg.id,
+    chatId: msg.conversationId,
+    senderId: msg.isSentByMe ? '__self__' : (msg.senderId || 'other'),
+    text: msg.text || '',
+    createdAt: new Date(msg.sentAt).toISOString(),
+    senderName: msg.senderName || (msg.isSentByMe ? msg.accountId : 'Unknown'),
+  }));
+}
+
+function mapLiveMessagesToApiItems(messages, fallbackChatId, accountId) {
+  return (messages || []).map((msg, idx) => ({
+    id: msg.id || `live-${Date.now()}-${idx}`,
+    chatId: msg.chatId || fallbackChatId,
+    senderId: msg.senderId || 'other',
+    text: msg.text || '',
+    createdAt: msg.createdAt || new Date().toISOString(),
+    senderName:
+      msg.senderName || (msg.senderId === '__self__' ? accountId : 'Unknown'),
+  }));
+}
+
+function normalizeWhitespace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function deriveNameFromProfileUrl(profileUrl) {
+  const match = String(profileUrl || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
+  if (!match?.[1]) return '';
+
+  return normalizeWhitespace(
+    decodeURIComponent(match[1])
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\d+\b/g, '')
+  );
+}
+
+function normalizeParticipantName(name, profileUrl) {
+  const parsedName = normalizeWhitespace(name);
+  if (parsedName && parsedName.toLowerCase() !== 'unknown') {
+    return parsedName;
+  }
+  return deriveNameFromProfileUrl(profileUrl) || 'Unknown';
+}
+
 // â”€â”€ Health (no auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function buildUnifiedInboxFromActivity(limit = 100) {
@@ -148,8 +203,8 @@ async function buildUnifiedInboxFromActivity(limit = 100) {
         const item = JSON.parse(raw);
         if (item?.type !== 'messageSent') continue;
 
-        const participantName = String(item.targetName || 'Unknown');
         const participantProfileUrl = String(item.targetProfileUrl || '');
+        const participantName = normalizeParticipantName(item.targetName, participantProfileUrl);
         const sentAt = Number(item.timestamp) || Date.now();
         const textPreview = typeof item.textPreview === 'string' && item.textPreview.length > 0
           ? item.textPreview
@@ -160,7 +215,7 @@ async function buildUnifiedInboxFromActivity(limit = 100) {
         if (previous && previous.lastMessage?.sentAt >= sentAt) continue;
 
         latestByConversation.set(key, {
-          conversationId: `activity-${Buffer.from(key).toString('base64').replace(/=/g, '')}`,
+          conversationId: `activity-${Buffer.from(key).toString('base64url')}`,
           accountId,
           participant: {
             name: participantName,
@@ -172,7 +227,15 @@ async function buildUnifiedInboxFromActivity(limit = 100) {
             sentByMe: true,
           },
           unreadCount: 0,
-          messages: [],
+          messages: [
+            {
+              id: `activity-msg-${sentAt}`,
+              text: textPreview,
+              sentAt,
+              sentByMe: true,
+              senderName: accountId,
+            },
+          ],
         });
       } catch {
         // Ignore malformed activity rows.
@@ -195,8 +258,8 @@ let unifiedInboxCache = {
 let unifiedInboxInFlight = null;
 
 function normalizeConversationFromInboxItem(accountId, item) {
-  const participantName = String(item?.participants?.[0]?.name || 'Unknown');
   const participantProfileUrl = String(item?.participants?.[0]?.profileUrl || '');
+  const participantName = normalizeParticipantName(item?.participants?.[0]?.name, participantProfileUrl);
   const rawId = String(item?.id || `unknown-${Date.now()}`);
   const createdAt = item?.lastMessage?.createdAt || item?.createdAt || new Date().toISOString();
   const sentAt = Number(new Date(createdAt).getTime()) || Date.now();
@@ -642,34 +705,166 @@ app.get('/messages/thread', async (req, res) => {
     const messageRepo = require('./db/repositories/MessageRepository');
     const accountId = validateId(req.query.accountId, { field: 'accountId' });
     const chatId    = validateId(req.query.chatId,    { field: 'chatId' });
+    const normalizedChatId = normalizeThreadId(accountId, chatId);
     const limit     = parseLimit(req.query.limit, 100);
     const offset    = parseInt(req.query.offset) || 0;
+    const proxyUrl  = process.env.PROXY_URL || null;
 
-    // Query messages from database
-    const messages = await withTimeout(
-      messageRepo.getMessagesByConversation(chatId, limit, offset),
-      4000
-    );
+    let dbMessages = [];
+    try {
+      dbMessages = await withTimeout(
+        messageRepo.getMessagesByConversation(chatId, limit, offset),
+        4000
+      );
 
-    // Transform to match expected frontend format
-    const result = {
-      items: messages.map(msg => ({
-        id: msg.id,
-        text: msg.text,
-        sentAt: new Date(msg.sentAt).getTime(),
-        sentByMe: msg.isSentByMe,
-        senderName: msg.senderName,
-      })),
-      cursor: null,
-      hasMore: messages.length === limit, // If we got a full page, there might be more
-    };
-
-    res.json(result);
-  } catch (err) {
-    if (isDatabaseUnavailable(err)) {
-      return res.json({ items: [], cursor: null, hasMore: false });
+      // Support prefixed IDs from unified fallback (accountId:rawChatId).
+      if (dbMessages.length === 0 && normalizedChatId !== chatId) {
+        dbMessages = await withTimeout(
+          messageRepo.getMessagesByConversation(normalizedChatId, limit, offset),
+          4000
+        );
+      }
+    } catch (dbErr) {
+      if (!isDatabaseUnavailable(dbErr)) throw dbErr;
     }
 
+    if (dbMessages.length > 0) {
+      return res.json({
+        items: mapDbMessagesToApiItems(dbMessages),
+        cursor: null,
+        hasMore: dbMessages.length === limit,
+      });
+    }
+
+    // Activity-only rows do not map to a concrete LinkedIn thread ID.
+    // Return pseudo thread messages from recent activity log so UI is not blank.
+    if (normalizedChatId.startsWith('activity-')) {
+      try {
+        const encodedKey = normalizedChatId.slice('activity-'.length);
+        const decodedKey = Buffer.from(encodedKey, 'base64url').toString('utf8');
+        const decodedParts = decodedKey.split('|');
+        decodedParts.shift(); // accountId from key
+        const participantNameRaw = decodedParts.shift() || '';
+        const participantProfileRaw = decodedParts.join('|');
+        const participantName = normalizeParticipantName(participantNameRaw, participantProfileRaw);
+        const participantProfileUrl = String(participantProfileRaw || '');
+
+        const redis = getRedis();
+        const rawActivity = await redis.lrange(`activity:log:${accountId}`, 0, 500);
+        const activityMessages = [];
+
+        for (const rawEntry of rawActivity) {
+          try {
+            const entry = JSON.parse(rawEntry);
+            if (entry?.type !== 'messageSent') continue;
+
+            const entryProfile = String(entry.targetProfileUrl || '');
+            const entryName = normalizeParticipantName(entry.targetName, entryProfile);
+            const sameParticipant =
+              (participantProfileUrl && entryProfile === participantProfileUrl) ||
+              entryName === participantName;
+
+            if (!sameParticipant) continue;
+
+            const timestamp = Number(entry.timestamp) || Date.now();
+            const text = typeof entry.textPreview === 'string' && entry.textPreview.trim()
+              ? entry.textPreview.trim()
+              : `Sent message (${Number(entry.messageLength) || 0} chars)`;
+
+            activityMessages.push({
+              id: `activity-msg-${timestamp}-${activityMessages.length}`,
+              chatId: normalizedChatId,
+              senderId: '__self__',
+              text,
+              createdAt: new Date(timestamp).toISOString(),
+              senderName: accountId,
+            });
+          } catch {
+            // Ignore malformed activity entries.
+          }
+        }
+
+        activityMessages.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        return res.json({
+          items: activityMessages.slice(-limit),
+          cursor: null,
+          hasMore: false,
+        });
+      } catch {
+        return res.json({ items: [], cursor: null, hasMore: false });
+      }
+    }
+
+    // Live fallback: fetch directly from LinkedIn when DB thread is empty.
+    let liveThread;
+    try {
+      liveThread = await runJob('readThread', {
+        accountId,
+        chatId: normalizedChatId,
+        proxyUrl,
+        limit,
+      });
+    } catch (queueErr) {
+      const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+      const isQueueConnectivityError =
+        msg.includes('Connection is closed') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('ENOTFOUND') ||
+        msg.includes('getaddrinfo');
+
+      if (!isQueueConnectivityError) throw queueErr;
+      console.warn('[Thread] Queue unavailable, falling back to direct readThread:', msg);
+      liveThread = await readThread({ accountId, chatId: normalizedChatId, proxyUrl, limit });
+    }
+
+    const liveItems = mapLiveMessagesToApiItems(liveThread?.items, normalizedChatId, accountId);
+
+    // Best-effort persistence so next load comes from DB.
+    if (liveItems.length > 0) {
+      try {
+        const participantName =
+          (liveThread?.participant?.name && liveThread.participant.name !== 'Unknown')
+            ? liveThread.participant.name
+            : (liveItems.find((m) => m.senderId !== '__self__' && m.senderName !== 'Unknown')?.senderName || 'Unknown');
+        const participantProfileUrl = liveThread?.participant?.profileUrl || null;
+        const latestLive = liveItems[liveItems.length - 1];
+
+        await withTimeout(messageRepo.upsertConversation({
+          id: normalizedChatId,
+          accountId,
+          participantName,
+          participantProfileUrl,
+          participantAvatarUrl: null,
+          lastMessageAt: new Date(latestLive.createdAt),
+          lastMessageText: latestLive.text || '',
+          lastMessageSentByMe: latestLive.senderId === '__self__',
+        }), 4000);
+
+        for (const item of liveItems) {
+          await withTimeout(messageRepo.upsertMessage({
+            conversationId: normalizedChatId,
+            accountId,
+            senderId: item.senderId,
+            senderName: item.senderName,
+            text: item.text,
+            sentAt: item.createdAt,
+            isSentByMe: item.senderId === '__self__',
+            linkedinMessageId: item.id,
+          }), 4000);
+        }
+      } catch (persistErr) {
+        if (!isDatabaseUnavailable(persistErr)) {
+          console.warn('[Thread] Live fallback persistence failed:', persistErr.message || String(persistErr));
+        }
+      }
+    }
+
+    return res.json({
+      items: liveItems,
+      cursor: liveThread?.cursor || null,
+      hasMore: Boolean(liveThread?.hasMore),
+    });
+  } catch (err) {
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
       error: toPublicOperationError(err),
@@ -682,11 +877,18 @@ app.post('/messages/send', async (req, res) => {
   try {
     const accountId = validateId(req.body?.accountId, { field: 'accountId' });
     const chatId    = validateId(req.body?.chatId,    { field: 'chatId' });
+    const normalizedChatId = normalizeThreadId(accountId, chatId);
     const text      = sanitizeText(req.body?.text, { maxLength: 3000 });
     if (!text) return res.status(400).json({ error: 'text is required' });
+    if (normalizedChatId.startsWith('activity-')) {
+      return res.status(400).json({
+        error: 'This conversation is activity-only and cannot be replied yet. Run sync and retry.',
+        code: 'THREAD_NOT_REPLYABLE',
+      });
+    }
 
     const result = await runJob('sendMessage', {
-      accountId, chatId, text, proxyUrl: process.env.PROXY_URL || null,
+      accountId, chatId: normalizedChatId, text, proxyUrl: process.env.PROXY_URL || null,
     });
     if (!res.headersSent) {
       res.json(result);

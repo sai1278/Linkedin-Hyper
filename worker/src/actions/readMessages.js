@@ -60,6 +60,70 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
     await delay(300, 600);
 
     const chats = await page.evaluate((maxItems) => {
+      const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const toAbsoluteLinkedInUrl = (href) => {
+        if (!href) return null;
+        try {
+          return new URL(href, 'https://www.linkedin.com').toString();
+        } catch {
+          return null;
+        }
+      };
+      const stableHash = (value) => {
+        let hash = 0;
+        const input = String(value || '');
+        for (let i = 0; i < input.length; i += 1) {
+          hash = (hash << 5) - hash + input.charCodeAt(i);
+          hash |= 0;
+        }
+        return Math.abs(hash).toString(36);
+      };
+      const extractNameFromAriaLabel = (aria) => {
+        const value = normalizeText(aria);
+        if (!value) return '';
+        const patterns = [
+          /^conversation with (.+)$/i,
+          /^message with (.+)$/i,
+          /^chat with (.+)$/i,
+        ];
+        for (const pattern of patterns) {
+          const match = value.match(pattern);
+          if (match && match[1]) return normalizeText(match[1]);
+        }
+        return '';
+      };
+      const extractThreadId = (thread, href, participantName, profileUrl, idx) => {
+        const candidates = [
+          href || '',
+          thread.getAttribute('data-conversation-id') || '',
+          thread.getAttribute('data-urn') || '',
+          thread.getAttribute('data-id') || '',
+          thread.getAttribute('id') || '',
+        ];
+
+        for (const candidate of candidates) {
+          if (!candidate) continue;
+
+          const directMatch = candidate.match(/\/messaging\/thread\/([^/?#]+)/i);
+          if (directMatch?.[1]) return directMatch[1];
+
+          const urnMatch = candidate.match(/fs_conversation:([^,\s)]+)/i);
+          if (urnMatch?.[1]) return urnMatch[1];
+
+          const queryMatch = candidate.match(/[?&](?:conversationId|conversationUrn|threadId)=([^&#]+)/i);
+          if (queryMatch?.[1]) {
+            try {
+              return decodeURIComponent(queryMatch[1]);
+            } catch {
+              return queryMatch[1];
+            }
+          }
+        }
+
+        const fallbackKey = `${participantName}|${profileUrl || ''}|${href || ''}|${idx}`;
+        return `fallback-${stableHash(fallbackKey)}`;
+      };
+
       const items   = [];
       const threads = document.querySelectorAll(
         '.msg-conversation-listitem, [data-view-name="messaging-thread-list-item"]'
@@ -67,25 +131,35 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
 
       for (const [idx, thread] of Array.from(threads).slice(0, maxItems).entries()) {
         try {
-          const nameEl    = thread.querySelector('.msg-conversation-listitem__participant-names, .truncate');
+          const nameEl    = thread.querySelector(
+            '.msg-conversation-listitem__participant-names, .msg-conversation-listitem__participant-names span, .truncate, [data-anonymize="person-name"], .msg-conversation-listitem__name'
+          );
           const previewEl = thread.querySelector('.msg-conversation-listitem__message-snippet, .truncate.t-12');
           const timeEl    = thread.querySelector('time, .msg-conversation-listitem__time-stamp');
           const unreadEl  = thread.querySelector('.msg-conversation-listitem__unread-count, [data-test-icon="unread-badge-icon"]');
           const linkEl    = thread.closest('a') || thread.querySelector('a');
+          const profileLinkEl = thread.querySelector('a[href*="/in/"]');
           const avatarEl  = thread.querySelector('img');
+          const ariaLabel = thread.getAttribute('aria-label') || linkEl?.getAttribute('aria-label') || '';
 
           const href = linkEl?.href || '';
-          const idMatch = href.match(/\/messaging\/thread\/([^/?]+)/);
-          const chatId = idMatch ? idMatch[1] : `unknown-${Date.now()}-${idx}`;
+          const profileUrl = toAbsoluteLinkedInUrl(profileLinkEl?.getAttribute('href') || '');
+          const nameFromAria = extractNameFromAriaLabel(ariaLabel);
+          const rawName =
+            normalizeText(nameEl?.textContent) ||
+            normalizeText(profileLinkEl?.textContent) ||
+            nameFromAria;
+          const participantName = rawName || 'Unknown';
+          const chatId = extractThreadId(thread, href, participantName, profileUrl, idx);
 
           items.push({
             id:           chatId,
             accountId:    '', // filled in by caller — not accessible inside browser context
             participants: [{
               id:         chatId,
-              name:       nameEl?.textContent?.trim()   || 'Unknown',
+              name:       participantName,
               avatarUrl:  avatarEl?.src                 || null,
-              profileUrl: null,
+              profileUrl,
             }],
             unreadCount:  unreadEl ? 1 : 0,
             lastMessage:  previewEl ? {

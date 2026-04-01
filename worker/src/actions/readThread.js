@@ -53,6 +53,31 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
     await humanScroll(page, -500); // scroll UP to load older messages
     await delay(1000, 2000);
 
+    const participant = await page.evaluate(() => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const toAbsolute = (href) => {
+        if (!href) return null;
+        try {
+          return new URL(href, 'https://www.linkedin.com').toString();
+        } catch {
+          return null;
+        }
+      };
+
+      const scope = document.querySelector('.msg-thread, .msg-overlay-conversation-bubble-header, main') || document;
+      const nameEl = scope.querySelector(
+        '.msg-thread__name, .msg-entity-lockup__entity-title, [data-anonymize="person-name"], h1, h2, h3'
+      );
+      const profileLinkEl = scope.querySelector(
+        '.msg-thread__link[href*="/in/"], .msg-entity-lockup__entity-title-container a[href*="/in/"], a[href*="/in/"]'
+      );
+
+      const name = normalize(nameEl?.textContent) || normalize(profileLinkEl?.textContent) || 'Unknown';
+      const profileUrl = toAbsolute(profileLinkEl?.getAttribute('href') || '');
+
+      return { name, profileUrl };
+    });
+
     const messages = await page.evaluate((maxItems) => {
       const results = [];
       const items   = document.querySelectorAll(
@@ -99,11 +124,18 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
       }
     });
 
+    if (participant?.name === 'Unknown') {
+      const firstOther = messages.find((m) => m.senderId !== '__self__' && m.senderName && m.senderName !== 'Unknown');
+      if (firstOther?.senderName) {
+        participant.name = firstOther.senderName;
+      }
+    }
+
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
       await saveCookies(accountId, await context.cookies());
     }
 
-    return { items: messages, cursor: null, hasMore: false };
+    return { items: messages, participant, cursor: null, hasMore: false };
   } finally {
     if (page) await page.close().catch(() => {});
   }
