@@ -211,6 +211,26 @@ try {
   Write-Host ""
   Write-Host "Done."
 } catch {
+  if ($_.Exception.Response) {
+    try {
+      $statusCode = [int]$_.Exception.Response.StatusCode
+      $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+      $body = $reader.ReadToEnd()
+      if ($body) {
+        Write-Host $body
+      } else {
+        Write-Host $_.Exception.Message
+      }
+      if ($statusCode -eq 401 -and ($body -match 'SESSION_EXPIRED|NO_SESSION|Unauthorized')) {
+        Write-Host ""
+        Write-Host "Hint: imported cookies are not active now. Re-capture fresh cookies and import again."
+      }
+      exit 1
+    } catch {
+      # fall through to existing handlers
+    }
+  }
+
   if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
     Write-Host $_.ErrorDetails.Message
     exit 1

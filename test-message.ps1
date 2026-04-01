@@ -25,7 +25,8 @@ function Invoke-Api {
   param(
     [Parameter(Mandatory = $true)][string]$Method,
     [Parameter(Mandatory = $true)][string]$Uri,
-    [string]$BodyJson = ""
+    [string]$BodyJson = "",
+    [switch]$AllowFailure
   )
 
   $headers = @{ "X-Api-Key" = $ApiKey }
@@ -39,20 +40,71 @@ function Invoke-Api {
     }
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
   } catch {
-    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-      Write-Host "API error from $Uri"
-      Write-Host $_.ErrorDetails.Message
-      exit 1
-    }
+    $statusCode = $null
+    $responseBody = ""
 
     if ($_.Exception.Response) {
-      $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-      $body = $reader.ReadToEnd()
-      Write-Host "API error from $Uri"
-      Write-Host $body
-      exit 1
+      try {
+        $statusCode = [int]$_.Exception.Response.StatusCode
+      } catch {}
+      try {
+        $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+        $responseBody = $reader.ReadToEnd()
+      } catch {}
     }
-    throw
+
+    if (-not $responseBody -and $_.ErrorDetails -and $_.ErrorDetails.Message) {
+      $responseBody = $_.ErrorDetails.Message
+    }
+
+    if ($AllowFailure) {
+      return [pscustomobject]@{
+        __failed = $true
+        status = $statusCode
+        body = $responseBody
+      }
+    }
+
+    Write-Host "API error from $Uri"
+    if ($responseBody) {
+      Write-Host $responseBody
+    } else {
+      Write-Host $_.Exception.Message
+    }
+
+    if ($statusCode -eq 401 -and ($responseBody -match 'SESSION_EXPIRED|NO_SESSION|Unauthorized')) {
+      Write-Host ""
+      Write-Host "Hint: session is not active on server. Re-import fresh cookies and verify again."
+    }
+    exit 1
+  }
+}
+
+function Get-SessionStatus {
+  param([string]$TargetAccountId)
+
+  # Preferred route (works for worker base and updated BFF base).
+  $statusResponse = Invoke-Api -Method "GET" -Uri "$BaseUrl/accounts/$TargetAccountId/session/status" -AllowFailure
+  $isFailed = $statusResponse.PSObject.Properties.Name -contains '__failed'
+  if (-not $isFailed) {
+    return $statusResponse
+  }
+
+  # Fallback for older servers where /session/status route isn't exposed via BFF.
+  $accountsResponse = Invoke-Api -Method "GET" -Uri "$BaseUrl/accounts"
+  $account = @($accountsResponse.accounts | Where-Object { $_.id -eq $TargetAccountId } | Select-Object -First 1)
+  if ($account.Count -gt 0) {
+    return [pscustomobject]@{
+      exists = [bool]$account[0].lastSeen
+      savedAt = $account[0].lastSeen
+      isActive = [bool]$account[0].isActive
+      source = "accounts-fallback"
+    }
+  }
+
+  return [pscustomobject]@{
+    exists = $false
+    source = "accounts-fallback"
   }
 }
 
@@ -100,7 +152,7 @@ $resolvedAccountId = Resolve-AccountId -PreferredAccountId $AccountId
 
 Write-Host ""
 Write-Host "1) Session status"
-$status = Invoke-Api -Method "GET" -Uri "$BaseUrl/accounts/$resolvedAccountId/session/status"
+$status = Get-SessionStatus -TargetAccountId $resolvedAccountId
 $status | ConvertTo-Json -Depth 6 | Write-Host
 
 Write-Host ""
