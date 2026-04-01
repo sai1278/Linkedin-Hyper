@@ -211,10 +211,19 @@ try {
   Write-Host ""
   Write-Host "Done."
 } catch {
-  if ($_.Exception.Response) {
+  $response = $null
+  if (
+    $_.Exception -and
+    $_.Exception.PSObject -and
+    $_.Exception.PSObject.Properties.Name -contains 'Response'
+  ) {
+    $response = $_.Exception.Response
+  }
+
+  if ($response) {
     try {
-      $statusCode = [int]$_.Exception.Response.StatusCode
-      $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+      $statusCode = [int]$response.StatusCode
+      $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
       $body = $reader.ReadToEnd()
       if ($body) {
         Write-Host $body
