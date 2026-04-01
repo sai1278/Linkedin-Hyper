@@ -1,193 +1,184 @@
 # LinkedIn Hyper-V Bug Report and Improvement Plan
-Date: 2026-04-01  
+Date: 2026-04-01
 Prepared by: Kanchi
 
-## Scope
-This document covers bugs observed from:
-1. Inbox screenshot (`Unknown` participant, `0 messages` in selected thread)
-2. Connections screenshot (`No connections found`)
-3. Runtime behavior reported during server tests (message API says success, but account-side visibility is inconsistent)
+## Executive Summary
+The core monitoring flow is working: account session import, session verification, message send, inbox rendering, and activity feed updates are functional.
 
----
+Main product bugs identified are now documented below with current status and improvement plan.
 
-## Bug 1: Inbox participant shown as `Unknown`
-Severity: High  
-Status: Fixed in code (pending deploy verification)
+## Current Bug Register
+1. `B-01` Unknown/generic participant name in inbox/activity.
+Severity: High
+Status: Fixed in code; deploy validation required on server.
 
-### Symptom
-- Inbox list and selected conversation header show `Unknown` instead of real LinkedIn profile name.
+2. `B-02` Thread opens with preview but zero visible messages.
+Severity: High
+Status: Fixed in code; needs full regression test on server.
 
-### User Impact
-- Users cannot identify whom they are chatting with.
-- Trust in CRM/unified inbox quality is reduced.
+3. `B-03` Send API says success but recipient visibility is inconsistent.
+Severity: High
+Status: Improved in code with verification logic; needs repeated run validation.
 
-### Technical Evidence
-- Fallbacks to `Unknown` exist in parser and sync flow:
-  - `worker/src/actions/readMessages.js` (name extraction fallback)
-  - `worker/src/services/messageSyncService.js` (participant fallback)
-  - `worker/src/index.js` (unified payload normalization fallback)
+4. `B-04` Connections page shows empty/no connections.
+Severity: Medium
+Status: Product behavior gap; not a crash bug.
 
-### Root Cause
-- Worker cannot reliably extract full participant metadata from LinkedIn DOM in some sessions/layouts.
-- When extraction fails, fallback placeholders are stored and surfaced in UI.
+5. `B-05` Frequent session expiry (`SESSION_EXPIRED`) causes broken sync.
+Severity: High
+Status: Open (operational reliability issue).
 
-### Improvement Suggestion
-1. Add metadata enrichment pass:
-   - If participant name/profile URL is missing, open thread and fetch canonical profile link/name before persisting.
-2. Store metadata quality flags:
-   - `isMetadataIncomplete`, `source=dom_fallback/live_enriched`.
-3. Retry strategy:
-   - Retry metadata extraction up to N times before final fallback.
+6. `B-06` API origin/auth mismatch (`Forbidden: Invalid Origin`, `401/405`) in remote usage.
+Severity: High
+Status: Mostly fixed in code/scripts; requires correct deployment config and script usage.
 
-### Acceptance Test
-- For a known thread, inbox should show real participant name and profile URL in at least 95% of refreshes.
+## Detailed Bugs and Solutions
 
----
+### B-01 Unknown or generic participant names in app
+Observed:
+- Inbox/activity sometimes shows `Unknown` or generic labels like `notifications total`.
 
-## Bug 2: Conversation shows preview text but selected thread shows `0 messages`
-Severity: High  
-Status: Fixed in code (pending deploy verification)
+Impact:
+- User cannot identify real person.
+- CRM trust is reduced.
 
-### Symptom
-- Left pane shows a recent preview (`You: Hi, test message...`) but right pane shows `0 messages`.
+Root Cause:
+- LinkedIn DOM extraction sometimes fails or captures UI labels instead of person names.
+- Fallback values get stored and shown.
 
-### User Impact
-- Users think messages are lost.
-- Reply workflow breaks because thread context is empty.
+Fix Implemented:
+- Added participant-name normalization in backend and frontend.
+- Blocked generic labels and fallback to profile URL slug parsing.
 
-### Technical Evidence
-- Thread route in worker (`/messages/thread`) currently reads DB only.
-- If conversation ID is fallback/unknown or thread sync has not persisted messages, DB returns empty.
+Files:
+- `worker/src/index.js`
+- `worker/src/actions/sendMessage.js`
+- `worker/src/actions/sendMessageNew.js`
+- `lib/display-name.ts`
+- `components/notifications/NotificationItem.tsx`
+- `components/dashboard/RecentActivity.tsx`
+- `app/(dashboard)/connections/page.tsx`
 
-### Root Cause
-- Mismatch between live inbox preview data and persisted thread data.
-- No live fallback on thread read when DB has zero messages.
+Improvement Suggestion:
+1. Add background metadata enrichment job for old rows.
+2. Add `metadataQuality` flag in persisted records.
+3. Alert if unknown-name rate exceeds threshold.
 
-### Improvement Suggestion
-1. Implement live fallback in `/messages/thread`:
-   - If DB returns empty, call `readThread` (LinkedIn live) and return that data.
-2. Normalize conversation ID mapping:
-   - Ensure same canonical thread ID used for inbox item and thread storage.
-3. Save-on-read strategy:
-   - When live fallback fetches messages, upsert immediately to DB.
+### B-02 Preview exists but selected thread shows zero messages
+Observed:
+- Left panel shows preview text, right panel shows `0 messages`.
 
-### Acceptance Test
-- Selecting a conversation with preview text should always render non-empty thread if messages exist on LinkedIn.
+Impact:
+- Looks like data loss.
+- Cannot continue conversation reliably from app.
 
----
+Root Cause:
+- In some cases DB thread records are incomplete or delayed.
+- Thread endpoint previously depended too strongly on stored records.
 
-## Bug 3: API reports send success, but recipient/account does not consistently see message
-Severity: High  
-Status: Fixed in code (pending deploy verification)
+Fix Implemented:
+- Added fallback/read-hardening in worker thread and sync flows (already in recent commits).
 
-### Symptom
-- `send-new` path returns success, but recipient-side message visibility is inconsistent.
+Improvement Suggestion:
+1. Enforce canonical thread ID mapping.
+2. Save-on-read whenever fallback fetch succeeds.
+3. Add automated test for preview-thread consistency.
 
-### User Impact
-- Automation reliability is questionable for production use.
+### B-03 Send success response but recipient visibility inconsistent
+Observed:
+- API returns message sent, but recipient-side check may not always show message immediately.
 
-### Technical Evidence
-- `worker/src/actions/sendMessageNew.js` marks success after send-button click.
-- No strict post-send verification step exists to confirm message bubble and thread persistence.
+Impact:
+- Automation reliability concern for production.
 
-### Root Cause
-- Success criteria is currently "click executed", not "delivery verified".
-- LinkedIn UI race conditions or anti-automation behaviors may cause false positives.
+Root Cause:
+- UI automation success can happen before final server-side confirmation in some cases.
+- Session/LinkedIn anti-bot challenges may interfere.
 
-### Improvement Suggestion
-1. Add post-send verification:
-   - Confirm sent bubble contains message text.
-   - Re-open thread and verify last message text matches payload.
-2. Return richer status:
-   - `sent`, `verifiedInThread`, `verificationFailed`.
-3. Add retry for transient failures:
-   - Retry send once when verification fails due to timeout.
+Fix Implemented:
+- Added stronger post-send verification and safer retries in send flow.
 
-### Acceptance Test
-- At least 9/10 automated sends must be verified in-thread within timeout.
+Improvement Suggestion:
+1. Return explicit fields: `sent`, `verifiedInThread`, `verificationFailed`.
+2. Retry once on verification timeout.
+3. Add result telemetry for send success vs verified success.
 
----
+### B-04 Connections page empty
+Observed:
+- Connections tab shows no results.
 
-## Bug 4: Connections page shows `No connections found`
-Severity: Medium  
-Status: Clarified (product behavior gap)
+Impact:
+- Users expect actual LinkedIn connections list.
 
-### Symptom
-- Connections page empty even when LinkedIn account has existing connections.
+Root Cause:
+- Current implementation shows connection activity entries, not full LinkedIn first-degree network sync.
 
-### User Impact
-- Users expect LinkedIn connection list, but page only reflects internal activity logs.
+Current Status:
+- Functional as activity view.
+- Not yet implemented as full LinkedIn connections mirror.
 
-### Technical Evidence
-- `app/(dashboard)/connections/page.tsx` uses `getAccountActivity(...)` and filters `type === 'connectionSent'`.
-- It is not reading actual LinkedIn connection graph/list.
+Improvement Suggestion:
+1. Rename page to `Connection Activity` until full sync exists.
+2. Build dedicated connection-sync worker and `connections` table.
+3. Add last-sync timestamp and count.
 
-### Root Cause
-- Current implementation is "sent-connections activity view", not "actual LinkedIn connections sync view".
+### B-05 Session expires frequently
+Observed:
+- `SESSION_EXPIRED` appears after some time and blocks sync/send.
 
-### Improvement Suggestion
-1. Rename UI label (short-term):
-   - `Connections Sent Activity` to avoid expectation mismatch.
-2. Implement real connection sync endpoint (long-term):
-   - Add worker action to scrape/sync first-degree connections.
-   - Persist in dedicated `connections` table.
+Impact:
+- App appears broken until cookies are re-imported.
 
-### Acceptance Test
-- Page should either clearly show activity-only data OR display real synced connection records.
+Root Cause:
+- Cookie auth is short-lived and can be invalidated by LinkedIn security checks.
 
----
+Improvement Suggestion:
+1. Session health cron (verify each account every N minutes).
+2. UI status chip: `Active`, `Expiring`, `Expired`.
+3. One-click session refresh workflow and audit log.
 
-## Bug 5: Session instability causes metadata and inbox degradation
-Severity: High  
-Status: Open
+### B-06 Remote API auth/origin inconsistencies
+Observed:
+- `Forbidden: Invalid Origin`, `401 Unauthorized`, `405 Method Not Allowed` during remote script tests.
 
-### Symptom
-- Frequent session expiry leads to fallback data (`Unknown`, empty threads, failed sync windows).
+Impact:
+- Cookie import/test scripts fail intermittently in server environment.
 
-### User Impact
-- Unreliable monitoring dashboard until cookies are refreshed.
+Root Cause:
+- API route auth token/origin config mismatch and mixed endpoint usage.
 
-### Root Cause
-- Cookie-based auth is inherently short-lived and can expire or be invalidated.
-- Sync quality degrades when session validity is not proactively managed.
+Fix Implemented:
+- API script handling and route behavior hardened in recent commits.
 
-### Improvement Suggestion
-1. Add session health scheduler:
-   - Verify each account session periodically.
-2. Add explicit session status in UI:
-   - Warn before sync if account session is expired.
-3. Add import audit fields:
-   - `lastImportedAt`, `lastVerifiedAt`, `verifyResult`.
+Improvement Suggestion:
+1. Standardize one base API URL for all scripts.
+2. Add deployment precheck script to validate auth/origin/env.
+3. Add clearer error messages for wrong token/origin.
 
-### Acceptance Test
-- Dashboard should display session health and prevent misleading sync attempts for expired accounts.
+## Recommended Priority Plan
+1. `P0` Stability and trust
+- Deploy latest fixes to server.
+- Validate unknown-name and thread consistency with e2e smoke tests.
+- Add session health checks.
 
----
+2. `P1` Product completeness
+- Implement real connection sync (not only activity).
+- Add notification and profile-view consistency checks.
 
-## Priority Plan
-P0 (Done in code):
-1. Added thread live fallback + persistence when DB thread is empty.
-2. Added post-send verification in `sendMessageNew`.
-3. Improved metadata extraction/enrichment for unknown participants.
+3. `P2` Hardening
+- Add 24-hour continuous sync test.
+- Add dashboards for sync failures, unknown names, and session expiry rate.
 
-P1 (Next Sprint):
-1. Session health monitor and UI indicators.
-2. Real LinkedIn connection sync endpoint (not only activity view).
-3. Automated e2e smoke workflow in deployment scripts.
-
-P2 (Hardening):
-1. Structured telemetry for parser failures.
-2. Retry/backoff policies for sync and thread enrichment.
-3. 24-hour stability test and alerting for session expiry.
-
----
-
-## Suggested Test Checklist (Post-fix)
+## Validation Checklist for Sir
 1. Import fresh cookies for both accounts.
-2. Verify sessions via API.
+2. Verify account sessions from API.
 3. Send message to known connected profile.
-4. Validate:
-   - participant name is not `Unknown`
-   - thread shows actual messages (not 0)
-   - recipient account can see message in LinkedIn UI
-5. Validate connections page behavior against expected product definition.
+4. Confirm in app:
+- no `Unknown` for known profiles
+- thread shows actual messages
+- activity feed entry appears
+5. Confirm on LinkedIn account UI that message is visible.
+6. Confirm connection/notification behavior matches product scope.
+
+## Communication Note (Simple)
+"Main flow is working now. Remaining work is reliability and completeness: session stability, full connection sync, and long-run monitoring validation."
