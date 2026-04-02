@@ -9,13 +9,13 @@ services:
   # Expose worker only to localhost for Nginx websocket proxying.
   worker:
     ports:
-      - "127.0.0.1:3001:3001"
+      - "${WORKER_HOST_BIND:-127.0.0.1}:3001:3001"
     environment:
       - NODE_ENV=production
 
   # Expose frontend only to localhost; public traffic should go via Nginx.
   frontend:
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${FRONTEND_HOST_BIND:-127.0.0.1}:3000:3000"
     environment:
       - NODE_ENV=production
