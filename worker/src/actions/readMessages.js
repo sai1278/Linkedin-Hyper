@@ -1,11 +1,12 @@
 'use strict';
 
-const { getAccountContext }        = require('../browser');
+const { getAccountContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanScroll }       = require('../humanBehavior');
 const { checkAndIncrement }        = require('../rateLimit');
 
 async function readMessages({ accountId, proxyUrl, limit = 20 }) {
+  return withAccountLock(accountId, async () => {
   await checkAndIncrement(accountId, 'inboxReads'); // FIRST — before any browser work
 
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
@@ -188,6 +189,7 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
   } finally {
     if (page) await page.close().catch(() => {});
   }
+  });
 }
 
 module.exports = { readMessages };

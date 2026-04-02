@@ -1,6 +1,6 @@
 'use strict';
 
-const { getAccountContext, cleanupContext }         = require('../browser');
+const { getAccountContext, cleanupContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies }                  = require('../session');
 const { delay, humanClick, humanScroll, humanType } = require('../humanBehavior');
 const { checkAndIncrement }                         = require('../rateLimit');
@@ -573,7 +573,7 @@ async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 1
   return waitForPersistedText(Math.max(8000, Math.floor(timeoutMs / 2)));
 }
 
-async function sendMessageNew({ accountId, profileUrl, text, proxyUrl, __attempt = 1 }) {
+async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, __attempt = 1 }) {
   // W2 — checkAndIncrement moved to AFTER successful send.
   await cleanupContext(accountId).catch(() => {});
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
@@ -749,7 +749,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl, __attempt
     if (__attempt < 2 && isRecoverableBrowserError(err)) {
       await cleanupContext(accountId).catch(() => {});
       await delay(700, 1300);
-      return sendMessageNew({ accountId, profileUrl, text, proxyUrl, __attempt: __attempt + 1 });
+      return sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, __attempt: __attempt + 1 });
     }
     throw err;
   } finally {
@@ -758,6 +758,12 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl, __attempt
     }
     if (page) await page.close().catch(() => {});
   }
+}
+
+async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
+  return withAccountLock(accountId, async () =>
+    sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, __attempt: 1 })
+  );
 }
 
 module.exports = { sendMessageNew };

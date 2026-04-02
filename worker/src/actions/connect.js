@@ -1,12 +1,13 @@
 'use strict';
 
-const { getAccountContext } = require('../browser');
+const { getAccountContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanClick, humanType, humanScroll } = require('../humanBehavior');
 const { checkAndIncrement } = require('../rateLimit');
 const { getRedis } = require('../redisClient');
 
 async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) {
+  return withAccountLock(accountId, async () => {
   // W2 — checkAndIncrement moved to AFTER successful send-invitation click.
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
@@ -93,6 +94,7 @@ async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) 
   } finally {
     if (page) await page.close().catch(() => { });
   }
+  });
 }
 
 module.exports = { sendConnectionRequest };

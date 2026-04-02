@@ -1,10 +1,11 @@
 'use strict';
 
-const { getAccountContext }        = require('../browser');
+const { getAccountContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanScroll }       = require('../humanBehavior');
 
 async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
+  return withAccountLock(accountId, async () => {
   // No rate limit — reading is passive
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
@@ -139,6 +140,7 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
   } finally {
     if (page) await page.close().catch(() => {});
   }
+  });
 }
 
 module.exports = { readThread };

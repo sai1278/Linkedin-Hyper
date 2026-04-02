@@ -1,6 +1,6 @@
 'use strict';
 
-const { getAccountContext, cleanupContext } = require('../browser');
+const { getAccountContext, cleanupContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay }                    = require('../humanBehavior');
 
@@ -30,6 +30,7 @@ async function tryNavigate(page, url) {
 }
 
 async function verifySession({ accountId, proxyUrl }) {
+  return withAccountLock(accountId, async () => {
   // Always verify from a fresh browser context to avoid false positives from
   // previously authenticated in-memory contexts.
   await cleanupContext(accountId).catch(() => {});
@@ -96,6 +97,7 @@ async function verifySession({ accountId, proxyUrl }) {
   } finally {
     if (page) await page.close().catch(() => {});
   }
+  });
 }
 
 module.exports = { verifySession };

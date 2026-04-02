@@ -1,6 +1,6 @@
 'use strict';
 
-const { getAccountContext } = require('../browser');
+const { getAccountContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanClick, humanType } = require('../humanBehavior');
 const { checkAndIncrement } = require('../rateLimit');
@@ -178,6 +178,7 @@ async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 1
 }
 
 async function sendMessage({ accountId, chatId, text, proxyUrl }) {
+  return withAccountLock(accountId, async () => {
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
 
@@ -291,6 +292,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
   } finally {
     if (page) await page.close().catch(() => {});
   }
+  });
 }
 
 module.exports = { sendMessage };

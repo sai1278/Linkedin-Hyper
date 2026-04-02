@@ -1,11 +1,12 @@
 'use strict';
 
-const { getAccountContext }        = require('../browser');
+const { getAccountContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanScroll }       = require('../humanBehavior');
 const { checkAndIncrement }        = require('../rateLimit');
 
 async function searchPeople({ accountId, query, proxyUrl, limit = 10 }) {
+  return withAccountLock(accountId, async () => {
   await checkAndIncrement(accountId, 'searchQueries'); // FIRST
 
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
@@ -93,6 +94,7 @@ async function searchPeople({ accountId, query, proxyUrl, limit = 10 }) {
   } finally {
     if (page) await page.close().catch(() => {});
   }
+  });
 }
 
 module.exports = { searchPeople };

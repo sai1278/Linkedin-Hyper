@@ -120,6 +120,39 @@ async function createContext(browser) {
 }
 
 const activeContexts = new Map();
+const accountLocks = new Map();
+
+async function withAccountLock(accountId, fn) {
+  const key = String(accountId || 'default').trim() || 'default';
+  let lock = accountLocks.get(key);
+  if (!lock) {
+    lock = { locked: false, queue: [] };
+    accountLocks.set(key, lock);
+  }
+
+  await new Promise((resolve) => {
+    if (!lock.locked) {
+      lock.locked = true;
+      resolve();
+      return;
+    }
+    lock.queue.push(resolve);
+  });
+
+  try {
+    return await fn();
+  } finally {
+    const next = lock.queue.shift();
+    if (next) {
+      next();
+    } else {
+      lock.locked = false;
+      if (lock.queue.length === 0) {
+        accountLocks.delete(key);
+      }
+    }
+  }
+}
 
 function evictContext(accountId, expectedEntry) {
   const current = activeContexts.get(accountId);
@@ -216,4 +249,4 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-module.exports = { createBrowser, createContext, getAccountContext, cleanupContext, cleanupAllContexts };
+module.exports = { createBrowser, createContext, getAccountContext, cleanupContext, cleanupAllContexts, withAccountLock };
