@@ -74,7 +74,7 @@ function extractThreadIdFromText(value) {
   const fromThreadUrl = raw.match(/\/messaging\/thread\/([^/?#"\s]+)/i);
   if (isValidThreadId(fromThreadUrl?.[1])) return normalizeThreadIdCandidate(fromThreadUrl[1]);
 
-  const fromUrn = raw.match(/fs_conversation:([^,"\s)]+)/i);
+  const fromUrn = raw.match(/fs(?:d)?_conversation:([^,"\s)]+)/i);
   if (isValidThreadId(fromUrn?.[1])) return normalizeThreadIdCandidate(fromUrn[1]);
 
   const fromQuery = raw.match(/[?&](?:conversationId|threadId)=([^&#"\s]+)/i);
@@ -91,7 +91,7 @@ function extractThreadIdFromText(value) {
   if (fromConversationUrn?.[1]) {
     try {
       const decoded = decodeURIComponent(fromConversationUrn[1]);
-      const decodedUrn = decoded.match(/fs_conversation:([^,"\s)]+)/i);
+      const decodedUrn = decoded.match(/fs(?:d)?_conversation:([^,"\s)]+)/i);
       if (isValidThreadId(decodedUrn?.[1])) return normalizeThreadIdCandidate(decodedUrn[1]);
     } catch {}
   }
@@ -137,6 +137,29 @@ function createNetworkThreadIdProbe(page) {
     } catch (_) {}
   };
 
+  const inspectRequest = (request) => {
+    if (resolvedThreadId) return;
+    try {
+      const url = request.url() || '';
+      if (!/linkedin\.com/i.test(url) || !/messaging|voyager/i.test(url)) {
+        return;
+      }
+
+      const idFromUrl = extractThreadIdFromText(url);
+      if (idFromUrl) {
+        maybeResolve(idFromUrl);
+        return;
+      }
+
+      const postData = request.postData?.() || '';
+      const idFromBody = extractThreadIdFromText(postData);
+      if (idFromBody) {
+        maybeResolve(idFromBody);
+      }
+    } catch (_) {}
+  };
+
+  page.on('request', inspectRequest);
   page.on('response', inspectResponse);
 
   return {
@@ -160,6 +183,7 @@ function createNetworkThreadIdProbe(page) {
       return resolvedThreadId;
     },
     stop() {
+      page.off('request', inspectRequest);
       page.off('response', inspectResponse);
     },
   };
@@ -369,6 +393,12 @@ async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantN
   const slugNeedle = slugToName(targetSlug).toLowerCase();
   const nameNeedle = normalizeText(participantName).toLowerCase();
   const textNeedle = normalizeText(messageText).slice(0, 48).toLowerCase();
+  const tokenNeedles = Array.from(new Set(
+    `${slugNeedle} ${nameNeedle}`
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3)
+  ));
 
   try {
     await page.goto('https://www.linkedin.com/messaging/', {
@@ -386,7 +416,7 @@ async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantN
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     try {
-      const chatId = await page.evaluate((slugNeedleInput, nameNeedleInput, textNeedleInput) => {
+      const chatId = await page.evaluate((slugNeedleInput, nameNeedleInput, textNeedleInput, tokenNeedlesInput) => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
         const isValidThreadId = (value) => {
           const id = String(value || '').trim();
@@ -414,14 +444,23 @@ async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantN
           if (textNeedleInput && rowText.includes(textNeedleInput)) score += 5;
           if (nameNeedleInput && rowText.includes(nameNeedleInput)) score += 3;
           if (slugNeedleInput && rowText.includes(slugNeedleInput)) score += 2;
+          if (Array.isArray(tokenNeedlesInput)) {
+            let tokenHits = 0;
+            for (const token of tokenNeedlesInput) {
+              if (token && rowText.includes(String(token).toLowerCase())) {
+                tokenHits += 1;
+              }
+            }
+            score += Math.min(4, tokenHits);
+          }
 
           if (score > bestMatch.score) {
             bestMatch = { id: String(candidateId).trim(), score };
           }
         }
 
-        return bestMatch.score > 0 ? bestMatch.id : '';
-      }, slugNeedle, nameNeedle, textNeedle);
+        return bestMatch.score >= 2 ? bestMatch.id : '';
+      }, slugNeedle, nameNeedle, textNeedle, tokenNeedles);
 
       if (isValidThreadId(chatId)) {
         return chatId;

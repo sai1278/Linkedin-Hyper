@@ -135,11 +135,25 @@ async function getAccountContext(accountId, proxyUrl) {
     if (!existing.browser?.isConnected()) {
       await cleanupContext(accountId);
     } else {
-      clearTimeout(existing.timer);
-      existing.lastUsed = Date.now();
-      existing.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
-      return { browser: existing.browser, context: existing.context, cookiesLoaded: true };
+      // Rebrowser/Playwright sessions can become half-closed while browser still reports connected.
+      // Probe a lightweight page; recycle context immediately on protocol/session failures.
+      try {
+        const probePage = await existing.context.newPage();
+        await probePage.close().catch(() => {});
+      } catch (probeErr) {
+        const message = probeErr instanceof Error ? probeErr.message : String(probeErr);
+        console.warn(`[Browser] Recycling stale context for ${accountId}: ${message}`);
+        await cleanupContext(accountId);
+      }
     }
+  }
+
+  const refreshed = activeContexts.get(accountId);
+  if (refreshed) {
+      clearTimeout(refreshed.timer);
+      refreshed.lastUsed = Date.now();
+      refreshed.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
+      return { browser: refreshed.browser, context: refreshed.context, cookiesLoaded: true };
   }
 
   // LRU cache cap of 5 active contexts.
