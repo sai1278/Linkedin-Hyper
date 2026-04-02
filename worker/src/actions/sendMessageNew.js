@@ -1,6 +1,6 @@
 'use strict';
 
-const { getAccountContext }                         = require('../browser');
+const { getAccountContext, cleanupContext }         = require('../browser');
 const { loadCookies, saveCookies }                  = require('../session');
 const { delay, humanClick, humanScroll, humanType } = require('../humanBehavior');
 const { checkAndIncrement }                         = require('../rateLimit');
@@ -65,6 +65,20 @@ function isValidThreadId(value) {
   if (!id) return false;
   if (id.toLowerCase() === 'new') return false;
   return true;
+}
+
+function isRecoverableBrowserError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  if (!msg) return false;
+
+  return (
+    msg.includes('session closed') ||
+    msg.includes('frame was detached') ||
+    msg.includes('target page, context or browser has been closed') ||
+    msg.includes('protocol error (page.createisolatedworld)') ||
+    msg.includes('protocol error (page.addscripttoevaluateonnewdocument)') ||
+    msg.includes('net::err_aborted')
+  );
 }
 
 function extractThreadIdFromText(value) {
@@ -559,8 +573,9 @@ async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 1
   return waitForPersistedText(Math.max(8000, Math.floor(timeoutMs / 2)));
 }
 
-async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
+async function sendMessageNew({ accountId, profileUrl, text, proxyUrl, __attempt = 1 }) {
   // W2 — checkAndIncrement moved to AFTER successful send.
+  await cleanupContext(accountId).catch(() => {});
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
   let networkThreadProbe = null;
@@ -730,6 +745,13 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
       createdAt: new Date().toISOString(),
       isRead:    true,
     };
+  } catch (err) {
+    if (__attempt < 2 && isRecoverableBrowserError(err)) {
+      await cleanupContext(accountId).catch(() => {});
+      await delay(700, 1300);
+      return sendMessageNew({ accountId, profileUrl, text, proxyUrl, __attempt: __attempt + 1 });
+    }
+    throw err;
   } finally {
     if (networkThreadProbe) {
       networkThreadProbe.stop();
