@@ -67,6 +67,104 @@ function isValidThreadId(value) {
   return true;
 }
 
+function extractThreadIdFromText(value) {
+  const raw = String(value || '');
+  if (!raw) return '';
+
+  const fromThreadUrl = raw.match(/\/messaging\/thread\/([^/?#"\s]+)/i);
+  if (isValidThreadId(fromThreadUrl?.[1])) return normalizeThreadIdCandidate(fromThreadUrl[1]);
+
+  const fromUrn = raw.match(/fs_conversation:([^,"\s)]+)/i);
+  if (isValidThreadId(fromUrn?.[1])) return normalizeThreadIdCandidate(fromUrn[1]);
+
+  const fromQuery = raw.match(/[?&](?:conversationId|threadId)=([^&#"\s]+)/i);
+  if (fromQuery?.[1]) {
+    try {
+      const decoded = decodeURIComponent(fromQuery[1]);
+      if (isValidThreadId(decoded)) return normalizeThreadIdCandidate(decoded);
+    } catch {
+      if (isValidThreadId(fromQuery[1])) return normalizeThreadIdCandidate(fromQuery[1]);
+    }
+  }
+
+  const fromConversationUrn = raw.match(/conversationUrn=([^&#"\s]+)/i);
+  if (fromConversationUrn?.[1]) {
+    try {
+      const decoded = decodeURIComponent(fromConversationUrn[1]);
+      const decodedUrn = decoded.match(/fs_conversation:([^,"\s)]+)/i);
+      if (isValidThreadId(decodedUrn?.[1])) return normalizeThreadIdCandidate(decodedUrn[1]);
+    } catch {}
+  }
+
+  return '';
+}
+
+function createNetworkThreadIdProbe(page) {
+  let resolvedThreadId = '';
+  const pendingParsers = new Set();
+
+  const maybeResolve = (candidate) => {
+    if (!resolvedThreadId && isValidThreadId(candidate)) {
+      resolvedThreadId = normalizeThreadIdCandidate(candidate);
+    }
+  };
+
+  const inspectResponse = (response) => {
+    if (resolvedThreadId) return;
+
+    try {
+      const url = response.url() || '';
+      if (!/linkedin\.com/i.test(url) || !/messaging|voyager/i.test(url)) {
+        return;
+      }
+
+      const idFromUrl = extractThreadIdFromText(url);
+      if (idFromUrl) {
+        maybeResolve(idFromUrl);
+        return;
+      }
+
+      const parser = (async () => {
+        try {
+          const body = await response.text();
+          const idFromBody = extractThreadIdFromText(body);
+          if (idFromBody) maybeResolve(idFromBody);
+        } catch (_) {}
+      })();
+
+      pendingParsers.add(parser);
+      parser.finally(() => pendingParsers.delete(parser));
+    } catch (_) {}
+  };
+
+  page.on('response', inspectResponse);
+
+  return {
+    async waitForThreadId(waitMs = 12000) {
+      const deadline = Date.now() + waitMs;
+      while (!resolvedThreadId && Date.now() < deadline) {
+        if (pendingParsers.size > 0) {
+          await Promise.race([
+            Promise.allSettled(Array.from(pendingParsers)),
+            delay(180, 260),
+          ]);
+        } else {
+          await delay(180, 260);
+        }
+      }
+
+      if (!resolvedThreadId && pendingParsers.size > 0) {
+        await Promise.allSettled(Array.from(pendingParsers));
+      }
+
+      return resolvedThreadId;
+    },
+    stop() {
+      page.off('response', inspectResponse);
+    },
+  };
+}
+
 async function getMessageSnapshot(page) {
   return page.evaluate(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -266,6 +364,76 @@ async function resolveThreadIdFromConversationPreview(page, messageText, waitMs 
   return '';
 }
 
+async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantName, messageText }, waitMs = 15000) {
+  const targetSlug = String(profileUrl || '').match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] || '';
+  const slugNeedle = slugToName(targetSlug).toLowerCase();
+  const nameNeedle = normalizeText(participantName).toLowerCase();
+  const textNeedle = normalizeText(messageText).slice(0, 48).toLowerCase();
+
+  try {
+    await page.goto('https://www.linkedin.com/messaging/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+  } catch (_) {
+    return '';
+  }
+
+  await page.waitForSelector('a[href*="/messaging/thread/"], .msg-conversation-listitem', {
+    timeout: 12000,
+  }).catch(() => null);
+
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    try {
+      const chatId = await page.evaluate((slugNeedleInput, nameNeedleInput, textNeedleInput) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const isValidThreadId = (value) => {
+          const id = String(value || '').trim();
+          if (!id) return false;
+          if (id.toLowerCase() === 'new') return false;
+          return true;
+        };
+
+        const candidates = Array.from(document.querySelectorAll('a[href*="/messaging/thread/"]'));
+        let bestMatch = { id: '', score: -1 };
+
+        for (const anchor of candidates) {
+          const href = anchor.getAttribute?.('href') || '';
+          const match = href.match(/\/messaging\/thread\/([^/?#]+)/i);
+          const candidateId = match?.[1] || '';
+          if (!isValidThreadId(candidateId)) continue;
+
+          const row =
+            anchor.closest('.msg-conversation-listitem, .msg-conversation-card, li, [data-view-name*="conversation"]') ||
+            anchor;
+          const rowText = normalize(row?.textContent).toLowerCase();
+          if (!rowText) continue;
+
+          let score = 0;
+          if (textNeedleInput && rowText.includes(textNeedleInput)) score += 5;
+          if (nameNeedleInput && rowText.includes(nameNeedleInput)) score += 3;
+          if (slugNeedleInput && rowText.includes(slugNeedleInput)) score += 2;
+
+          if (score > bestMatch.score) {
+            bestMatch = { id: String(candidateId).trim(), score };
+          }
+        }
+
+        return bestMatch.score > 0 ? bestMatch.id : '';
+      }, slugNeedle, nameNeedle, textNeedle);
+
+      if (isValidThreadId(chatId)) {
+        return chatId;
+      }
+    } catch (_) {}
+
+    await delay(600, 900);
+  }
+
+  return '';
+}
+
 async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 15000) {
   const normalizedChatId = String(chatId || '').trim();
   const target = normalizeText(text);
@@ -356,6 +524,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
   // W2 — checkAndIncrement moved to AFTER successful send.
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
+  let networkThreadProbe = null;
 
   try {
     // W1 — Only inject cookies on a cache miss.
@@ -451,6 +620,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     await humanType(page, composeSelector, text, { timeout: 10000 });
     await delay(800, 1800);
 
+    networkThreadProbe = createNetworkThreadIdProbe(page);
     await humanClick(page, '.msg-form__send-button, button[type="submit"][aria-label*="Send"]');
     const verified = await verifyMessageEcho(page, text, beforeSnapshot);
     if (!verified) {
@@ -463,7 +633,17 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     // W2 — Burn quota only after the send click succeeds.
     let chatId = await resolveThreadIdAfterSend(page, 12000);
     if (!chatId) {
+      chatId = await networkThreadProbe.waitForThreadId(12000);
+    }
+    if (!chatId) {
       chatId = await resolveThreadIdFromConversationPreview(page, text, 12000);
+    }
+    if (!chatId) {
+      chatId = await resolveThreadIdFromMessagingHome(
+        page,
+        { profileUrl, participantName, messageText: text },
+        20000
+      );
     }
     if (!chatId) {
       const err = new Error('Send clicked but LinkedIn thread ID was not resolved. Message may not be delivered.');
@@ -512,6 +692,9 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
       isRead:    true,
     };
   } finally {
+    if (networkThreadProbe) {
+      networkThreadProbe.stop();
+    }
     if (page) await page.close().catch(() => {});
   }
 }
