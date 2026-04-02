@@ -117,6 +117,7 @@ function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
     'NO_SESSION',
     'SESSION_EXPIRED',
     'NOT_MESSAGEABLE',
+    'SEND_NOT_CONFIRMED',
     'QUEUE_UNAVAILABLE',
     'READ_INBOX_TIMEOUT',
   ]);
@@ -649,6 +650,12 @@ async function runJob(name, data, timeoutMs = 120_000) {
       } else if (reason.includes('All LinkedIn sessions are missing or expired')) {
         failErr.code = 'NO_ACTIVE_SESSION';
         failErr.status = 401;
+      } else if (
+        reason.includes('Message send could not be confirmed in thread') ||
+        reason.includes('Send clicked but LinkedIn thread ID was not resolved')
+      ) {
+        failErr.code = 'SEND_NOT_CONFIRMED';
+        failErr.status = 502;
       }
     }
 
