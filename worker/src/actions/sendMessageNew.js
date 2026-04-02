@@ -56,6 +56,53 @@ function normalizeParticipantName(candidate, profileUrl) {
   return deriveNameFromProfileUrl(profileUrl);
 }
 
+async function clickMessageTriggerOnProfile(page) {
+  const selectors = [
+    'button[aria-label*="Message"]',
+    'a[aria-label*="Message"]',
+    'button[data-control-name*="message"]',
+    'a[data-control-name*="message"]',
+    'button[data-test-id*="message"]',
+    'a[data-test-id*="message"]',
+  ];
+
+  for (const selector of selectors) {
+    try {
+      await humanClick(page, selector, { timeout: 2500 });
+      return true;
+    } catch (_) {}
+  }
+
+  try {
+    const clicked = await page.evaluate(() => {
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        const hidden = style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0';
+        return !hidden && rect.width > 0 && rect.height > 0;
+      };
+
+      const nodes = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+      const target = nodes.find((el) => {
+        if (!isVisible(el)) return false;
+        const text = `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`.toLowerCase();
+        if (!text.includes('message')) return false;
+        const disabled = el.getAttribute('disabled') !== null || el.getAttribute('aria-disabled') === 'true';
+        return !disabled;
+      });
+
+      if (!target) return false;
+      target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      return true;
+    });
+
+    return Boolean(clicked);
+  } catch (_) {
+    return false;
+  }
+}
+
 function normalizeThreadIdCandidate(value) {
   return String(value || '').trim();
 }
@@ -579,6 +626,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
   let networkThreadProbe = null;
+  let preResolvedChatId = '';
 
   try {
     // W1 — Only inject cookies on a cache miss.
@@ -607,7 +655,10 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
         const directUrlLanding = page.url();
         if (!directUrlLanding.includes('/login') && !directUrlLanding.includes('/checkpoint') && !directUrlLanding.includes('/authwall')) {
           const composeBox = await page
-            .waitForSelector('.msg-form__contenteditable, [contenteditable][role="textbox"]', { timeout: 8000 })
+            .waitForSelector(
+              '.msg-form__contenteditable, [contenteditable][role="textbox"], div[role="textbox"][contenteditable="true"], [data-view-name="messaging-compose-box"] [contenteditable="true"]',
+              { timeout: 12000 }
+            )
             .catch(() => null);
           usedDirectUrl = !!composeBox;
 
@@ -628,6 +679,33 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
         // Fall back to profile-page flow below.
         usedDirectUrl = false;
       }
+    }
+
+    if (!usedDirectUrl) {
+      // Fallback 1: if conversation already exists, open from messaging home directly.
+      try {
+        const existingThreadId = await resolveThreadIdFromMessagingHome(
+          page,
+          { profileUrl, participantName, messageText: '' },
+          12000
+        );
+        if (isValidThreadId(existingThreadId)) {
+          await page.goto(`https://www.linkedin.com/messaging/thread/${existingThreadId}/`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000,
+          });
+          const threadComposer = await page
+            .waitForSelector(
+              '.msg-form__contenteditable, [contenteditable][role="textbox"], div[role="textbox"][contenteditable="true"], [data-view-name="messaging-compose-box"] [contenteditable="true"]',
+              { timeout: 10000 }
+            )
+            .catch(() => null);
+          if (threadComposer) {
+            usedDirectUrl = true;
+            preResolvedChatId = existingThreadId;
+          }
+        }
+      } catch (_) {}
     }
 
     if (!usedDirectUrl) {
@@ -658,9 +736,8 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
         participantName = normalizeParticipantName(candidateName, profileUrl);
       } catch (_) {}
 
-      try {
-        await humanClick(page, 'button[aria-label*="Message"], a[aria-label*="Message"]', { timeout: 10000 });
-      } catch (_) {
+      const openedComposer = await clickMessageTriggerOnProfile(page);
+      if (!openedComposer) {
         const err = new Error('Could not open message composer from profile. Ensure target profile is messageable and you are connected.');
         err.code = 'NOT_MESSAGEABLE';
         err.status = 400;
@@ -669,7 +746,8 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       await delay(1500, 3000);
     }
 
-    const composeSelector = '.msg-form__contenteditable, [contenteditable][role="textbox"]';
+    const composeSelector =
+      '.msg-form__contenteditable, [contenteditable][role="textbox"], div[role="textbox"][contenteditable="true"], [data-view-name="messaging-compose-box"] [contenteditable="true"]';
     const beforeSnapshot = await getMessageSnapshot(page).catch(() => ({ count: 0, lastText: '', recentTexts: [] }));
     await humanType(page, composeSelector, text, { timeout: 10000 });
     await delay(800, 1800);
@@ -685,7 +763,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     }
 
     // W2 — Burn quota only after the send click succeeds.
-    let chatId = await resolveThreadIdAfterSend(page, 12000);
+    let chatId = preResolvedChatId || (await resolveThreadIdAfterSend(page, 12000));
     if (!chatId) {
       chatId = await networkThreadProbe.waitForThreadId(12000);
     }
