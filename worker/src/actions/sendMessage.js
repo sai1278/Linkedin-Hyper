@@ -130,6 +130,53 @@ async function verifyMessageEcho(page, text, beforeSnapshot, timeoutMs = 12000) 
   }
 }
 
+async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 15000) {
+  const normalizedChatId = String(chatId || '').trim();
+  const target = normalizeText(text);
+  if (!normalizedChatId || !target) return false;
+
+  try {
+    await page.goto(`https://www.linkedin.com/messaging/thread/${normalizedChatId}/`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+  } catch (_) {
+    // Continue and try selector-based confirmation from current DOM.
+  }
+
+  try {
+    await page.waitForFunction(
+      (needle) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const targetText = normalize(needle);
+        if (!targetText) return false;
+
+        const nodes = Array.from(
+          document.querySelectorAll(
+            [
+              '.msg-s-message-list__event--own-turn .msg-s-event__content',
+              '[data-view-name="messaging-self-message"] .msg-s-event__content',
+              '.msg-s-event-listitem .msg-s-event__content',
+              '[data-view-name="messaging-message-list-item"] .msg-s-event__content',
+              '.msg-s-event__content',
+            ].join(', ')
+          )
+        );
+
+        return nodes.some((node) => {
+          const value = normalize(node?.textContent);
+          return value && (value.includes(targetText) || targetText.includes(value));
+        });
+      },
+      text,
+      { timeout: timeoutMs }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function sendMessage({ accountId, chatId, text, proxyUrl }) {
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
@@ -177,6 +224,14 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
     const verified = await verifyMessageEcho(page, text, beforeSnapshot);
     if (!verified) {
       const err = new Error('Message send could not be confirmed in thread. Retry once with fresh session.');
+      err.code = 'SEND_NOT_CONFIRMED';
+      err.status = 502;
+      throw err;
+    }
+
+    const persisted = await confirmMessagePersistedInThread(page, normalizedChatId, text, 15000);
+    if (!persisted) {
+      const err = new Error('Message was not found in thread after send confirmation. Message may not be delivered.');
       err.code = 'SEND_NOT_CONFIRMED';
       err.status = 502;
       throw err;

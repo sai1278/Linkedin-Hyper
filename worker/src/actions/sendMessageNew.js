@@ -180,6 +180,53 @@ async function resolveThreadIdAfterSend(page, waitMs = 9000) {
   return chatId || '';
 }
 
+async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 15000) {
+  const normalizedChatId = String(chatId || '').trim();
+  const target = normalizeText(text);
+  if (!normalizedChatId || !target) return false;
+
+  try {
+    await page.goto(`https://www.linkedin.com/messaging/thread/${normalizedChatId}/`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+  } catch (_) {
+    // Continue and try selector-based confirmation from current DOM.
+  }
+
+  try {
+    await page.waitForFunction(
+      (needle) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const targetText = normalize(needle);
+        if (!targetText) return false;
+
+        const nodes = Array.from(
+          document.querySelectorAll(
+            [
+              '.msg-s-message-list__event--own-turn .msg-s-event__content',
+              '[data-view-name="messaging-self-message"] .msg-s-event__content',
+              '.msg-s-event-listitem .msg-s-event__content',
+              '[data-view-name="messaging-message-list-item"] .msg-s-event__content',
+              '.msg-s-event__content',
+            ].join(', ')
+          )
+        );
+
+        return nodes.some((node) => {
+          const value = normalize(node?.textContent);
+          return value && (value.includes(targetText) || targetText.includes(value));
+        });
+      },
+      text,
+      { timeout: timeoutMs }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
   // W2 — checkAndIncrement moved to AFTER successful send.
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
@@ -289,10 +336,6 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     }
 
     // W2 — Burn quota only after the send click succeeds.
-    await checkAndIncrement(accountId, 'messagesSent');
-    await delay(2000, 4000);
-
-    // Extract new chat ID from URL — LinkedIn redirects to the thread after send
     const chatId = await resolveThreadIdAfterSend(page, 9000);
     if (!chatId) {
       const err = new Error('Send clicked but LinkedIn thread ID was not resolved. Message may not be delivered.');
@@ -300,6 +343,17 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
       err.status = 502;
       throw err;
     }
+
+    const persisted = await confirmMessagePersistedInThread(page, chatId, text, 15000);
+    if (!persisted) {
+      const err = new Error('Message was not found in thread after send confirmation. Message may not be delivered.');
+      err.code = 'SEND_NOT_CONFIRMED';
+      err.status = 502;
+      throw err;
+    }
+
+    await checkAndIncrement(accountId, 'messagesSent');
+    await delay(2000, 4000);
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
       await saveCookies(accountId, await context.cookies());
