@@ -231,11 +231,11 @@ function getRedis() {
     // API routes should fail fast when Redis is unavailable so HTTP handlers
     // can degrade gracefully instead of hanging until frontend timeout.
     maxRetriesPerRequest: 1,
-    enableOfflineQueue: false,
+    enableOfflineQueue: true,
     connectTimeout: 3000,
     commandTimeout: 3000,
     retryStrategy: () => null,
-    lazyConnect: true,
+    lazyConnect: false,
     enableReadyCheck: false,
   });
 
@@ -260,10 +260,10 @@ function createRedisClient() {
     password: process.env.REDIS_PASSWORD || undefined,
     // BullMQ requires maxRetriesPerRequest to be null.
     maxRetriesPerRequest: null,
-    enableOfflineQueue: false,
+    enableOfflineQueue: true,
     connectTimeout: 3000,
     retryStrategy: () => null,
-    lazyConnect: true,
+    lazyConnect: false,
     enableReadyCheck: false,
   });
 
