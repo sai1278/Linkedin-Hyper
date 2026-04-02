@@ -56,6 +56,17 @@ function normalizeParticipantName(candidate, profileUrl) {
   return deriveNameFromProfileUrl(profileUrl);
 }
 
+function normalizeThreadIdCandidate(value) {
+  return String(value || '').trim();
+}
+
+function isValidThreadId(value) {
+  const id = normalizeThreadIdCandidate(value);
+  if (!id) return false;
+  if (id.toLowerCase() === 'new') return false;
+  return true;
+}
+
 async function getMessageSnapshot(page) {
   return page.evaluate(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -137,7 +148,8 @@ async function resolveThreadIdAfterSend(page, waitMs = 9000) {
   const fromUrl = () => {
     const currentUrl = page.url();
     const match = currentUrl.match(/\/messaging\/thread\/([^/?#]+)/i);
-    return match?.[1] || '';
+    const candidate = match?.[1] || '';
+    return isValidThreadId(candidate) ? candidate : '';
   };
 
   let chatId = fromUrl();
@@ -145,7 +157,7 @@ async function resolveThreadIdAfterSend(page, waitMs = 9000) {
 
   try {
     await page.waitForFunction(
-      () => /\/messaging\/thread\/[^/?#]+/i.test(window.location.pathname + window.location.search),
+      () => /\/messaging\/thread\/(?!new(?:\/|\?|$))[^/?#]+/i.test(window.location.pathname + window.location.search),
       { timeout: waitMs }
     );
     chatId = fromUrl();
@@ -154,6 +166,19 @@ async function resolveThreadIdAfterSend(page, waitMs = 9000) {
 
   try {
     chatId = await page.evaluate(() => {
+      const normalizeThreadId = (value) => String(value || '').trim();
+      const isValidThreadId = (value) => {
+        const id = normalizeThreadId(value);
+        if (!id) return false;
+        if (id.toLowerCase() === 'new') return false;
+        return true;
+      };
+      const idFromHref = (href) => {
+        const fromHref = String(href || '').match(/\/messaging\/thread\/([^/?#]+)/i);
+        const candidate = fromHref?.[1] || '';
+        return isValidThreadId(candidate) ? candidate : '';
+      };
+
       const candidates = Array.from(
         document.querySelectorAll(
           'a[href*="/messaging/thread/"], [data-conversation-id], [data-urn*="fs_conversation"]'
@@ -161,15 +186,30 @@ async function resolveThreadIdAfterSend(page, waitMs = 9000) {
       );
       for (const node of candidates) {
         const href = node.getAttribute?.('href') || '';
-        const fromHref = href.match(/\/messaging\/thread\/([^/?#]+)/i);
-        if (fromHref?.[1]) return fromHref[1];
+        const idFromLink = idFromHref(href);
+        if (idFromLink) return idFromLink;
 
         const conversationId = node.getAttribute?.('data-conversation-id') || '';
-        if (conversationId) return conversationId;
+        if (isValidThreadId(conversationId)) return normalizeThreadId(conversationId);
 
         const urn = node.getAttribute?.('data-urn') || '';
         const urnMatch = urn.match(/fs_conversation:([^,\s)]+)/i);
-        if (urnMatch?.[1]) return urnMatch[1];
+        if (isValidThreadId(urnMatch?.[1])) return normalizeThreadId(urnMatch[1]);
+      }
+
+      const params = new URLSearchParams(window.location.search || '');
+      const explicitThreadId = params.get('threadId') || params.get('conversationId');
+      if (isValidThreadId(explicitThreadId)) return normalizeThreadId(explicitThreadId);
+
+      const conversationUrn = params.get('conversationUrn') || '';
+      const urnIdMatch = conversationUrn.match(/fs_conversation:([^,\s)]+)/i);
+      if (isValidThreadId(urnIdMatch?.[1])) return normalizeThreadId(urnIdMatch[1]);
+
+      const resources = performance.getEntriesByType('resource') || [];
+      for (let i = resources.length - 1; i >= 0; i -= 1) {
+        const resourceUrl = String(resources[i]?.name || '');
+        const fromMessagingApi = resourceUrl.match(/messaging\/conversations\/([^/?#]+)/i);
+        if (isValidThreadId(fromMessagingApi?.[1])) return normalizeThreadId(fromMessagingApi[1]);
       }
       return '';
     });
@@ -177,7 +217,53 @@ async function resolveThreadIdAfterSend(page, waitMs = 9000) {
     chatId = '';
   }
 
-  return chatId || '';
+  return isValidThreadId(chatId) ? chatId : '';
+}
+
+async function resolveThreadIdFromConversationPreview(page, messageText, waitMs = 12000) {
+  const target = normalizeText(messageText);
+  if (!target) return '';
+  const excerpt = target.slice(0, 48).toLowerCase();
+  const deadline = Date.now() + waitMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const chatId = await page.evaluate((needle) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const isValidThreadId = (value) => {
+          const id = String(value || '').trim();
+          if (!id) return false;
+          if (id.toLowerCase() === 'new') return false;
+          return true;
+        };
+
+        const anchors = Array.from(document.querySelectorAll('a[href*="/messaging/thread/"]'));
+        for (const anchor of anchors) {
+          const href = anchor.getAttribute?.('href') || '';
+          const match = href.match(/\/messaging\/thread\/([^/?#]+)/i);
+          const candidateId = match?.[1] || '';
+          if (!isValidThreadId(candidateId)) continue;
+
+          const row =
+            anchor.closest('.msg-conversation-listitem, .msg-conversation-card, li, [data-view-name*="conversation"]') ||
+            anchor;
+          const rowText = normalize(row?.textContent).toLowerCase();
+          if (rowText.includes(needle)) {
+            return String(candidateId).trim();
+          }
+        }
+        return '';
+      }, excerpt);
+
+      if (isValidThreadId(chatId)) {
+        return chatId;
+      }
+    } catch (_) {}
+
+    await delay(600, 900);
+  }
+
+  return '';
 }
 
 async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 15000) {
@@ -375,7 +461,10 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
     }
 
     // W2 — Burn quota only after the send click succeeds.
-    const chatId = await resolveThreadIdAfterSend(page, 9000);
+    let chatId = await resolveThreadIdAfterSend(page, 12000);
+    if (!chatId) {
+      chatId = await resolveThreadIdFromConversationPreview(page, text, 12000);
+    }
     if (!chatId) {
       const err = new Error('Send clicked but LinkedIn thread ID was not resolved. Message may not be delivered.');
       err.code = 'SEND_NOT_CONFIRMED';
@@ -383,7 +472,7 @@ async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
       throw err;
     }
 
-    const persisted = await confirmMessagePersistedInThread(page, chatId, text, 15000);
+    const persisted = await confirmMessagePersistedInThread(page, chatId, text, 30000);
     if (!persisted) {
       const err = new Error('Message was not found in thread after send confirmation. Message may not be delivered.');
       err.code = 'SEND_NOT_CONFIRMED';
