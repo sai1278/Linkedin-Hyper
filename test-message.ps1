@@ -1,7 +1,7 @@
 param(
   [string]$AccountId = "",
   [string]$ProfileUrl = "",
-  [string]$Text = "Hi, test message from automation",
+  [string]$Text = "",
   [switch]$AutoUseActiveAccount = $true,
   [string]$ApiKey = "dev-api-secret-key-change-in-production",
   [string]$RouteAuthToken = "",
@@ -10,6 +10,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($Text)) {
+  $Text = "Hi, test message from automation ($(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK'))"
+}
 
 if ([string]::IsNullOrWhiteSpace($ProfileUrl)) {
   Write-Error "Provide -ProfileUrl, for example: -ProfileUrl 'https://www.linkedin.com/in/someone/'"

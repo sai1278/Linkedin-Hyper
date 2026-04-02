@@ -53,24 +53,52 @@ function normalizeParticipantName(candidate, profileUrl) {
   return deriveNameFromProfileUrl(profileUrl);
 }
 
-async function verifyMessageEcho(page, text, timeoutMs = 12000) {
+async function getOwnMessageSnapshot(page) {
+  return page.evaluate(() => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const nodes = Array.from(
+      document.querySelectorAll(
+        '.msg-s-message-list__event--own-turn .msg-s-event__content, [data-view-name="messaging-self-message"] .msg-s-event__content'
+      )
+    );
+    const texts = nodes.map((node) => normalize(node?.textContent)).filter(Boolean);
+    return {
+      count: texts.length,
+      lastText: texts.length > 0 ? texts[texts.length - 1] : '',
+    };
+  });
+}
+
+async function verifyMessageEcho(page, text, beforeSnapshot, timeoutMs = 12000) {
   const target = normalizeText(text);
-  if (!target) return true;
+  if (!target) return false;
+  const beforeCount = Number(beforeSnapshot?.count || 0);
+  const beforeLastText = normalizeText(beforeSnapshot?.lastText);
 
   try {
     await page.waitForFunction(
-      (needle) => {
+      (needle, oldCount, oldLastText) => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        const candidates = Array.from(
+        const nodes = Array.from(
           document.querySelectorAll(
-            '.msg-s-message-list__event--own-turn .msg-s-event__content, [data-view-name="messaging-self-message"] .msg-s-event__content, .msg-s-event__content'
+            '.msg-s-message-list__event--own-turn .msg-s-event__content, [data-view-name="messaging-self-message"] .msg-s-event__content'
           )
         );
-        const lastOwn = [...candidates].reverse().find((el) => normalize(el?.textContent));
-        if (!lastOwn) return false;
-        return normalize(lastOwn.textContent).includes(normalize(needle));
+        const texts = nodes.map((node) => normalize(node?.textContent)).filter(Boolean);
+        if (texts.length === 0) return false;
+
+        const lastOwnText = normalize(texts[texts.length - 1]);
+        const normalizedNeedle = normalize(needle);
+        const textMatches =
+          lastOwnText.includes(normalizedNeedle) || normalizedNeedle.includes(lastOwnText);
+        const countIncreased = texts.length > Number(oldCount || 0);
+        const changedFromPrevious = lastOwnText !== normalize(oldLastText || '');
+
+        return textMatches && (countIncreased || changedFromPrevious);
       },
       text,
+      beforeCount,
+      beforeLastText,
       { timeout: timeoutMs }
     );
     return true;
@@ -112,6 +140,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
       )
       .catch(() => null);
 
+    const beforeSnapshot = await getOwnMessageSnapshot(page).catch(() => ({ count: 0, lastText: '' }));
     await humanType(
       page,
       '.msg-form__contenteditable, [data-view-name="messaging-compose-box"] [contenteditable]',
@@ -122,7 +151,7 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
     await humanClick(page, '.msg-form__send-button, button[type="submit"][aria-label*="Send"]');
     await delay(1200, 2200);
 
-    const verified = await verifyMessageEcho(page, text);
+    const verified = await verifyMessageEcho(page, text, beforeSnapshot);
     if (!verified) {
       const err = new Error('Message send could not be confirmed in thread. Retry once with fresh session.');
       err.code = 'SEND_NOT_CONFIRMED';
