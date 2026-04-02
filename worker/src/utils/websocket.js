@@ -2,8 +2,97 @@
 // WebSocket server management using Socket.IO
 
 const { Server } = require('socket.io');
+const crypto = require('crypto');
+const { listKnownAccountIds } = require('../session');
 
 let io = null;
+let knownAccountCache = { ids: new Set(), expiresAt: 0 };
+
+function parseCookies(cookieHeader) {
+  const parsed = {};
+  for (const part of String(cookieHeader || '').split(';')) {
+    const idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    const key = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (!key) continue;
+    try {
+      parsed[key] = decodeURIComponent(value);
+    } catch {
+      parsed[key] = value;
+    }
+  }
+  return parsed;
+}
+
+function decodeBase64Url(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const pad = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+  return Buffer.from(normalized + pad, 'base64');
+}
+
+function verifySocketJwt(token) {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) return null;
+
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) return null;
+
+  const [headerB64, payloadB64, sigB64] = parts;
+  try {
+    const header = JSON.parse(decodeBase64Url(headerB64).toString('utf8'));
+    if (header?.alg !== 'HS256') return null;
+
+    const expectedSig = crypto
+      .createHmac('sha256', secret)
+      .update(`${headerB64}.${payloadB64}`)
+      .digest();
+    const providedSig = decodeBase64Url(sigB64);
+
+    if (
+      expectedSig.length !== providedSig.length ||
+      !crypto.timingSafeEqual(expectedSig, providedSig)
+    ) {
+      return null;
+    }
+
+    const payload = JSON.parse(decodeBase64Url(payloadB64).toString('utf8'));
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof payload?.exp === 'number' && payload.exp <= now) return null;
+    if (payload?.authenticated !== true) return null;
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function isValidAccountId(accountId) {
+  return (
+    typeof accountId === 'string' &&
+    accountId.length > 0 &&
+    accountId.length <= 128 &&
+    /^[a-zA-Z0-9._:-]+$/.test(accountId)
+  );
+}
+
+async function getKnownAccountIds() {
+  if (Date.now() < knownAccountCache.expiresAt) {
+    return knownAccountCache.ids;
+  }
+
+  try {
+    const ids = await listKnownAccountIds();
+    knownAccountCache = {
+      ids: new Set((ids || []).map((id) => String(id).trim()).filter(Boolean)),
+      expiresAt: Date.now() + 30_000,
+    };
+  } catch {
+    knownAccountCache = { ids: new Set(), expiresAt: Date.now() + 5_000 };
+  }
+
+  return knownAccountCache.ids;
+}
 
 /**
  * Initialize WebSocket server
@@ -21,14 +110,33 @@ function initializeWebSocket(httpServer) {
   });
 
   io.on('connection', (socket) => {
+    const cookies = parseCookies(socket.handshake?.headers?.cookie || '');
+    const payload = verifySocketJwt(cookies.app_session);
+    if (!payload || payload.role !== 'admin') {
+      socket.emit('auth:error', { error: 'Unauthorized socket session' });
+      socket.disconnect(true);
+      return;
+    }
+
+    socket.data.authenticated = true;
+    socket.data.authPayload = payload;
     console.log('[WebSocket] Client connected:', socket.id);
 
     // Handle client joining account-specific rooms
-    socket.on('join:account', (accountId) => {
-      if (accountId) {
-        socket.join(`account:${accountId}`);
-        console.log(`[WebSocket] Client ${socket.id} joined room: account:${accountId}`);
+    socket.on('join:account', async (accountId) => {
+      if (!isValidAccountId(accountId)) {
+        socket.emit('auth:error', { error: 'Invalid account room' });
+        return;
       }
+
+      const knownIds = await getKnownAccountIds();
+      if (!knownIds.has(accountId)) {
+        socket.emit('auth:error', { error: 'Forbidden account room' });
+        return;
+      }
+
+      socket.join(`account:${accountId}`);
+      console.log(`[WebSocket] Client ${socket.id} joined room: account:${accountId}`);
     });
 
     // Handle client leaving account rooms
@@ -107,7 +215,6 @@ function emitToAccount(accountId, event, data) {
  */
 function emitInboxUpdate(accountId, inboxData) {
   emitToAccount(accountId, 'inbox:updated', inboxData);
-  broadcastEvent('inbox:updated', { accountId, ...inboxData });
 }
 
 /**
@@ -117,7 +224,6 @@ function emitInboxUpdate(accountId, inboxData) {
  */
 function emitNewMessage(accountId, message) {
   emitToAccount(accountId, 'inbox:new_message', message);
-  broadcastEvent('inbox:new_message', { accountId, ...message });
 }
 
 /**
@@ -127,7 +233,6 @@ function emitNewMessage(accountId, message) {
  */
 function emitAccountStatus(accountId, status) {
   emitToAccount(accountId, 'account:status', status);
-  broadcastEvent('account:status', { accountId, ...status });
 }
 
 /**

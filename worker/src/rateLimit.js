@@ -13,6 +13,14 @@ const LIMITS = {
 
 // Local fallback for dev mode when Redis is unavailable.
 const memoryCounters = new Map();
+let cachedRedis = null;
+
+function getRateLimitRedis() {
+  if (!cachedRedis) {
+    cachedRedis = getRedis();
+  }
+  return cachedRedis;
+}
 
 function todayKey() {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
@@ -31,7 +39,7 @@ async function checkAndIncrement(accountId, action) {
 
   let current;
   try {
-    const redis = getRedis();
+    const redis = getRateLimitRedis();
     // Lua script ensures atomicity: INCR then EXPIRE only if counter == 1
     current = await redis.eval(`
       local count = redis.call("INCR", KEYS[1])
@@ -66,7 +74,7 @@ async function getLimits(accountId) {
   let values;
 
   try {
-    const redis = getRedis();
+    const redis = getRateLimitRedis();
     // Single round-trip instead of N sequential GETs.
     values = await redis.mget(...keys);
   } catch (_err) {

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { signToken } from '@/lib/auth/jwt';
 import { shouldUseSecureCookie } from '@/lib/auth/cookie';
+import { verifyPassword } from '@/lib/auth/password';
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { password } = body;
+    const { password, rememberMe } = body;
     
     if (!password) {
       return NextResponse.json(
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
       );
     }
     
-    if (password !== dashboardPassword) {
+    if (!verifyPassword(String(password), String(dashboardPassword))) {
       return NextResponse.json(
         { error: 'Invalid password' }, 
         { status: 401 }
@@ -39,21 +40,44 @@ export async function POST(req: NextRequest) {
       ok: true, 
       message: 'Login successful' 
     });
-    
-    response.cookies.set('app_session', token, {
+    response.headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
+    response.headers.set('Pragma', 'no-cache');
+    response.headers.set('Vary', 'Cookie, Authorization, Origin');
+
+    const cookieOptions: {
+      httpOnly: boolean;
+      secure: boolean;
+      sameSite: 'strict';
+      path: string;
+      maxAge?: number;
+    } = {
       httpOnly: true,
       secure: shouldUseSecureCookie(req),
       sameSite: 'strict',
-      maxAge: parseInt(process.env.SESSION_MAX_AGE || '86400', 10),
       path: '/',
-    });
-    
+    };
+
+    // If "Remember Me" is checked, persist for configured maxAge.
+    // Otherwise browser-session cookie expires on browser close.
+    if (rememberMe === true) {
+      cookieOptions.maxAge = parseInt(process.env.SESSION_MAX_AGE || '86400', 10);
+    }
+
+    response.cookies.set('app_session', token, cookieOptions);
+
     return response;
   } catch (error) {
     console.error('Login error:', error);
     return NextResponse.json(
       { error: 'Login failed' },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          'Cache-Control': 'private, no-store, max-age=0, must-revalidate',
+          Pragma: 'no-cache',
+          Vary: 'Cookie, Authorization, Origin',
+        },
+      }
     );
   }
 }

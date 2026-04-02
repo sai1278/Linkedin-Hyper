@@ -16,6 +16,9 @@ export async function POST(req: NextRequest) {
     }
     
     const response = NextResponse.json({ ok: true });
+    response.headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
+    response.headers.set('Pragma', 'no-cache');
+    response.headers.set('Vary', 'Cookie, Authorization, Origin');
     
     // Clear the cookie
     response.cookies.set('app_session', '', {
@@ -30,7 +33,14 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json(
       { error: 'Logout failed' },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          'Cache-Control': 'private, no-store, max-age=0, must-revalidate',
+          Pragma: 'no-cache',
+          Vary: 'Cookie, Authorization, Origin',
+        },
+      }
     );
   }
 }

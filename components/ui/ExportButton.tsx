@@ -10,7 +10,8 @@ import toast from 'react-hot-toast';
 interface ExportButtonProps {
   type: 'messages' | 'activity';
   accountId?: string;
-  chatId?: string;
+  conversationId?: string;
+  chatId?: string; // backward-compatible alias
   label?: string;
   variant?: 'default' | 'outline' | 'ghost';
   size?: 'sm' | 'md' | 'lg';
@@ -19,6 +20,7 @@ interface ExportButtonProps {
 export function ExportButton({ 
   type, 
   accountId, 
+  conversationId,
   chatId,
   label = 'Export', 
   variant = 'outline',
@@ -35,7 +37,11 @@ export function ExportButton({
       const response = await fetch(`/api/export/${type}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId, chatId, format }),
+        body: JSON.stringify({
+          accountId,
+          conversationId: conversationId || chatId,
+          format,
+        }),
       });
       
       if (!response.ok) {

@@ -3,6 +3,12 @@ import { NextRequest, NextResponse } from 'next/server';
 const API_URL = process.env.API_URL ?? 'http://localhost:3001';
 const API_SECRET = process.env.API_SECRET ?? '';
 
+function applyPrivateNoStore(headers: Headers): void {
+  headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
+  headers.set('Pragma', 'no-cache');
+  headers.set('Vary', 'Cookie, Authorization, Origin');
+}
+
 function buildAllowedOrigins(req: NextRequest): Set<string> {
   const origins = new Set<string>();
 
@@ -108,9 +114,8 @@ export async function forwardToBackend(opts: ForwardOptions): Promise<NextRespon
     const isNoContentStatus = res.status === 204 || res.status === 205 || res.status === 304;
 
     const headers = new Headers();
-    // Dashboard state is user-driven and should reflect writes immediately
-    // (session import/delete/verify). Disable response caching in BFF.
-    headers.set('Cache-Control', 'no-store');
+    // Dashboard state is user-specific and should never be cached publicly.
+    applyPrivateNoStore(headers);
 
     const upstreamType = res.headers.get('content-type');
     if (!isNoContentStatus) {
@@ -172,5 +177,9 @@ export function requireInteger(
 /** Return a 400 JSON response from a caught Error or unknown. */
 export function badRequest(error: unknown): NextResponse {
   const message = error instanceof Error ? error.message : 'Bad request';
-  return NextResponse.json({ error: message }, { status: 400 });
+  const res = NextResponse.json({ error: message }, { status: 400 });
+  res.headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
+  res.headers.set('Pragma', 'no-cache');
+  res.headers.set('Vary', 'Cookie, Authorization, Origin');
+  return res;
 }

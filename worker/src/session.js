@@ -8,6 +8,7 @@ const { getRedis } = require('./redisClient');
 const ALGORITHM   = 'aes-256-gcm';
 const SESSION_TTL = 86400 * 30; // 30 days
 const META_TTL    = 86400 * 30;
+const REDIS_SESSION_OP_TIMEOUT_MS = parseInt(process.env.REDIS_SESSION_TIMEOUT_MS || '2500', 10);
 
 // Local fallback when Redis is unavailable (dev convenience).
 const memorySessions = new Map();
@@ -28,6 +29,21 @@ function warnRedisFallback(err) {
   redisWarningShown = true;
   const message = err instanceof Error ? err.message : String(err);
   console.warn(`[Session] Redis unavailable, using in-memory session store: ${message}`);
+}
+
+async function withRedisTimeout(promise, label) {
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`[Session] ${label} timed out after ${REDIS_SESSION_OP_TIMEOUT_MS}ms`));
+    }, REDIS_SESSION_OP_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function getKey() {
@@ -213,11 +229,11 @@ async function saveCookies(accountId, cookies) {
   try {
     const redis = getRedis();
     const encrypted = encrypt(JSON.stringify(normalised));
-    await Promise.all([
+    await withRedisTimeout(Promise.all([
       redis.set(`session:${accountId}`, encrypted, 'EX', SESSION_TTL),
       redis.set(`session:meta:${accountId}`, JSON.stringify({ savedAt: now }), 'EX', META_TTL),
       redis.sadd('session:accounts', accountId),
-    ]);
+    ]), 'saveCookies');
 
     // Keep memory store hot for local dev even when Redis is reachable.
     memorySessions.set(accountId, normalised);
@@ -232,7 +248,7 @@ async function saveCookies(accountId, cookies) {
 async function loadCookies(accountId) {
   try {
     const redis = getRedis();
-    const raw   = await redis.get(`session:${accountId}`);
+    const raw   = await withRedisTimeout(redis.get(`session:${accountId}`), 'loadCookies');
     if (raw) knownAccountIds.add(accountId);
     if (!raw) {
       const diskCookies = loadSessionFromDisk(accountId);
@@ -263,7 +279,7 @@ async function loadCookies(accountId) {
 async function sessionMeta(accountId) {
   try {
     const redis = getRedis();
-    const raw   = await redis.get(`session:meta:${accountId}`);
+    const raw   = await withRedisTimeout(redis.get(`session:meta:${accountId}`), 'sessionMeta');
     if (raw) knownAccountIds.add(accountId);
     const meta  = raw
       ? JSON.parse(raw)
@@ -283,10 +299,10 @@ async function sessionMeta(accountId) {
 async function deleteSession(accountId) {
   try {
     const redis = getRedis();
-    await Promise.all([
+    await withRedisTimeout(Promise.all([
       redis.del(`session:${accountId}`, `session:meta:${accountId}`),
       redis.srem('session:accounts', accountId),
-    ]);
+    ]), 'deleteSession');
   } catch (err) {
     warnRedisFallback(err);
   }
@@ -307,7 +323,7 @@ async function listKnownAccountIds() {
 
   try {
     const redis = getRedis();
-    const indexed = await redis.smembers('session:accounts');
+    const indexed = await withRedisTimeout(redis.smembers('session:accounts'), 'listKnownAccountIds');
     for (const id of indexed) {
       if (id && String(id).trim()) ids.add(String(id).trim());
     }

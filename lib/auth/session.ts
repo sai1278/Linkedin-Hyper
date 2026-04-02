@@ -7,6 +7,7 @@ let redis: Redis | null = null;
 let redisWarningShown = false;
 let redisUnavailableUntil = 0;
 let redisDisabledNoticeShown = false;
+const REDIS_OPERATION_TIMEOUT_MS = parseInt(process.env.REDIS_SESSION_TIMEOUT_MS || '2500', 10);
 
 function isRedisDisabled(): boolean {
   return process.env.DISABLE_REDIS === '1';
@@ -28,6 +29,8 @@ function createRedisClient(): Redis {
     lazyConnect: true,
     enableOfflineQueue: false,
     maxRetriesPerRequest: 1 as const,
+    connectTimeout: 2000,
+    commandTimeout: 2000,
     retryStrategy: () => null,
   };
 
@@ -45,6 +48,21 @@ function createRedisClient(): Redis {
   });
 
   return client;
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`[auth/session] ${label} timed out after ${REDIS_OPERATION_TIMEOUT_MS}ms`));
+    }, REDIS_OPERATION_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function getRedis(): Redis | null {
@@ -82,7 +100,10 @@ export async function getSession(req: NextRequest): Promise<JWTPayload | null> {
     const redisClient = getRedis();
     if (redisClient) {
       try {
-        const isBlacklisted = await redisClient.get(`jwt:blacklist:${payload.jti}`);
+        const isBlacklisted = await withTimeout(
+          redisClient.get(`jwt:blacklist:${payload.jti}`),
+          'blacklist lookup'
+        );
         if (isBlacklisted) return null;
       } catch (error) {
         markRedisUnavailable(error);
@@ -105,7 +126,10 @@ export async function blacklistToken(jti: string, expiresIn: number): Promise<vo
   }
 
   try {
-    await redisClient.setex(`jwt:blacklist:${jti}`, expiresIn, '1');
+    await withTimeout(
+      redisClient.setex(`jwt:blacklist:${jti}`, expiresIn, '1'),
+      'blacklist write'
+    );
   } catch (error) {
     markRedisUnavailable(error);
     redis?.disconnect();

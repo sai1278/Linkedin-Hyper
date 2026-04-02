@@ -3,6 +3,7 @@
 
 import { useEffect } from 'react';
 import { wsClient } from '@/lib/websocket-client';
+import { useAuth } from '@/components/providers/AuthProvider';
 import toast from 'react-hot-toast';
 
 type StatusChangedPayload = {
@@ -17,7 +18,15 @@ type InboxNewMessagePayload = {
 };
 
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth();
+
   useEffect(() => {
+    // Avoid opening sockets for unauthenticated pages (login/register).
+    if (isLoading || !isAuthenticated) {
+      wsClient.disconnect();
+      return;
+    }
+
     // Use worker API URL (default: localhost:3001)
     const url = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001';
 
@@ -76,7 +85,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       unsubscribeConnected();
       wsClient.disconnect();
     };
-  }, []);
+  }, [isAuthenticated, isLoading]);
 
   return <>{children}</>;
 }

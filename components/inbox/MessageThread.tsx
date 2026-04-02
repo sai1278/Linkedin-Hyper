@@ -8,6 +8,7 @@ import { ReplyInput } from '@/components/inbox/ReplyInput';
 import { sendMessage } from '@/lib/api-client';
 import { formatRelativeTime } from '@/lib/time-utils';
 import { CheckCheck } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 interface MessageThreadProps {
   conversation: Conversation | null;
@@ -89,8 +90,19 @@ export function MessageThread({ conversation, onMessageSent }: MessageThreadProp
     // Fire real request in background — chatId = conversationId
     try {
       await sendMessage(accountId, conversation.conversationId, text);
-    } catch {
-      // Silently fail — optimistic message remains visible
+    } catch (err) {
+      const withoutOptimistic = updated.messages.filter((m) => m.id !== optimistic.id);
+      const fallbackLast = withoutOptimistic[withoutOptimistic.length - 1];
+
+      onMessageSent({
+        ...updated,
+        messages: withoutOptimistic,
+        lastMessage: fallbackLast
+          ? { text: fallbackLast.text, sentAt: fallbackLast.sentAt, sentByMe: fallbackLast.sentByMe }
+          : conversation.lastMessage,
+      });
+
+      toast.error(err instanceof Error ? err.message : 'Failed to send message');
     }
   }
 

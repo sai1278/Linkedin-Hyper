@@ -59,17 +59,30 @@ export async function getConversationThread(
 ): Promise<{ messages: Message[] }> {
   const res = await apiFetch<{
     items: Array<{
-      id: string; chatId: string; senderId: string;
-      text: string; createdAt: string; senderName?: string;
+      id: string;
+      chatId: string;
+      senderId?: string;
+      isSentByMe?: boolean;
+      text: string;
+      createdAt?: string;
+      sentAt?: string;
+      senderName?: string;
     }>;
   }>(`messages/thread?accountId=${encodeURIComponent(accountId)}&chatId=${encodeURIComponent(chatId)}`);
 
   return {
     messages: res.items.map((m) => ({
       id: m.id, text: m.text,
-      sentAt:     new Date(m.createdAt).getTime(),
-      sentByMe:   m.senderId === '__self__',
-      senderName: m.senderId === '__self__' ? (m.senderName || accountId) : (m.senderName || 'Unknown'),
+      sentAt: (() => {
+        const rawTs = m.createdAt ?? m.sentAt;
+        const parsed = rawTs ? new Date(rawTs).getTime() : Date.now();
+        return Number.isFinite(parsed) ? parsed : Date.now();
+      })(),
+      sentByMe: m.senderId === '__self__' || m.isSentByMe === true,
+      senderName:
+        (m.senderId === '__self__' || m.isSentByMe === true)
+          ? (m.senderName || accountId)
+          : (m.senderName || 'Unknown'),
     })),
   };
 }

@@ -138,26 +138,40 @@ function normalizeThreadId(accountId, conversationId) {
 }
 
 function mapDbMessagesToApiItems(messages) {
-  return messages.map((msg) => ({
-    id: msg.id,
-    chatId: msg.conversationId,
-    senderId: msg.isSentByMe ? '__self__' : (msg.senderId || 'other'),
-    text: msg.text || '',
-    createdAt: new Date(msg.sentAt).toISOString(),
-    senderName: msg.senderName || (msg.isSentByMe ? msg.accountId : 'Unknown'),
-  }));
+  return messages.map((msg) => {
+    const createdAt = new Date(msg.sentAt).toISOString();
+    const isSentByMe = Boolean(msg.isSentByMe);
+    return {
+      id: msg.id,
+      chatId: msg.conversationId,
+      senderId: isSentByMe ? '__self__' : (msg.senderId || 'other'),
+      text: msg.text || '',
+      createdAt,
+      // Compatibility fields for older consumers
+      sentAt: createdAt,
+      isSentByMe,
+      senderName: msg.senderName || (isSentByMe ? msg.accountId : 'Unknown'),
+    };
+  });
 }
 
 function mapLiveMessagesToApiItems(messages, fallbackChatId, accountId) {
-  return (messages || []).map((msg, idx) => ({
-    id: msg.id || `live-${Date.now()}-${idx}`,
-    chatId: msg.chatId || fallbackChatId,
-    senderId: msg.senderId || 'other',
-    text: msg.text || '',
-    createdAt: msg.createdAt || new Date().toISOString(),
-    senderName:
-      msg.senderName || (msg.senderId === '__self__' ? accountId : 'Unknown'),
-  }));
+  return (messages || []).map((msg, idx) => {
+    const createdAt = msg.createdAt || new Date().toISOString();
+    const isSentByMe = msg.senderId === '__self__' || msg.isSentByMe === true;
+    return {
+      id: msg.id || `live-${Date.now()}-${idx}`,
+      chatId: msg.chatId || fallbackChatId,
+      senderId: isSentByMe ? '__self__' : (msg.senderId || 'other'),
+      text: msg.text || '',
+      createdAt,
+      // Compatibility fields for older consumers
+      sentAt: createdAt,
+      isSentByMe,
+      senderName:
+        msg.senderName || (isSentByMe ? accountId : 'Unknown'),
+    };
+  });
 }
 
 function normalizeWhitespace(value) {

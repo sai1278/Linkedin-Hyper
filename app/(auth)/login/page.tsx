@@ -10,6 +10,7 @@ export default function LoginPage() {
   const { login } = useAuth();
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   
@@ -19,7 +20,7 @@ export default function LoginPage() {
     setIsLoading(true);
     
     try {
-      await login(password);
+      await login(password, rememberMe);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -100,6 +101,16 @@ export default function LoginPage() {
               </motion.p>
             )}
           </div>
+
+          <label className="flex items-center gap-2 text-sm select-none" style={{ color: 'var(--text-secondary)' }}>
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              disabled={isLoading}
+            />
+            <span>Remember me</span>
+          </label>
           
           <button
             type="submit"

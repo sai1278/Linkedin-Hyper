@@ -89,7 +89,12 @@ const ALLOWLIST: readonly RouteRule[] = [
 function jsonError(status: number, message: string): NextResponse {
   return new NextResponse(JSON.stringify({ error: message }), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'private, no-store, max-age=0, must-revalidate',
+      Pragma: 'no-cache',
+      Vary: 'Cookie, Authorization, Origin',
+    },
   });
 }
 
@@ -214,7 +219,12 @@ async function handler(
     const data = await res.text();
     return new NextResponse(data, {
       status: res.status,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'private, no-store, max-age=0, must-revalidate',
+        Pragma: 'no-cache',
+        Vary: 'Cookie, Authorization, Origin',
+      },
     });
   } catch {
     return jsonError(502, 'Backend unreachable');

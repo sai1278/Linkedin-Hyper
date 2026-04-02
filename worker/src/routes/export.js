@@ -8,6 +8,41 @@ const { getRedis } = require('../redisClient');
 const messageRepo = require('../db/repositories/MessageRepository');
 
 const router = express.Router();
+const ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
+
+function readBody(req) {
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new Error('Request body must be a JSON object');
+  }
+  return body;
+}
+
+function readFormat(raw) {
+  const format = String(raw || 'csv').toLowerCase();
+  if (!['csv', 'json'].includes(format)) {
+    throw new Error('format must be "csv" or "json"');
+  }
+  return format;
+}
+
+function readOptionalId(raw, fieldName) {
+  if (raw == null || String(raw).trim() === '') return null;
+  const id = String(raw).trim();
+  if (!ID_RE.test(id)) {
+    throw new Error(`${fieldName} is invalid`);
+  }
+  return id;
+}
+
+function readOptionalLimit(raw, fallback = 1000, min = 1, max = 5000) {
+  if (raw == null || raw === '') return fallback;
+  const parsed = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    throw new Error(`limit must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
+}
 
 /**
  * Convert data to CSV format
@@ -36,11 +71,10 @@ function toCSV(headers, rows) {
  */
 router.post('/messages', async (req, res) => {
   try {
-    const { accountId, format = 'csv', conversationId } = req.body;
-    
-    if (!format || !['csv', 'json'].includes(format)) {
-      return res.status(400).json({ error: 'format must be "csv" or "json"' });
-    }
+    const body = readBody(req);
+    const format = readFormat(body.format);
+    const accountId = readOptionalId(body.accountId, 'accountId');
+    const conversationId = readOptionalId(body.conversationId, 'conversationId');
 
     // Query messages from database
     const messages = await messageRepo.getMessagesForExport({
@@ -87,10 +121,13 @@ router.post('/messages', async (req, res) => {
     } else {
       // JSON format
       const filename = `linkedin-messages-${new Date().toISOString().split('T')[0]}.json`;
+      const accountsForExport = Array.from(
+        new Set(allMessages.map((m) => String(m.accountId || '').trim()).filter(Boolean))
+      );
       const jsonData = {
         exportedAt: new Date().toISOString(),
         totalMessages: allMessages.length,
-        accounts: accountIds,
+        accounts: accountsForExport,
         messages: allMessages,
       };
 
@@ -100,6 +137,9 @@ router.post('/messages', async (req, res) => {
     }
   } catch (err) {
     console.error('[Export] Error:', err);
+    if (err?.message) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ 
       error: process.env.NODE_ENV === 'production' ? 'Export failed' : err.message 
     });
@@ -113,11 +153,10 @@ router.post('/messages', async (req, res) => {
  */
 router.post('/activity', async (req, res) => {
   try {
-    const { accountId, format = 'csv', limit = 1000 } = req.body;
-    
-    if (!format || !['csv', 'json'].includes(format)) {
-      return res.status(400).json({ error: 'format must be "csv" or "json"' });
-    }
+    const body = readBody(req);
+    const format = readFormat(body.format);
+    const accountId = readOptionalId(body.accountId, 'accountId');
+    const limit = readOptionalLimit(body.limit, 1000, 1, 5000);
 
     const redis = getRedis();
     let allActivity = [];
@@ -127,7 +166,15 @@ router.post('/activity', async (req, res) => {
     if (accountId) {
       accountIds = [accountId];
     } else {
-      accountIds = (process.env.ACCOUNT_IDS ?? '').split(',').filter(Boolean);
+      accountIds = (process.env.ACCOUNT_IDS ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean)
+        .filter((id) => ID_RE.test(id));
+    }
+
+    if (accountIds.length === 0) {
+      return res.status(400).json({ error: 'No valid account IDs available for export' });
     }
 
     // Fetch activity logs from Redis
@@ -192,6 +239,9 @@ router.post('/activity', async (req, res) => {
     }
   } catch (err) {
     console.error('[Export] Error:', err);
+    if (err?.message) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ 
       error: process.env.NODE_ENV === 'production' ? 'Export failed' : err.message 
     });

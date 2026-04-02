@@ -102,6 +102,17 @@ export default function InboxPage() {
       ? conversations
       : conversations.filter((c) => c.accountId === filter);
 
+  useEffect(() => {
+    if (!isLive || accounts.length === 0) return;
+
+    const ids = Array.from(new Set(accounts.map((a) => String(a.id || '').trim()).filter(Boolean)));
+    ids.forEach((id) => wsClient.joinAccountRoom(id));
+
+    return () => {
+      ids.forEach((id) => wsClient.leaveAccountRoom(id));
+    };
+  }, [accounts, isLive]);
+
   async function handleSelect(conv: Conversation) {
     setSelected(conv); // immediate optimistic UI update
     try {

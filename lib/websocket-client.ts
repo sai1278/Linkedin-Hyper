@@ -40,6 +40,7 @@ export class WebSocketClient {
       this.socket = io(origin, {
         path: '/socket.io',
         transports: ['websocket', 'polling'],
+        withCredentials: true,
         reconnection: true,
         reconnectionDelay: 1000,
         reconnectionDelayMax: this.maxReconnectDelay,

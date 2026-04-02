@@ -72,4 +72,4 @@ if (process.env.npm_lifecycle_event !== 'build') {
   initializeDatabase().catch(console.error);
 }
 
-export default pool;
+export default getPool;
