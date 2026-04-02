@@ -194,37 +194,76 @@ async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 1
     // Continue and try selector-based confirmation from current DOM.
   }
 
-  try {
-    await page.waitForFunction(
-      (needle) => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        const targetText = normalize(needle);
-        if (!targetText) return false;
+  const waitForPersistedText = async (waitMs) => {
+    try {
+      await page.waitForFunction(
+        (needle) => {
+          const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const targetText = normalize(needle);
+          if (!targetText) return false;
 
-        const nodes = Array.from(
-          document.querySelectorAll(
-            [
-              '.msg-s-message-list__event--own-turn .msg-s-event__content',
-              '[data-view-name="messaging-self-message"] .msg-s-event__content',
-              '.msg-s-event-listitem .msg-s-event__content',
-              '[data-view-name="messaging-message-list-item"] .msg-s-event__content',
-              '.msg-s-event__content',
-            ].join(', ')
-          )
-        );
+          const nodes = Array.from(
+            document.querySelectorAll(
+              [
+                '.msg-s-message-list__event--own-turn .msg-s-event__content',
+                '[data-view-name="messaging-self-message"] .msg-s-event__content',
+                '.msg-s-event-listitem .msg-s-event__content',
+                '.msg-s-event-listitem .msg-s-event-listitem__body',
+                '[data-view-name="messaging-message-list-item"] .msg-s-event__content',
+                '[data-view-name="messaging-message-list-item"] .msg-s-event-listitem__body',
+                '[data-view-name="messaging-message-list-item"] [dir]',
+                '.msg-s-event__content',
+                '[data-test-message-content]',
+              ].join(', ')
+            )
+          );
 
-        return nodes.some((node) => {
-          const value = normalize(node?.textContent);
-          return value && (value.includes(targetText) || targetText.includes(value));
-        });
-      },
-      text,
-      { timeout: timeoutMs }
-    );
+          const hasDirectMatch = nodes.some((node) => {
+            const value = normalize(node?.textContent);
+            return value && (value.includes(targetText) || targetText.includes(value));
+          });
+          if (hasDirectMatch) return true;
+
+          const rowNodes = Array.from(
+            document.querySelectorAll('.msg-s-event-listitem, [data-view-name="messaging-message-list-item"]')
+          );
+          const hasRowMatch = rowNodes.some((row) => {
+            const value = normalize(row?.textContent);
+            return value && (value.includes(targetText) || targetText.includes(value));
+          });
+          if (hasRowMatch) return true;
+
+          const listContainer = document.querySelector('.msg-s-message-list, [data-view-name="messaging-message-list"]');
+          const listText = normalize(listContainer?.textContent);
+          return Boolean(listText && (listText.includes(targetText) || targetText.includes(listText)));
+        },
+        text,
+        { timeout: waitMs }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  await page.waitForSelector('.msg-s-message-list, [data-view-name="messaging-message-list"]', {
+    timeout: 8000,
+  }).catch(() => null);
+
+  if (await waitForPersistedText(timeoutMs)) {
     return true;
-  } catch {
-    return false;
   }
+
+  // One reload pass for slower LinkedIn thread hydration.
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (_) {}
+
+  await page.waitForSelector('.msg-s-message-list, [data-view-name="messaging-message-list"]', {
+    timeout: 8000,
+  }).catch(() => null);
+
+  return waitForPersistedText(Math.max(8000, Math.floor(timeoutMs / 2)));
 }
 
 async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
