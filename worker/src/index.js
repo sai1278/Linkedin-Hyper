@@ -582,6 +582,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
   const accountId   = data.accountId || 'default';
   const queue       = getQueue(accountId);
   const queueEvents = getQueueEvents(accountId);
+  const nonIdempotentJobs = new Set(['sendMessage', 'sendMessageNew', 'sendConnectionRequest']);
 
   const toQueueUnavailableError = (originalErr) => {
     const msg = originalErr instanceof Error ? originalErr.message : String(originalErr);
@@ -608,14 +609,20 @@ async function runJob(name, data, timeoutMs = 120_000) {
 
   let job;
   try {
+    const retryOptions = nonIdempotentJobs.has(name)
+      ? { attempts: 1 }
+      : {
+          // Retry once with exponential backoff (5 s, then 10 s).
+          attempts: 2,
+          backoff: { type: 'exponential', delay: 5000 },
+        };
+
     job = await queue.add(name, data, {
       jobId,
       // Bounded job retention so Redis doesn't accumulate gigabytes of job history.
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
-      // Retry once with exponential backoff (5 s, then 10 s).
-      attempts: 2,
-      backoff: { type: 'exponential', delay: 5000 },
+      ...retryOptions,
     });
   } catch (err) {
     if (isQueueConnectivityError(err)) throw toQueueUnavailableError(err);
@@ -634,6 +641,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
       throw toErr;
     }
     const reason = String(job.failedReason || err?.message || 'Job failed');
+    const lowerReason = reason.toLowerCase();
     const failErr  = new Error(reason);
 
     // Preserve explicit codes if available.
@@ -651,6 +659,13 @@ async function runJob(name, data, timeoutMs = 120_000) {
       } else if (reason.includes('All LinkedIn sessions are missing or expired')) {
         failErr.code = 'NO_ACTIVE_SESSION';
         failErr.status = 401;
+      } else if (
+        lowerReason.includes('could not open message composer from profile') ||
+        lowerReason.includes('not_messageable') ||
+        lowerReason.includes('not messageable')
+      ) {
+        failErr.code = 'NOT_MESSAGEABLE';
+        failErr.status = 400;
       } else if (
         reason.includes('Message send could not be confirmed in thread') ||
         reason.includes('Send clicked but LinkedIn thread ID was not resolved') ||
