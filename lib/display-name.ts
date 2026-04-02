@@ -7,7 +7,8 @@ function isGenericUiLabel(value: string): boolean {
   if (!normalized) return true;
 
   if (/^\d+$/.test(normalized)) return true;
-  if (/^\d+\s*(notification|notifications|message|messages)$/.test(normalized)) return true;
+  if (/^\d+\s*(notification|notifications|message|messages)(\s+total)?$/.test(normalized)) return true;
+  if (/^(notification|notifications|message|messages)\s+total$/.test(normalized)) return true;
 
   const blocked = new Set([
     'unknown',
@@ -40,4 +41,3 @@ export function deriveDisplayName(name: string, profileUrl: string): string {
   );
   return fromSlug || 'Unknown';
 }
-
