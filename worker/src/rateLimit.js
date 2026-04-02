@@ -3,12 +3,20 @@
 const { getRedis } = require('./redisClient');
 
 // Conservative daily limits — well below LinkedIn detection thresholds
+const toPositiveInt = (value, fallback) => {
+  const parsed = parseInt(String(value ?? ''), 10);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return fallback;
+};
+
+// Conservative daily limits; can be tuned with env variables in production.
 const LIMITS = {
-  messagesSent:    25,
-  connectRequests: 15,
-  profileViews:    60,
-  searchQueries:   40,
-  inboxReads:      50,
+  messagesSent:    toPositiveInt(process.env.RATE_LIMIT_MESSAGES_SENT, 25),
+  connectRequests: toPositiveInt(process.env.RATE_LIMIT_CONNECT_REQUESTS, 15),
+  profileViews:    toPositiveInt(process.env.RATE_LIMIT_PROFILE_VIEWS, 60),
+  searchQueries:   toPositiveInt(process.env.RATE_LIMIT_SEARCH_QUERIES, 40),
+  // 50/day is too low for dashboard polling + manual refreshes.
+  inboxReads:      toPositiveInt(process.env.RATE_LIMIT_INBOX_READS, 500),
 };
 
 // Local fallback for dev mode when Redis is unavailable.

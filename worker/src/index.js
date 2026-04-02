@@ -652,7 +652,8 @@ async function runJob(name, data, timeoutMs = 120_000) {
         failErr.status = 401;
       } else if (
         reason.includes('Message send could not be confirmed in thread') ||
-        reason.includes('Send clicked but LinkedIn thread ID was not resolved')
+        reason.includes('Send clicked but LinkedIn thread ID was not resolved') ||
+        reason.includes('Message was not found in thread after send confirmation')
       ) {
         failErr.code = 'SEND_NOT_CONFIRMED';
         failErr.status = 502;
