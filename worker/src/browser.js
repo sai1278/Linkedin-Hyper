@@ -27,8 +27,15 @@ const CHROME_ARGS = [
  * @param {string|undefined} proxyUrl Optional proxy e.g. "http://user:pass@host:port"
  */
 function resolveChromeExecutablePath() {
+  // Default to bundled Playwright browser for protocol compatibility.
+  // Set BROWSER_USE_SYSTEM_CHROME=1 only when you explicitly need system Chrome.
+  if (process.env.BROWSER_USE_SYSTEM_CHROME !== '1') {
+    return null;
+  }
+
   if (process.platform === 'linux') {
-    return '/usr/bin/google-chrome-stable';
+    const candidate = '/usr/bin/google-chrome-stable';
+    return fs.existsSync(candidate) ? candidate : null;
   }
 
   if (process.platform === 'win32') {
@@ -56,9 +63,6 @@ async function createBrowser(proxyUrl) {
   const executablePath = resolveChromeExecutablePath();
   if (executablePath) {
     opts.executablePath = executablePath;
-  } else {
-    // Fallback to installed Chrome channel when explicit path is unavailable.
-    opts.channel = 'chrome';
   }
 
   if (proxyUrl) opts.proxy = { server: proxyUrl };
