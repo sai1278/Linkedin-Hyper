@@ -69,6 +69,9 @@ fi
 
 touch "$ENV_FILE"
 
+# Cleanup known invalid line users often add by mistake.
+sed -i '/^NewPassword123!=/d' "$ENV_FILE"
+
 set_env() {
   local key="$1"
   local value="$2"
@@ -144,6 +147,14 @@ DB_PASSWORD_VALUE="$(grep -E '^[[:space:]]*DB_PASSWORD[[:space:]]*=' "$ENV_FILE"
 if [[ -z "$DB_PASSWORD_VALUE" ]]; then
   echo "FATAL: DB_PASSWORD is empty in ${ENV_FILE}"
   exit 1
+fi
+DB_PASSWORD_VALUE="$(echo "$DB_PASSWORD_VALUE" | tr -d '\r' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+export DB_PASSWORD="$DB_PASSWORD_VALUE"
+
+REDIS_PASSWORD_VALUE="$(grep -E '^[[:space:]]*REDIS_PASSWORD[[:space:]]*=' "$ENV_FILE" | tail -n 1 | sed -E 's/^[[:space:]]*REDIS_PASSWORD[[:space:]]*=[[:space:]]*//')"
+REDIS_PASSWORD_VALUE="$(echo "$REDIS_PASSWORD_VALUE" | tr -d '\r' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+if [[ -n "$REDIS_PASSWORD_VALUE" ]]; then
+  export REDIS_PASSWORD="$REDIS_PASSWORD_VALUE"
 fi
 
 DATABASE_URL_VALUE="postgresql://linkedinuser:${DB_PASSWORD_VALUE}@postgres:5432/linkedin_db"

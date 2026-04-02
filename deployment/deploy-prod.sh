@@ -22,10 +22,19 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+# Cleanup known invalid line users often add by mistake.
+sed -i '/^NewPassword123!=/d' "$ENV_FILE"
+
 # Load environment for validation and compose.
 set -a
 source "$ENV_FILE"
 set +a
+
+# Ensure DB_PASSWORD is exported even if shell interpolation is strict.
+DB_PASSWORD_FROM_FILE="$(grep -E '^[[:space:]]*DB_PASSWORD[[:space:]]*=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -d '\r' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+if [[ -n "$DB_PASSWORD_FROM_FILE" ]]; then
+  export DB_PASSWORD="$DB_PASSWORD_FROM_FILE"
+fi
 
 required_vars=(
   API_SECRET

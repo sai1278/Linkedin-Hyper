@@ -14,6 +14,9 @@ fi
 
 touch "$ENV_FILE"
 
+# Cleanup known invalid line users often add by mistake.
+sed -i '/^NewPassword123!=/d' "$ENV_FILE"
+
 set_env() {
   local key="$1"
   local value="$2"
@@ -39,9 +42,6 @@ set_if_missing() {
   set_env "$key" "$value"
 }
 
-# Cleanup known invalid line users often add by mistake.
-sed -i '/^NewPassword123!=/d' "$ENV_FILE"
-
 # Core required env defaults.
 set_if_missing DB_PASSWORD "dev-db-pass-123"
 set_if_missing REDIS_PASSWORD "dev-redis-pass-123"
@@ -55,10 +55,16 @@ set_if_missing ACCOUNT_IDS "kanchidhyanasai,saikanchi130"
 # For direct IP/http login testing.
 set_env COOKIE_SECURE "false"
 
-DB_PASSWORD_VALUE="$(grep -E '^DB_PASSWORD=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)"
+DB_PASSWORD_VALUE="$(grep -E '^[[:space:]]*DB_PASSWORD[[:space:]]*=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -d '\r' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
 if [[ -z "$DB_PASSWORD_VALUE" ]]; then
   echo "DB_PASSWORD could not be resolved from .env"
   exit 1
+fi
+export DB_PASSWORD="$DB_PASSWORD_VALUE"
+
+REDIS_PASSWORD_VALUE="$(grep -E '^[[:space:]]*REDIS_PASSWORD[[:space:]]*=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -d '\r' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+if [[ -n "$REDIS_PASSWORD_VALUE" ]]; then
+  export REDIS_PASSWORD="$REDIS_PASSWORD_VALUE"
 fi
 
 DATABASE_URL_VALUE="postgresql://linkedinuser:${DB_PASSWORD_VALUE}@postgres:5432/linkedin_db"
