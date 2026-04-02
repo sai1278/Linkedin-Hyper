@@ -80,6 +80,10 @@ function Invoke-Api {
       Write-Host ""
       Write-Host "Hint: session is not active on server. Re-import fresh cookies and verify again."
     }
+    if ($statusCode -eq 429 -or $responseBody -match 'RATE_LIMIT_EXCEEDED|Daily limit reached') {
+      Write-Host ""
+      Write-Host "Hint: daily rate limit reached on server for this account. Reset limits or wait until next UTC day."
+    }
     exit 1
   }
 }

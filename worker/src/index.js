@@ -118,6 +118,7 @@ function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
     'SESSION_EXPIRED',
     'NOT_MESSAGEABLE',
     'SEND_NOT_CONFIRMED',
+    'RATE_LIMIT_EXCEEDED',
     'QUEUE_UNAVAILABLE',
     'READ_INBOX_TIMEOUT',
   ]);
@@ -657,6 +658,9 @@ async function runJob(name, data, timeoutMs = 120_000) {
       ) {
         failErr.code = 'SEND_NOT_CONFIRMED';
         failErr.status = 502;
+      } else if (reason.includes('Daily limit reached:')) {
+        failErr.code = 'RATE_LIMIT_EXCEEDED';
+        failErr.status = 429;
       }
     }
 
