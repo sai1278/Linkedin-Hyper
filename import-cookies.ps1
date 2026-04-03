@@ -213,9 +213,15 @@ function Invoke-AutoCapture {
       # Best effort only; continue.
     }
 
-    $attemptOutput = $null
+    $attemptOutputLines = New-Object System.Collections.Generic.List[string]
+    $attemptExitCode = 0
     try {
-      $attemptOutput = & node $args 2>&1
+      & node $args 2>&1 | ForEach-Object {
+        $line = $_.ToString()
+        [void]$attemptOutputLines.Add($line)
+        Write-Host $line
+      }
+      $attemptExitCode = $LASTEXITCODE
     } finally {
       if ($hasNativeVar) {
         try {
@@ -225,12 +231,9 @@ function Invoke-AutoCapture {
         }
       }
     }
-    if ($attemptOutput) {
-      $attemptOutput | ForEach-Object { Write-Host $_ }
-    }
     return @{
-      code = $LASTEXITCODE
-      outputText = (($attemptOutput | ForEach-Object { $_.ToString() }) -join "`n")
+      code = $attemptExitCode
+      outputText = (($attemptOutputLines | ForEach-Object { $_.ToString() }) -join "`n")
     }
   }
 
