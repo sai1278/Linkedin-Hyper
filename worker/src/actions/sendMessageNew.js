@@ -357,14 +357,39 @@ async function resolveThreadIdAfterSend(page, waitMs = 9000) {
         return true;
       };
       const idFromHref = (href) => {
-        const fromHref = String(href || '').match(/\/messaging\/thread\/([^/?#]+)/i);
-        const candidate = fromHref?.[1] || '';
-        return isValidThreadId(candidate) ? candidate : '';
+        const raw = String(href || '');
+        const fromThread = raw.match(/\/messaging\/thread\/([^/?#]+)/i)?.[1] || '';
+        if (isValidThreadId(fromThread)) return normalizeThreadId(fromThread);
+
+        const fromQuery = raw.match(/[?&](?:conversationId|threadId)=([^&#"\s]+)/i)?.[1] || '';
+        if (fromQuery) {
+          try {
+            const decoded = decodeURIComponent(fromQuery);
+            if (isValidThreadId(decoded)) return normalizeThreadId(decoded);
+          } catch {}
+          if (isValidThreadId(fromQuery)) return normalizeThreadId(fromQuery);
+        }
+
+        const fromConversationUrn = raw.match(/[?&]conversationUrn=([^&#"\s]+)/i)?.[1] || '';
+        if (fromConversationUrn) {
+          try {
+            const decoded = decodeURIComponent(fromConversationUrn);
+            const urnMatch = decoded.match(/fs(?:d)?_conversation:([^,"\s)]+)/i);
+            const urnId = urnMatch?.[1] || '';
+            if (isValidThreadId(urnId)) return normalizeThreadId(urnId);
+          } catch {}
+        }
+
+        const urnMatch = raw.match(/fs(?:d)?_conversation:([^,"\s)]+)/i);
+        const urnId = urnMatch?.[1] || '';
+        if (isValidThreadId(urnId)) return normalizeThreadId(urnId);
+
+        return '';
       };
 
       const candidates = Array.from(
         document.querySelectorAll(
-          'a[href*="/messaging/thread/"], [data-conversation-id], [data-urn*="fs_conversation"]'
+          'a[href*="/messaging/"], [data-conversation-id], [data-urn*="conversation"]'
         )
       );
       for (const node of candidates) {
@@ -413,6 +438,37 @@ async function resolveThreadIdFromConversationPreview(page, messageText, waitMs 
     try {
       const chatId = await page.evaluate((needle) => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const extractThreadId = (rawValue) => {
+          const raw = String(rawValue || '');
+          if (!raw) return '';
+
+          const fromThread = raw.match(/\/messaging\/thread\/([^/?#]+)/i)?.[1] || '';
+          if (fromThread && fromThread.toLowerCase() !== 'new') return fromThread.trim();
+
+          const fromQuery = raw.match(/[?&](?:conversationId|threadId)=([^&#"\s]+)/i)?.[1] || '';
+          if (fromQuery && fromQuery.toLowerCase() !== 'new') {
+            try {
+              const decoded = decodeURIComponent(fromQuery);
+              if (decoded && decoded.toLowerCase() !== 'new') return decoded.trim();
+            } catch {}
+            return fromQuery.trim();
+          }
+
+          const fromConversationUrn = raw.match(/[?&]conversationUrn=([^&#"\s]+)/i)?.[1] || '';
+          if (fromConversationUrn) {
+            try {
+              const decoded = decodeURIComponent(fromConversationUrn);
+              const urn = decoded.match(/fs(?:d)?_conversation:([^,"\s)]+)/i)?.[1] || '';
+              if (urn && urn.toLowerCase() !== 'new') return urn.trim();
+            } catch {}
+          }
+
+          const urn = raw.match(/fs(?:d)?_conversation:([^,"\s)]+)/i)?.[1] || '';
+          if (urn && urn.toLowerCase() !== 'new') return urn.trim();
+
+          return '';
+        };
+
         const isValidThreadId = (value) => {
           const id = String(value || '').trim();
           if (!id) return false;
@@ -420,11 +476,17 @@ async function resolveThreadIdFromConversationPreview(page, messageText, waitMs 
           return true;
         };
 
-        const anchors = Array.from(document.querySelectorAll('a[href*="/messaging/thread/"]'));
+        const anchors = Array.from(
+          document.querySelectorAll('a[href*="/messaging/"], [data-conversation-id], [data-urn*="conversation"]')
+        );
         for (const anchor of anchors) {
           const href = anchor.getAttribute?.('href') || '';
-          const match = href.match(/\/messaging\/thread\/([^/?#]+)/i);
-          const candidateId = match?.[1] || '';
+          const dataConversationId = anchor.getAttribute?.('data-conversation-id') || '';
+          const dataUrn = anchor.getAttribute?.('data-urn') || '';
+          const candidateId =
+            extractThreadId(href) ||
+            extractThreadId(dataConversationId) ||
+            extractThreadId(dataUrn);
           if (!isValidThreadId(candidateId)) continue;
 
           const row =
@@ -479,6 +541,37 @@ async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantN
     try {
       const chatId = await page.evaluate((slugNeedleInput, nameNeedleInput, textNeedleInput, tokenNeedlesInput) => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const extractThreadId = (rawValue) => {
+          const raw = String(rawValue || '');
+          if (!raw) return '';
+
+          const fromThread = raw.match(/\/messaging\/thread\/([^/?#]+)/i)?.[1] || '';
+          if (fromThread && fromThread.toLowerCase() !== 'new') return fromThread.trim();
+
+          const fromQuery = raw.match(/[?&](?:conversationId|threadId)=([^&#"\s]+)/i)?.[1] || '';
+          if (fromQuery && fromQuery.toLowerCase() !== 'new') {
+            try {
+              const decoded = decodeURIComponent(fromQuery);
+              if (decoded && decoded.toLowerCase() !== 'new') return decoded.trim();
+            } catch {}
+            return fromQuery.trim();
+          }
+
+          const fromConversationUrn = raw.match(/[?&]conversationUrn=([^&#"\s]+)/i)?.[1] || '';
+          if (fromConversationUrn) {
+            try {
+              const decoded = decodeURIComponent(fromConversationUrn);
+              const urn = decoded.match(/fs(?:d)?_conversation:([^,"\s)]+)/i)?.[1] || '';
+              if (urn && urn.toLowerCase() !== 'new') return urn.trim();
+            } catch {}
+          }
+
+          const urn = raw.match(/fs(?:d)?_conversation:([^,"\s)]+)/i)?.[1] || '';
+          if (urn && urn.toLowerCase() !== 'new') return urn.trim();
+
+          return '';
+        };
+
         const isValidThreadId = (value) => {
           const id = String(value || '').trim();
           if (!id) return false;
@@ -486,13 +579,19 @@ async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantN
           return true;
         };
 
-        const candidates = Array.from(document.querySelectorAll('a[href*="/messaging/thread/"]'));
+        const candidates = Array.from(
+          document.querySelectorAll('a[href*="/messaging/"], [data-conversation-id], [data-urn*="conversation"]')
+        );
         let bestMatch = { id: '', score: -1 };
 
         for (const anchor of candidates) {
           const href = anchor.getAttribute?.('href') || '';
-          const match = href.match(/\/messaging\/thread\/([^/?#]+)/i);
-          const candidateId = match?.[1] || '';
+          const dataConversationId = anchor.getAttribute?.('data-conversation-id') || '';
+          const dataUrn = anchor.getAttribute?.('data-urn') || '';
+          const candidateId =
+            extractThreadId(href) ||
+            extractThreadId(dataConversationId) ||
+            extractThreadId(dataUrn);
           if (!isValidThreadId(candidateId)) continue;
 
           const row =
