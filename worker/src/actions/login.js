@@ -13,6 +13,51 @@ function isAuthUrl(url) {
   );
 }
 
+async function inspectAuthState(page) {
+  try {
+    return await page.evaluate(() => {
+      const txt = (document.body?.innerText || '').toLowerCase();
+      const hasLoginForm =
+        Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]'));
+      const hasAuthwallMarkers =
+        txt.includes('join linkedin') ||
+        txt.includes('sign in') ||
+        txt.includes('new to linkedin') ||
+        txt.includes('continue to linkedin');
+      const hasSignedInNav =
+        Boolean(document.querySelector('.global-nav, .global-nav__me, [data-test-global-nav]')) ||
+        Boolean(document.querySelector('a[href*="/mynetwork/"], a[href*="/messaging/"], a[href*="/feed/"]'));
+      const hasMessagingShell =
+        Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list'));
+
+      return {
+        hasLoginForm,
+        hasAuthwallMarkers,
+        hasSignedInNav,
+        hasMessagingShell,
+        url: location.href,
+      };
+    });
+  } catch (err) {
+    return {
+      hasLoginForm: false,
+      hasAuthwallMarkers: false,
+      hasSignedInNav: false,
+      hasMessagingShell: false,
+      url: page.url(),
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function isAuthenticatedState(state) {
+  return Boolean(state?.hasSignedInNav || state?.hasMessagingShell);
+}
+
+function isLoggedOutState(state) {
+  return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers);
+}
+
 async function tryNavigate(page, url) {
   try {
     await page.goto(url, {
@@ -53,7 +98,13 @@ async function verifySession({ accountId, proxyUrl }) {
     const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
     await delay(600, 1200);
     const feedUrl = page.url();
-    if (feedResult.ok && !isAuthUrl(feedUrl)) {
+    const feedState = await inspectAuthState(page);
+    if (
+      feedResult.ok &&
+      !isAuthUrl(feedUrl) &&
+      isAuthenticatedState(feedState) &&
+      !isLoggedOutState(feedState)
+    ) {
       if (process.env.REFRESH_SESSION_COOKIES === '1') {
         await saveCookies(accountId, await context.cookies());
       }
@@ -65,7 +116,13 @@ async function verifySession({ accountId, proxyUrl }) {
     const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
     await delay(600, 1200);
     const messagingUrl = page.url();
-    if (messagingResult.ok && !isAuthUrl(messagingUrl)) {
+    const messagingState = await inspectAuthState(page);
+    if (
+      messagingResult.ok &&
+      !isAuthUrl(messagingUrl) &&
+      isAuthenticatedState(messagingState) &&
+      !isLoggedOutState(messagingState)
+    ) {
       if (process.env.REFRESH_SESSION_COOKIES === '1') {
         await saveCookies(accountId, await context.cookies());
       }
@@ -75,12 +132,18 @@ async function verifySession({ accountId, proxyUrl }) {
     const details = {
       feed: { ok: feedResult.ok, url: feedUrl, error: feedResult.error || null },
       messaging: { ok: messagingResult.ok, url: messagingUrl, error: messagingResult.error || null },
+      authState: {
+        feed: feedState,
+        messaging: messagingState,
+      },
     };
     if (
       String(feedResult.error || '').includes('ERR_TOO_MANY_REDIRECTS') ||
       String(messagingResult.error || '').includes('ERR_TOO_MANY_REDIRECTS') ||
       isAuthUrl(feedUrl) ||
-      isAuthUrl(messagingUrl)
+      isAuthUrl(messagingUrl) ||
+      isLoggedOutState(feedState) ||
+      isLoggedOutState(messagingState)
     ) {
       const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
       err.code   = 'SESSION_EXPIRED';

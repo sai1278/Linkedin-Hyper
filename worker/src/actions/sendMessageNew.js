@@ -1018,7 +1018,11 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
 
       const landingUrl = page.url();
       if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
+        const authwallShot = await captureFailureScreenshot(page, accountId, 'profile-authwall');
         const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+        if (authwallShot) {
+          err.message += ` Screenshot: ${authwallShot}`;
+        }
         err.code = 'SESSION_EXPIRED'; err.status = 401;
         throw err;
       }
