@@ -1,62 +1,102 @@
 'use strict';
 
-const { getAccountContext, withAccountLock } = require('../browser');
+const { getAccountContext, cleanupContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
-const { delay, humanScroll }       = require('../humanBehavior');
-const { checkAndIncrement }        = require('../rateLimit');
+const { delay, humanScroll } = require('../humanBehavior');
+const { checkAndIncrement } = require('../rateLimit');
 
-async function readMessages({ accountId, proxyUrl, limit = 20 }) {
-  return withAccountLock(accountId, async () => {
-  await checkAndIncrement(accountId, 'inboxReads'); // FIRST — before any browser work
+function isAuthLandingUrl(url) {
+  const value = String(url || '').toLowerCase();
+  return (
+    value.includes('/login') ||
+    value.includes('/checkpoint') ||
+    value.includes('/authwall') ||
+    value.includes('/challenge')
+  );
+}
 
+function isRecoverableBrowserError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  if (!msg) return false;
+
+  return (
+    msg.includes('session closed') ||
+    msg.includes('target page, context or browser has been closed') ||
+    msg.includes('frame was detached') ||
+    msg.includes('net::err_aborted') ||
+    msg.includes('protocol error (page.addscripttoevaluateonnewdocument)') ||
+    msg.includes('protocol error (page.createisolatedworld)') ||
+    msg.includes('operation failed')
+  );
+}
+
+async function readMessagesInternal({
+  accountId,
+  proxyUrl,
+  limit,
+  __attempt = 1,
+  forceCookieReload = false,
+}) {
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
 
   try {
-    // W1 — Only load + inject cookies on a cache miss.
-    if (!cookiesLoaded) {
+    if (!cookiesLoaded || forceCookieReload) {
       const cookies = await loadCookies(accountId);
       if (!cookies) {
         const err = new Error(`No session for account ${accountId}`);
-        err.code = 'NO_SESSION'; err.status = 401;
+        err.code = 'NO_SESSION';
+        err.status = 401;
         throw err;
       }
       await context.addCookies(cookies);
     }
+
     page = await context.newPage();
 
     try {
       await page.goto('https://www.linkedin.com/messaging/', {
         waitUntil: 'domcontentloaded',
-        timeout:   30000,
+        timeout: 30000,
       });
     } catch (navErr) {
       const msg = navErr instanceof Error ? navErr.message : String(navErr);
       if (msg.includes('ERR_TOO_MANY_REDIRECTS')) {
         const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
-        err.code = 'SESSION_EXPIRED'; err.status = 401;
+        err.code = 'SESSION_EXPIRED';
+        err.status = 401;
         throw err;
       }
       throw navErr;
     }
 
     const landingUrl = page.url();
-    if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
+    if (isAuthLandingUrl(landingUrl)) {
+      if (__attempt < 2 && cookiesLoaded && !forceCookieReload) {
+        await cleanupContext(accountId).catch(() => {});
+        await delay(250, 500);
+        return readMessagesInternal({
+          accountId,
+          proxyUrl,
+          limit,
+          __attempt: __attempt + 1,
+          forceCookieReload: true,
+        });
+      }
+
       const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
-      err.code = 'SESSION_EXPIRED'; err.status = 401;
+      err.code = 'SESSION_EXPIRED';
+      err.status = 401;
       throw err;
     }
 
-    // Wait for the actual thread list instead of sleeping blindly.
-    // Falls back gracefully if the selector never appears (e.g. empty inbox).
-    await page.waitForSelector(
-      '.msg-conversation-listitem, [data-view-name="messaging-thread-list-item"]',
-      { timeout: 15000 }
-    ).catch(() => null);
+    await page
+      .waitForSelector('.msg-conversation-listitem, [data-view-name="messaging-thread-list-item"]', {
+        timeout: 15000,
+      })
+      .catch(() => null);
 
-    // Small human-like jitter only — the content is already there
     await delay(300, 600);
-
     await humanScroll(page, 300);
     await delay(300, 600);
 
@@ -82,11 +122,7 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
       const extractNameFromAriaLabel = (aria) => {
         const value = normalizeText(aria);
         if (!value) return '';
-        const patterns = [
-          /^conversation with (.+)$/i,
-          /^message with (.+)$/i,
-          /^chat with (.+)$/i,
-        ];
+        const patterns = [/^conversation with (.+)$/i, /^message with (.+)$/i, /^chat with (.+)$/i];
         for (const pattern of patterns) {
           const match = value.match(pattern);
           if (match && match[1]) return normalizeText(match[1]);
@@ -125,22 +161,22 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
         return `fallback-${stableHash(fallbackKey)}`;
       };
 
-      const items   = [];
+      const items = [];
       const threads = document.querySelectorAll(
         '.msg-conversation-listitem, [data-view-name="messaging-thread-list-item"]'
       );
 
       for (const [idx, thread] of Array.from(threads).slice(0, maxItems).entries()) {
         try {
-          const nameEl    = thread.querySelector(
+          const nameEl = thread.querySelector(
             '.msg-conversation-listitem__participant-names, .msg-conversation-listitem__participant-names span, .truncate, [data-anonymize="person-name"], .msg-conversation-listitem__name'
           );
           const previewEl = thread.querySelector('.msg-conversation-listitem__message-snippet, .truncate.t-12');
-          const timeEl    = thread.querySelector('time, .msg-conversation-listitem__time-stamp');
-          const unreadEl  = thread.querySelector('.msg-conversation-listitem__unread-count, [data-test-icon="unread-badge-icon"]');
-          const linkEl    = thread.closest('a') || thread.querySelector('a');
+          const timeEl = thread.querySelector('time, .msg-conversation-listitem__time-stamp');
+          const unreadEl = thread.querySelector('.msg-conversation-listitem__unread-count, [data-test-icon="unread-badge-icon"]');
+          const linkEl = thread.closest('a') || thread.querySelector('a');
           const profileLinkEl = thread.querySelector('a[href*="/in/"]');
-          const avatarEl  = thread.querySelector('img');
+          const avatarEl = thread.querySelector('img');
           const ariaLabel = thread.getAttribute('aria-label') || linkEl?.getAttribute('aria-label') || '';
 
           const href = linkEl?.href || '';
@@ -154,41 +190,67 @@ async function readMessages({ accountId, proxyUrl, limit = 20 }) {
           const chatId = extractThreadId(thread, href, participantName, profileUrl, idx);
 
           items.push({
-            id:           chatId,
-            accountId:    '', // filled in by caller — not accessible inside browser context
-            participants: [{
-              id:         chatId,
-              name:       participantName,
-              avatarUrl:  avatarEl?.src                 || null,
-              profileUrl,
-            }],
-            unreadCount:  unreadEl ? 1 : 0,
-            lastMessage:  previewEl ? {
-              id:        `preview-${chatId}`,
-              chatId,
-              senderId:  '',
-              text:      previewEl.textContent?.trim() || '',
-              createdAt: timeEl?.getAttribute('datetime') || new Date().toISOString(),
-              isRead:    !unreadEl,
-            } : null,
+            id: chatId,
+            accountId: '',
+            participants: [
+              {
+                id: chatId,
+                name: participantName,
+                avatarUrl: avatarEl?.src || null,
+                profileUrl,
+              },
+            ],
+            unreadCount: unreadEl ? 1 : 0,
+            lastMessage: previewEl
+              ? {
+                  id: `preview-${chatId}`,
+                  chatId,
+                  senderId: '',
+                  text: previewEl.textContent?.trim() || '',
+                  createdAt: timeEl?.getAttribute('datetime') || new Date().toISOString(),
+                  isRead: !unreadEl,
+                }
+              : null,
             createdAt: timeEl?.getAttribute('datetime') || new Date().toISOString(),
           });
-        } catch (_) { /* skip malformed item */ }
+        } catch (_) {
+          // Skip malformed item.
+        }
       }
       return items;
     }, limit);
 
-    // Inject accountId server-side — not available inside browser context
-    chats.forEach((c) => { c.accountId = accountId; });
+    chats.forEach((chat) => {
+      chat.accountId = accountId;
+    });
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
       await saveCookies(accountId, await context.cookies());
     }
 
     return { items: chats, cursor: null, hasMore: false };
+  } catch (err) {
+    if (__attempt < 2 && isRecoverableBrowserError(err)) {
+      await cleanupContext(accountId).catch(() => {});
+      await delay(250, 500);
+      return readMessagesInternal({
+        accountId,
+        proxyUrl,
+        limit,
+        __attempt: __attempt + 1,
+        forceCookieReload: true,
+      });
+    }
+    throw err;
   } finally {
     if (page) await page.close().catch(() => {});
   }
+}
+
+async function readMessages({ accountId, proxyUrl, limit = 20 }) {
+  return withAccountLock(accountId, async () => {
+    await checkAndIncrement(accountId, 'inboxReads');
+    return readMessagesInternal({ accountId, proxyUrl, limit, __attempt: 1, forceCookieReload: false });
   });
 }
 

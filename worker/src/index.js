@@ -1002,11 +1002,21 @@ app.post('/messages/send-new', async (req, res) => {
       const reason = String(sendNewErr?.message || sendNewErr || '');
       console.warn(`[API] send-new failed for ${accountId}; trying thread fallback: ${reason}`);
 
-      const inboxResult = await runJob('readMessages', {
-        accountId,
-        limit: 100,
-        proxyUrl: process.env.PROXY_URL || null,
-      });
+      // Reset browser context before inbox fallback to avoid stale/half-closed sessions.
+      await cleanupContext(accountId).catch(() => {});
+
+      let inboxResult;
+      try {
+        inboxResult = await runJob('readMessages', {
+          accountId,
+          limit: 100,
+          proxyUrl: process.env.PROXY_URL || null,
+        });
+      } catch (fallbackErr) {
+        const fallbackReason = String(fallbackErr?.message || fallbackErr || '');
+        console.warn(`[API] thread fallback inbox read failed for ${accountId}: ${fallbackReason}`);
+        throw sendNewErr;
+      }
 
       const normalizedTarget = normalizeProfileUrlForCompare(profileUrl);
       const matchedConversation = (inboxResult?.items || []).find((item) => {
@@ -1235,5 +1245,3 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`[API] Worker API listening on port ${PORT}`);
   console.log(`[WebSocket] WebSocket server ready on port ${PORT}`);
 });
-
-
