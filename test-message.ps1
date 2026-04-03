@@ -79,6 +79,9 @@ function Invoke-Api {
     if ($statusCode -eq 401 -and ($responseBody -match 'SESSION_EXPIRED|NO_SESSION|Unauthorized')) {
       Write-Host ""
       Write-Host "Hint: session is not active on server. Re-import fresh cookies and verify again."
+      if ($responseBody -match 'verify-session-expired') {
+        Write-Host "Hint: server worker appears to be running an older build. Pull latest target/main on server and rebuild worker/frontend containers."
+      }
     } elseif ($statusCode -eq 401 -and ($responseBody -match 'CHECKPOINT_INCOMPLETE')) {
       Write-Host ""
       Write-Host "Hint: LinkedIn checkpoint/challenge is still pending. Complete checkpoint in browser first."

@@ -440,6 +440,9 @@ try {
       if ($statusCode -eq 401 -and ($body -match 'SESSION_EXPIRED|NO_SESSION|Unauthorized')) {
         Write-Host ""
         Write-Host "Hint: imported cookies are not active now. Re-capture fresh cookies and import again."
+        if ($body -match 'verify-session-expired') {
+          Write-Host "Hint: server worker appears to be running an older build. Pull latest target/main on server and rebuild worker/frontend containers."
+        }
       } elseif ($statusCode -eq 401 -and ($body -match 'CHECKPOINT_INCOMPLETE')) {
         Write-Host ""
         Write-Host "Hint: LinkedIn checkpoint/challenge is still pending. Complete it in browser, then re-capture."
