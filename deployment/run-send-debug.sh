@@ -90,14 +90,53 @@ mkdir -p "$OUT_DIR"
 echo "Output directory: $OUT_DIR"
 echo
 
-echo "0) Ensure services are up (build worker/frontend)"
-"${COMPOSE[@]}" up -d --build worker frontend > "$OUT_DIR/compose-up.txt" 2>&1 || {
+REBUILD="${RUN_SEND_DEBUG_REBUILD:-0}"
+if [[ "$REBUILD" == "1" ]]; then
+  echo "0) Ensure services are up (rebuild worker/frontend)"
+  "${COMPOSE[@]}" up -d --build worker frontend > "$OUT_DIR/compose-up.txt" 2>&1 || {
+    cat "$OUT_DIR/compose-up.txt"
+    echo "Failed to start services."
+    exit 1
+  }
+else
+  echo "0) Ensure services are up (no rebuild, keep existing session state)"
+  "${COMPOSE[@]}" up -d worker frontend > "$OUT_DIR/compose-up.txt" 2>&1 || {
+    cat "$OUT_DIR/compose-up.txt"
+    echo "Failed to start services."
+    exit 1
+  }
+fi
+
+{
+  echo "RUN_SEND_DEBUG_REBUILD=$REBUILD"
+  echo
   cat "$OUT_DIR/compose-up.txt"
-  echo "Failed to start services."
-  exit 1
-}
-echo "Services are up."
+} > "$OUT_DIR/compose-up.full.txt"
+
+if [[ "$REBUILD" == "1" ]]; then
+  echo "Services are up (rebuilt)."
+else
+  echo "Services are up (not rebuilt)."
+fi
 echo
+
+echo "0.1) Session backend hints"
+"${COMPOSE[@]}" logs --tail=120 worker | grep -E "Redis unavailable|in-memory session store|Local disk session store|Prisma|Worker API listening" | tee "$OUT_DIR/session-hints.txt" || true
+echo
+
+echo "0.2) Session file in worker container"
+WORKER_CID_BOOT="$("${COMPOSE[@]}" ps -q worker || true)"
+if [[ -n "$WORKER_CID_BOOT" ]]; then
+  docker exec "$WORKER_CID_BOOT" sh -lc 'ls -l /app/.local-sessions.json 2>/dev/null || echo "no /app/.local-sessions.json"' | tee "$OUT_DIR/session-file.txt" || true
+else
+  echo "worker container not found" | tee "$OUT_DIR/session-file.txt"
+fi
+echo
+
+if [[ "$REBUILD" == "1" ]]; then
+  echo "Tip: use default (no rebuild) for repeated tests so imported session is not lost."
+  echo
+fi
 
 echo "1) Services"
 "${COMPOSE[@]}" ps | tee "$OUT_DIR/compose-ps.txt"
