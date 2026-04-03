@@ -23,18 +23,42 @@ async function inspectAuthState(page) {
         txt.includes('join linkedin') ||
         txt.includes('sign in') ||
         txt.includes('new to linkedin') ||
-        txt.includes('continue to linkedin');
+        txt.includes('continue to linkedin') ||
+        txt.includes('unlock your profile') ||
+        txt.includes('create your account');
       const hasSignedInNav =
-        Boolean(document.querySelector('.global-nav, .global-nav__me, [data-test-global-nav]')) ||
-        Boolean(document.querySelector('a[href*="/mynetwork/"], a[href*="/messaging/"], a[href*="/feed/"]'));
+        Boolean(
+          document.querySelector(
+            [
+              '.global-nav__me',
+              '.global-nav__me-photo',
+              '.global-nav__primary-link-me-menu-trigger',
+              '#global-nav-search',
+              '.search-global-typeahead',
+              '[data-test-global-nav-me]',
+            ].join(', ')
+          )
+        );
       const hasMessagingShell =
         Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list'));
+      const hasGuestCta =
+        Boolean(
+          document.querySelector(
+            [
+              'a[href*="/login"]',
+              'a[href*="/signup"]',
+              'a[data-tracking-control-name*="guest_homepage"]',
+              'a[data-test-id="home-hero-sign-in-cta"]',
+            ].join(', ')
+          )
+        );
 
       return {
         hasLoginForm,
         hasAuthwallMarkers,
         hasSignedInNav,
         hasMessagingShell,
+        hasGuestCta,
         url: location.href,
       };
     });
@@ -44,6 +68,7 @@ async function inspectAuthState(page) {
       hasAuthwallMarkers: false,
       hasSignedInNav: false,
       hasMessagingShell: false,
+      hasGuestCta: false,
       url: page.url(),
       error: err instanceof Error ? err.message : String(err),
     };
@@ -55,7 +80,7 @@ function isAuthenticatedState(state) {
 }
 
 function isLoggedOutState(state) {
-  return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers);
+  return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers || state?.hasGuestCta);
 }
 
 async function tryNavigate(page, url) {
@@ -94,39 +119,41 @@ async function verifySession({ accountId, proxyUrl }) {
     await context.addCookies(cookies);
     page = await context.newPage();
 
-    // First try feed URL.
+    // Check feed first for baseline auth signal.
     const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
     await delay(600, 1200);
     const feedUrl = page.url();
     const feedState = await inspectAuthState(page);
-    if (
-      feedResult.ok &&
-      !isAuthUrl(feedUrl) &&
-      isAuthenticatedState(feedState) &&
-      !isLoggedOutState(feedState)
-    ) {
-      if (process.env.REFRESH_SESSION_COOKIES === '1') {
-        await saveCookies(accountId, await context.cookies());
-      }
-      return { ok: true, url: feedUrl };
-    }
 
-    // Fallback: if feed is blocked/redirected but messaging is still accessible,
-    // treat session as valid for this automation workflow.
+    // Messaging must be accessible for automation sends.
     const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
     await delay(600, 1200);
     const messagingUrl = page.url();
     const messagingState = await inspectAuthState(page);
-    if (
+
+    const feedAuthenticated = (
+      feedResult.ok &&
+      !isAuthUrl(feedUrl) &&
+      isAuthenticatedState(feedState) &&
+      !isLoggedOutState(feedState)
+    );
+
+    const messagingAuthenticated = (
       messagingResult.ok &&
       !isAuthUrl(messagingUrl) &&
       isAuthenticatedState(messagingState) &&
       !isLoggedOutState(messagingState)
-    ) {
+    );
+
+    if (messagingAuthenticated) {
       if (process.env.REFRESH_SESSION_COOKIES === '1') {
         await saveCookies(accountId, await context.cookies());
       }
-      return { ok: true, url: messagingUrl, via: 'messaging-fallback' };
+      return {
+        ok: true,
+        url: messagingUrl,
+        via: feedAuthenticated ? 'feed+messaging' : 'messaging-only',
+      };
     }
 
     const details = {
@@ -143,7 +170,8 @@ async function verifySession({ accountId, proxyUrl }) {
       isAuthUrl(feedUrl) ||
       isAuthUrl(messagingUrl) ||
       isLoggedOutState(feedState) ||
-      isLoggedOutState(messagingState)
+      isLoggedOutState(messagingState) ||
+      !messagingAuthenticated
     ) {
       const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
       err.code   = 'SESSION_EXPIRED';
