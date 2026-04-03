@@ -153,6 +153,8 @@ fi
 
 echo "0.1) Session backend hints"
 "${COMPOSE[@]}" logs --tail=120 worker | grep -E "Redis unavailable|in-memory session store|Local disk session store|Prisma|Worker API listening" | tee "$OUT_DIR/session-hints.txt" || true
+echo "Worker browser mode:"
+"${COMPOSE[@]}" exec -T worker sh -lc 'echo "BROWSER_USE_SYSTEM_CHROME=${BROWSER_USE_SYSTEM_CHROME:-unset}"; echo "BROWSER_HEADLESS=${BROWSER_HEADLESS:-unset}"' | tee -a "$OUT_DIR/session-hints.txt" || true
 echo
 
 echo "0.2) Session file in worker container"
