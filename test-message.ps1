@@ -78,7 +78,8 @@ function Invoke-Api {
 
     if ($statusCode -eq 401 -and ($responseBody -match 'SESSION_EXPIRED|NO_SESSION|Unauthorized')) {
       Write-Host ""
-      Write-Host "Hint: session is not active on server. Re-import fresh cookies and verify again."
+      Write-Host "Hint: server reported session not active for this request."
+      Write-Host "Hint: if Step 2 verify was OK but Step 3 failed, LinkedIn likely challenged the send flow; run server send-debug to inspect sendMessageNew logs."
       if ($responseBody -match 'verify-session-expired') {
         Write-Host "Hint: server worker appears to be running an older build. Pull latest target/main on server and rebuild worker/frontend containers."
       }
