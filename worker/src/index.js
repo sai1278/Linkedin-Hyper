@@ -222,6 +222,19 @@ function normalizeParticipantName(name, profileUrl) {
   return deriveNameFromProfileUrl(profileUrl) || 'Unknown';
 }
 
+function normalizeProfileUrlForCompare(url) {
+  try {
+    const parsed = new URL(String(url || '').trim());
+    parsed.hash = '';
+    parsed.search = '';
+    const normalizedPath = parsed.pathname.replace(/\/+$/, '');
+    parsed.pathname = normalizedPath || '/';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return String(url || '').trim().replace(/\/+$/, '');
+  }
+}
+
 // â”€â”€ Health (no auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function buildUnifiedInboxFromActivity(limit = 100) {
@@ -978,9 +991,48 @@ app.post('/messages/send-new', async (req, res) => {
     const text       = sanitizeText(req.body?.text, { maxLength: 3000 });
     if (!text) return res.status(400).json({ error: 'text is required' });
 
-    const result = await runJob('sendMessageNew', {
-      accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
-    });
+    let result;
+    try {
+      result = await runJob('sendMessageNew', {
+        accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
+      });
+    } catch (sendNewErr) {
+      const code = String(sendNewErr?.code || '');
+      const msg = String(sendNewErr?.message || '').toLowerCase();
+      const shouldFallbackToThread =
+        code === 'NOT_MESSAGEABLE' ||
+        code === 'SEND_NOT_CONFIRMED' ||
+        msg.includes('could not open message composer from profile') ||
+        msg.includes('send clicked but linkedin thread id was not resolved') ||
+        msg.includes('operation failed');
+
+      if (!shouldFallbackToThread) throw sendNewErr;
+
+      const inboxResult = await runJob('readMessages', {
+        accountId,
+        limit: 100,
+        proxyUrl: process.env.PROXY_URL || null,
+      });
+
+      const normalizedTarget = normalizeProfileUrlForCompare(profileUrl);
+      const matchedConversation = (inboxResult?.items || []).find((item) => {
+        const participantUrl = item?.participants?.[0]?.profileUrl || '';
+        return (
+          participantUrl &&
+          normalizeProfileUrlForCompare(participantUrl) === normalizedTarget
+        );
+      });
+
+      if (!matchedConversation?.id) throw sendNewErr;
+
+      result = await runJob('sendMessage', {
+        accountId,
+        chatId: matchedConversation.id,
+        text,
+        proxyUrl: process.env.PROXY_URL || null,
+      });
+    }
+
     if (!res.headersSent) {
       res.json(result);
     }
