@@ -156,6 +156,7 @@ async function waitForStableAuthenticatedState({
   let stableSince = 0;
   let lastSig = '';
   let lastState = null;
+  let lastLogAt = 0;
 
   while (Date.now() < deadline) {
     const state = await getState();
@@ -169,9 +170,10 @@ async function waitForStableAuthenticatedState({
       if (!stableSince) stableSince = Date.now();
       const stableFor = Date.now() - stableSince;
       const sig = `${state.url}|${state.title}|${state.hasLiAt}|${state.hasJsession}|${state.authenticated}|stable:${Math.floor(stableFor / 1000)}`;
-      if (sig !== lastSig) {
+      if (sig !== lastSig || (Date.now() - lastLogAt) >= 10000) {
         logCaptureState(sourceLabel, state, stableFor);
         lastSig = sig;
+        lastLogAt = Date.now();
       }
       if (stableFor >= stableMs) {
         return state;
@@ -179,9 +181,10 @@ async function waitForStableAuthenticatedState({
     } else {
       stableSince = 0;
       const sig = `${state.url}|${state.title}|${state.hasLiAt}|${state.hasJsession}|${state.authenticated}|${state.failureReason}`;
-      if (sig !== lastSig) {
+      if (sig !== lastSig || (Date.now() - lastLogAt) >= 10000) {
         logCaptureState(sourceLabel, state, 0);
         lastSig = sig;
+        lastLogAt = Date.now();
       }
     }
 
