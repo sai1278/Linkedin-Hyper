@@ -120,6 +120,37 @@ else
 fi
 echo
 
+has_worker_marker() {
+  local pattern="$1"
+  local file="$2"
+  "${COMPOSE[@]}" exec -T worker sh -lc "grep -q \"$pattern\" \"$file\""
+}
+
+NEEDS_REBUILD=0
+if ! has_worker_marker "message-button search attempt" "/app/src/actions/sendMessageNew.js"; then
+  NEEDS_REBUILD=1
+fi
+if ! has_worker_marker "Messaging must be accessible for automation sends." "/app/src/actions/login.js"; then
+  NEEDS_REBUILD=1
+fi
+
+if [[ "$REBUILD" != "1" && "$NEEDS_REBUILD" == "1" ]]; then
+  echo "0.05) Detected stale worker code in container -> auto rebuild once"
+  "${COMPOSE[@]}" up -d --build worker frontend > "$OUT_DIR/compose-up-rebuild.txt" 2>&1 || {
+    cat "$OUT_DIR/compose-up-rebuild.txt"
+    echo "Failed to rebuild services."
+    exit 1
+  }
+  {
+    echo
+    echo "AUTO_REBUILD_TRIGGERED=1"
+    echo
+    cat "$OUT_DIR/compose-up-rebuild.txt"
+  } >> "$OUT_DIR/compose-up.full.txt"
+  echo "Services rebuilt automatically."
+  echo
+fi
+
 echo "0.1) Session backend hints"
 "${COMPOSE[@]}" logs --tail=120 worker | grep -E "Redis unavailable|in-memory session store|Local disk session store|Prisma|Worker API listening" | tee "$OUT_DIR/session-hints.txt" || true
 echo
@@ -143,7 +174,10 @@ echo "1) Services"
 echo
 
 echo "2) Patch presence check inside worker"
-"${COMPOSE[@]}" exec -T worker sh -lc "grep -n 'message-button search attempt' /app/src/actions/sendMessageNew.js || true" | tee "$OUT_DIR/patch-check.txt"
+{
+  "${COMPOSE[@]}" exec -T worker sh -lc "grep -n 'message-button search attempt' /app/src/actions/sendMessageNew.js || true"
+  "${COMPOSE[@]}" exec -T worker sh -lc "grep -n 'Messaging must be accessible for automation sends.' /app/src/actions/login.js || true"
+} | tee "$OUT_DIR/patch-check.txt"
 echo
 
 echo "3) Snapshot worker logs (before run)"
