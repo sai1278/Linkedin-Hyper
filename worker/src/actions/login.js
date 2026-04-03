@@ -3,6 +3,11 @@
 const { getAccountContext, cleanupContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay }                    = require('../humanBehavior');
+const fs = require('fs');
+const path = require('path');
+
+const DEBUG_SCREENSHOT_DIR =
+  process.env.LI_DEBUG_SCREENSHOT_DIR || '/tmp/linkedin-hyper-debug';
 
 function isAuthUrl(url) {
   const value = String(url || '');
@@ -81,6 +86,27 @@ function isAuthenticatedState(state) {
 
 function isLoggedOutState(state) {
   return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers || state?.hasGuestCta);
+}
+
+function safeName(value) {
+  return String(value || 'unknown')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'unknown';
+}
+
+async function captureFailureScreenshot(page, accountId, label) {
+  try {
+    if (!page || page.isClosed?.()) return null;
+    fs.mkdirSync(DEBUG_SCREENSHOT_DIR, { recursive: true });
+    const filename = `${safeName(accountId)}-${Date.now()}-${safeName(label)}.png`;
+    const filePath = path.join(DEBUG_SCREENSHOT_DIR, filename);
+    await page.screenshot({ path: filePath, fullPage: true });
+    return filePath;
+  } catch (_) {
+    return null;
+  }
 }
 
 async function tryNavigate(page, url) {
@@ -173,16 +199,24 @@ async function verifySession({ accountId, proxyUrl }) {
       isLoggedOutState(messagingState) ||
       !messagingAuthenticated
     ) {
+      const screenshot = await captureFailureScreenshot(page, accountId, 'verify-session-expired');
       const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+      if (screenshot) {
+        err.message += ` Screenshot: ${screenshot}`;
+      }
       err.code   = 'SESSION_EXPIRED';
       err.status = 401;
       err.details = details;
       throw err;
     }
 
-    const err = new Error(`Session verification failed for account ${accountId}.`);
-    err.code = 'SESSION_VERIFY_FAILED';
-    err.status = 500;
+    const screenshot = await captureFailureScreenshot(page, accountId, 'verify-session-failed');
+    const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+    if (screenshot) {
+      err.message += ` Screenshot: ${screenshot}`;
+    }
+    err.code = 'SESSION_EXPIRED';
+    err.status = 401;
     err.details = details;
     throw err;
   } finally {
