@@ -144,18 +144,19 @@ function Invoke-AutoCapture {
 
   function Invoke-CaptureAttempt {
     param(
+      [Parameter(Mandatory = $true)][string]$BrowserName,
       [Parameter(Mandatory = $true)][bool]$LiveProfileMode,
       [Parameter(Mandatory = $true)][int]$Port
     )
 
     # Ensure stale browser processes from prior failed attempts don't hold profile/port.
-    $procName = if ($Browser -eq 'edge') { 'msedge' } else { 'chrome' }
+    $procName = if ($BrowserName -eq 'edge') { 'msedge' } else { 'chrome' }
     Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1
 
     $args = @(
       $captureScript,
-      "--browser", $Browser,
+      "--browser", $BrowserName,
       "--timeoutSec", $CaptureTimeoutSec.ToString(),
       "--port", $Port.ToString(),
       "--output", $OutputFile
@@ -169,28 +170,40 @@ function Invoke-AutoCapture {
       $args += @("--profile", $CaptureProfile)
     }
 
-    Write-Host "Starting automatic LinkedIn cookie capture via $Browser..."
+    Write-Host "Starting automatic LinkedIn cookie capture via $BrowserName..."
     Write-Host ("Capture mode: " + ($(if ($LiveProfileMode) { "live-profile" } else { "temp-profile-copy" })) + ", DevTools port: $Port")
     & node $args
     return $LASTEXITCODE
   }
 
-  if ($UseLiveProfile) {
-    foreach ($port in $portCandidates) {
-      $code = Invoke-CaptureAttempt -LiveProfileMode $true -Port $port
-      if ($code -eq 0) { return }
-      Write-Warning "Live-profile capture failed on port $port."
+  $browserCandidates = @($Browser)
+  if ($Browser -eq 'chrome') {
+    $browserCandidates += @('edge')
+  }
+  $browserCandidates = $browserCandidates | Select-Object -Unique
+
+  foreach ($browserName in $browserCandidates) {
+    if ($browserName -ne $Browser) {
+      Write-Warning "Retrying auto-capture with browser fallback: $browserName"
     }
-    Write-Warning "Falling back to temp-profile-copy capture. Live-profile DevTools can be blocked by newer Chrome security behavior."
+
+    if ($UseLiveProfile) {
+      foreach ($port in $portCandidates) {
+        $code = Invoke-CaptureAttempt -BrowserName $browserName -LiveProfileMode $true -Port $port
+        if ($code -eq 0) { return }
+        Write-Warning "Live-profile capture failed on port $port ($browserName)."
+      }
+      Write-Warning "Falling back to temp-profile-copy capture for $browserName."
+    }
+
+    foreach ($port in $portCandidates) {
+      $code = Invoke-CaptureAttempt -BrowserName $browserName -LiveProfileMode $false -Port $port
+      if ($code -eq 0) { return }
+      Write-Warning "Temp-profile-copy capture failed on port $port ($browserName)."
+    }
   }
 
-  foreach ($port in $portCandidates) {
-    $code = Invoke-CaptureAttempt -LiveProfileMode $false -Port $port
-    if ($code -eq 0) { return }
-    Write-Warning "Temp-profile-copy capture failed on port $port."
-  }
-
-  throw "Auto-capture failed after retries. Please ensure LinkedIn login can be completed in the launched browser window."
+  throw "Auto-capture failed after retries on all browsers/ports. Please ensure the launched browser window appears and login can be completed."
 }
 
 try {
