@@ -199,7 +199,31 @@ function Invoke-AutoCapture {
 
     Write-Host "Starting automatic LinkedIn cookie capture via $BrowserName..."
     Write-Host ("Capture mode: " + ($(if ($LiveProfileMode) { "live-profile" } else { "temp-profile-copy" })) + ", DevTools port: $Port")
-    $attemptOutput = & node $args 2>&1
+    $hasNativeVar = $false
+    $nativePrev = $null
+    try {
+      $nativeVar = Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue
+      if ($null -ne $nativeVar) {
+        $hasNativeVar = $true
+        $nativePrev = $nativeVar.Value
+        Set-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -Value $false
+      }
+    } catch {
+      # Best effort only; continue.
+    }
+
+    $attemptOutput = $null
+    try {
+      $attemptOutput = & node $args 2>&1
+    } finally {
+      if ($hasNativeVar) {
+        try {
+          Set-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -Value $nativePrev
+        } catch {
+          # ignore restore failure
+        }
+      }
+    }
     if ($attemptOutput) {
       $attemptOutput | ForEach-Object { Write-Host $_ }
     }
