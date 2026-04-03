@@ -16,6 +16,32 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+function Get-BrowserUserDataRoot {
+  param([Parameter(Mandatory = $true)][string]$BrowserName)
+
+  if ($BrowserName -eq 'edge') {
+    return Join-Path $env:LOCALAPPDATA "Microsoft\\Edge\\User Data"
+  }
+  return Join-Path $env:LOCALAPPDATA "Google\\Chrome\\User Data"
+}
+
+function Resolve-CaptureProfileForBrowser {
+  param([Parameter(Mandatory = $true)][string]$BrowserName)
+
+  if (-not $CaptureProfile -or -not $CaptureProfile.Trim()) {
+    return ""
+  }
+
+  $root = Get-BrowserUserDataRoot -BrowserName $BrowserName
+  $candidate = Join-Path $root $CaptureProfile
+  if (Test-Path -LiteralPath $candidate) {
+    return $CaptureProfile
+  }
+
+  Write-Warning "Profile '$CaptureProfile' not found for browser '$BrowserName' at '$root'. Falling back to browser default profile."
+  return ""
+}
+
 function Resolve-CandidateCookieFiles {
   param([string]$PreferredPath)
 
@@ -166,8 +192,9 @@ function Invoke-AutoCapture {
     } else {
       $args += @("--use-temp-copy")
     }
-    if ($CaptureProfile -and $CaptureProfile.Trim()) {
-      $args += @("--profile", $CaptureProfile)
+    $effectiveProfile = Resolve-CaptureProfileForBrowser -BrowserName $BrowserName
+    if ($effectiveProfile) {
+      $args += @("--profile", $effectiveProfile)
     }
 
     Write-Host "Starting automatic LinkedIn cookie capture via $BrowserName..."
