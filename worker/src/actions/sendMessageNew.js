@@ -6,6 +6,16 @@ const { delay, humanClick, humanScroll, humanType } = require('../humanBehavior'
 const { checkAndIncrement }                         = require('../rateLimit');
 const { getRedis }                                  = require('../redisClient');
 
+const COMPOSER_SELECTORS = [
+  '.msg-form__contenteditable',
+  '[contenteditable][role="textbox"]',
+  'div[role="textbox"][contenteditable="true"]',
+  '[data-view-name="messaging-compose-box"] [contenteditable="true"]',
+  '.msg-form textarea',
+  '.msg-form__msg-content-container textarea',
+  '[data-view-name="messaging-compose-box"] textarea',
+].join(', ');
+
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -808,10 +818,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
         const directUrlLanding = page.url();
         if (!directUrlLanding.includes('/login') && !directUrlLanding.includes('/checkpoint') && !directUrlLanding.includes('/authwall')) {
           const composeBox = await page
-            .waitForSelector(
-              '.msg-form__contenteditable, [contenteditable][role="textbox"], div[role="textbox"][contenteditable="true"], [data-view-name="messaging-compose-box"] [contenteditable="true"]',
-              { timeout: 12000 }
-            )
+            .waitForSelector(COMPOSER_SELECTORS, { timeout: 20000 })
             .catch(() => null);
           usedDirectUrl = !!composeBox;
 
@@ -848,10 +855,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
             timeout: 30000,
           });
           const threadComposer = await page
-            .waitForSelector(
-              '.msg-form__contenteditable, [contenteditable][role="textbox"], div[role="textbox"][contenteditable="true"], [data-view-name="messaging-compose-box"] [contenteditable="true"]',
-              { timeout: 10000 }
-            )
+            .waitForSelector(COMPOSER_SELECTORS, { timeout: 20000 })
             .catch(() => null);
           if (threadComposer) {
             usedDirectUrl = true;
@@ -899,10 +903,22 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       await delay(1500, 3000);
     }
 
-    const composeSelector =
-      '.msg-form__contenteditable, [contenteditable][role="textbox"], div[role="textbox"][contenteditable="true"], [data-view-name="messaging-compose-box"] [contenteditable="true"]';
+    const composeSelector = COMPOSER_SELECTORS;
     const beforeSnapshot = await getMessageSnapshot(page).catch(() => ({ count: 0, lastText: '', recentTexts: [] }));
-    await humanType(page, composeSelector, text, { timeout: 10000 });
+    try {
+      await humanType(page, composeSelector, text, { timeout: 20000 });
+    } catch (typeErr) {
+      const msg = String(typeErr?.message || typeErr || '');
+      if (msg.includes('waitForSelector') || msg.includes('contenteditable') || msg.includes('textarea')) {
+        const err = new Error(
+          'Message composer input not available after opening chat. Ensure recipient is messageable for this account.'
+        );
+        err.code = 'NOT_MESSAGEABLE';
+        err.status = 400;
+        throw err;
+      }
+      throw typeErr;
+    }
     await delay(800, 1800);
 
     networkThreadProbe = createNetworkThreadIdProbe(page);

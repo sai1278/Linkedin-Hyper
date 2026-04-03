@@ -997,18 +997,10 @@ app.post('/messages/send-new', async (req, res) => {
         accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
       });
     } catch (sendNewErr) {
-      const code = String(sendNewErr?.code || '');
-      const msg = String(sendNewErr?.message || '').toLowerCase();
-      const shouldFallbackToThread =
-        code === 'NOT_MESSAGEABLE' ||
-        code === 'SEND_NOT_CONFIRMED' ||
-        code === 'SESSION_EXPIRED' ||
-        msg.includes('could not open message composer from profile') ||
-        msg.includes('send clicked but linkedin thread id was not resolved') ||
-        msg.includes('session expired for account') ||
-        msg.includes('operation failed');
-
-      if (!shouldFallbackToThread) throw sendNewErr;
+      // Always try thread fallback before failing send-new.
+      // This helps when profile composer flow is flaky but an existing thread works.
+      const reason = String(sendNewErr?.message || sendNewErr || '');
+      console.warn(`[API] send-new failed for ${accountId}; trying thread fallback: ${reason}`);
 
       const inboxResult = await runJob('readMessages', {
         accountId,
