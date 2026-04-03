@@ -5,7 +5,14 @@ const crypto     = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { getQueue, getQueueEvents }   = require('./queue');
 const { startWorker }  = require('./worker');
-const { saveCookies, loadCookies, sessionMeta, deleteSession, listKnownAccountIds } = require('./session');
+const {
+  saveCookies,
+  loadCookies,
+  sessionMeta,
+  deleteSession,
+  listKnownAccountIds,
+  hasRequiredLinkedInSessionCookies,
+} = require('./session');
 const { verifySession } = require('./actions/login');
 const { readMessages } = require('./actions/readMessages');
 const { readThread } = require('./actions/readThread');
@@ -538,7 +545,13 @@ app.post('/accounts/:accountId/session', async (req, res) => {
     if (!Array.isArray(cookies) || cookies.length === 0 || !cookies.every(c => c && typeof c === 'object' && !Array.isArray(c))) {
       return res.status(400).json({ error: 'Body must be a non-empty array of valid cookie objects' });
     }
-    await saveCookies(accountId, cookies);
+    if (!hasRequiredLinkedInSessionCookies(cookies)) {
+      return res.status(400).json({
+        error: `Required LinkedIn cookies (li_at/JSESSIONID) are missing for account ${accountId}. Re-import cookies.`,
+        code: 'COOKIES_MISSING',
+      });
+    }
+    await saveCookies(accountId, cookies, { requireAuthCookies: true, source: 'api-import' });
     try {
       await withTimeout(accountRepo.upsertAccount(accountId, accountId), 4000);
     } catch (dbErr) {

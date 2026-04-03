@@ -242,7 +242,10 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
     await delay(500, 1200);
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
-      await saveCookies(accountId, await context.cookies());
+      await saveCookies(accountId, await context.cookies(), {
+        skipIfMissingAuthCookies: true,
+        source: 'sendMessage',
+      });
     }
 
     const msgId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;

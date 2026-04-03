@@ -1419,7 +1419,10 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     await delay(2000, 4000);
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
-      await saveCookies(accountId, await context.cookies());
+      await saveCookies(accountId, await context.cookies(), {
+        skipIfMissingAuthCookies: true,
+        source: 'sendMessageNew',
+      });
     }
 
     const msgId = `sent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;

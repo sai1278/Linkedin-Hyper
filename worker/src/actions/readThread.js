@@ -133,7 +133,10 @@ async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
     }
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
-      await saveCookies(accountId, await context.cookies());
+      await saveCookies(accountId, await context.cookies(), {
+        skipIfMissingAuthCookies: true,
+        source: 'readThread',
+      });
     }
 
     return { items: messages, participant, cursor: null, hasMore: false };

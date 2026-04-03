@@ -87,7 +87,10 @@ async function searchPeople({ accountId, query, proxyUrl, limit = 10 }) {
     }, limit);
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
-      await saveCookies(accountId, await context.cookies());
+      await saveCookies(accountId, await context.cookies(), {
+        skipIfMissingAuthCookies: true,
+        source: 'searchPeople',
+      });
     }
 
     return profiles; // returns array directly, not wrapped in { items }

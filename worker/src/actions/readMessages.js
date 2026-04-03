@@ -225,7 +225,10 @@ async function readMessagesInternal({
     });
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
-      await saveCookies(accountId, await context.cookies());
+      await saveCookies(accountId, await context.cookies(), {
+        skipIfMissingAuthCookies: true,
+        source: 'readMessages',
+      });
     }
 
     return { items: chats, cursor: null, hasMore: false };

@@ -220,7 +220,44 @@ function normaliseCookies(cookies) {
   });
 }
 
-async function saveCookies(accountId, cookies) {
+function getLinkedInCookieFlags(cookies) {
+  const list = Array.isArray(cookies) ? cookies : [];
+  const linkedIn = list.filter((c) => String(c?.domain || '').includes('linkedin.com'));
+  return {
+    total: linkedIn.length,
+    hasLiAt: linkedIn.some((c) => c?.name === 'li_at' && c?.value),
+    hasJsession: linkedIn.some((c) => c?.name === 'JSESSIONID' && c?.value),
+  };
+}
+
+function hasRequiredLinkedInSessionCookies(cookies) {
+  const flags = getLinkedInCookieFlags(cookies);
+  return Boolean(flags.hasLiAt && flags.hasJsession);
+}
+
+async function saveCookies(accountId, cookies, options = {}) {
+  const {
+    requireAuthCookies = false,
+    skipIfMissingAuthCookies = false,
+    source = 'unknown',
+  } = options || {};
+
+  const flags = getLinkedInCookieFlags(cookies);
+  const missingRequired = !flags.hasLiAt || !flags.hasJsession;
+  if (missingRequired && (requireAuthCookies || skipIfMissingAuthCookies)) {
+    const reason = `li_at=${flags.hasLiAt}, JSESSIONID=${flags.hasJsession}, linkedinCookieCount=${flags.total}`;
+    if (requireAuthCookies) {
+      const err = new Error(`Required LinkedIn cookies missing for ${accountId} (${reason}).`);
+      err.code = 'COOKIES_MISSING';
+      err.status = 400;
+      throw err;
+    }
+    console.warn(
+      `[Session] Skipping cookie refresh for ${accountId} from ${source}; required LinkedIn cookies missing (${reason}).`
+    );
+    return false;
+  }
+
   const normalised = normaliseCookies(cookies);
   const now        = Date.now();
   knownAccountIds.add(accountId);
@@ -243,6 +280,7 @@ async function saveCookies(accountId, cookies) {
     memorySessions.set(accountId, normalised);
     memoryMeta.set(accountId, { savedAt: now });
   }
+  return true;
 }
 
 async function loadCookies(accountId) {
@@ -334,4 +372,12 @@ async function listKnownAccountIds() {
   return Array.from(ids).sort((a, b) => a.localeCompare(b));
 }
 
-module.exports = { saveCookies, loadCookies, sessionMeta, deleteSession, listKnownAccountIds };
+module.exports = {
+  saveCookies,
+  loadCookies,
+  sessionMeta,
+  deleteSession,
+  listKnownAccountIds,
+  hasRequiredLinkedInSessionCookies,
+  getLinkedInCookieFlags,
+};

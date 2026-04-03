@@ -73,7 +73,10 @@ async function sendConnectionRequest({ accountId, profileUrl, note, proxyUrl }) 
     await delay(1500, 3000);
 
     if (process.env.REFRESH_SESSION_COOKIES === '1') {
-      await saveCookies(accountId, await context.cookies());
+      await saveCookies(accountId, await context.cookies(), {
+        skipIfMissingAuthCookies: true,
+        source: 'sendConnectionRequest',
+      });
     }
 
     // Activity log — this is what populates the Connections page
