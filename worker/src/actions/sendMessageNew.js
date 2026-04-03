@@ -46,6 +46,8 @@ const PROFILE_MORE_ACTION_SELECTORS = [
   'div[role="button"][aria-label*="More"]',
 ];
 
+const PROFILE_DEBUG_ENABLED = process.env.LI_PROFILE_DEBUG !== '0';
+
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -98,6 +100,111 @@ function normalizeParticipantName(candidate, profileUrl) {
 
 function logSendStep(accountId, message) {
   console.log(`[sendMessageNew:${accountId}] ${message}`);
+}
+
+function truncateForLog(value, max = 120) {
+  const normalized = normalizeText(value);
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max - 3)}...`;
+}
+
+function summarizeSelectorCounts(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return 'none';
+  return entries
+    .map((entry) => `${entry.selector}=${entry.visibleCount}/${entry.count}`)
+    .join(' | ');
+}
+
+async function collectProfileActionDebugSnapshot(page, { messageSelectors, moreSelectors }) {
+  try {
+    return await page.evaluate(({ messageSelectors, moreSelectors }) => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        const hidden =
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          style.opacity === '0' ||
+          el.getAttribute('aria-hidden') === 'true';
+        return !hidden && rect.width > 0 && rect.height > 0;
+      };
+
+      const countBySelector = (selector) => {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        const visibleCount = nodes.filter(isVisible).length;
+        return { selector, count: nodes.length, visibleCount };
+      };
+
+      const messageSelectorCounts = messageSelectors.map(countBySelector);
+      const moreSelectorCounts = moreSelectors.map(countBySelector);
+      const hasVisibleMessageButton = messageSelectorCounts.some((x) => x.visibleCount > 0);
+      const hasVisibleMoreButton = moreSelectorCounts.some((x) => x.visibleCount > 0);
+
+      const actionNodes = Array.from(
+        document.querySelectorAll('main button, main a, main [role="button"], main div[role="button"]')
+      );
+      const visibleActionTexts = Array.from(
+        new Set(
+          actionNodes
+            .filter(isVisible)
+            .map((el) => normalize(el.getAttribute('aria-label') || el.textContent || ''))
+            .filter(Boolean)
+        )
+      ).slice(0, 25);
+
+      return {
+        url: location.href,
+        title: document.title || '',
+        messageSelectorCounts,
+        moreSelectorCounts,
+        hasVisibleMessageButton,
+        hasVisibleMoreButton,
+        visibleActionTexts,
+      };
+    }, { messageSelectors, moreSelectors });
+  } catch (err) {
+    return {
+      url: page.url(),
+      title: '',
+      messageSelectorCounts: [],
+      moreSelectorCounts: [],
+      hasVisibleMessageButton: false,
+      hasVisibleMoreButton: false,
+      visibleActionTexts: [],
+      error: String(err?.message || err),
+    };
+  }
+}
+
+function logProfileActionDebug(accountId, snapshot) {
+  if (!PROFILE_DEBUG_ENABLED || !snapshot) return;
+
+  logSendStep(accountId, `[debug] profile URL after navigation: ${snapshot.url || '(unknown)'}`);
+  logSendStep(accountId, `[debug] profile title: ${truncateForLog(snapshot.title || '(empty)')}`);
+  logSendStep(
+    accountId,
+    `[debug] message selector counts: ${summarizeSelectorCounts(snapshot.messageSelectorCounts)}`
+  );
+  logSendStep(
+    accountId,
+    `[debug] visible Message button exists: ${snapshot.hasVisibleMessageButton ? 'yes' : 'no'}`
+  );
+  logSendStep(
+    accountId,
+    `[debug] visible More button exists: ${snapshot.hasVisibleMoreButton ? 'yes' : 'no'}`
+  );
+  logSendStep(
+    accountId,
+    `[debug] more selector counts: ${summarizeSelectorCounts(snapshot.moreSelectorCounts)}`
+  );
+  logSendStep(
+    accountId,
+    `[debug] visible action texts: ${(
+      snapshot.visibleActionTexts || []
+    ).map((txt) => `"${truncateForLog(txt, 80)}"`).join(', ') || '(none)'}`
+  );
 }
 
 function ensureDebugDir() {
@@ -1015,6 +1122,17 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
       await page.waitForSelector('main, body', { timeout: 15000 }).catch(() => null);
       logSendStep(accountId, `profile page load successful: ${page.url()}`);
+      const profileDebugSnapshot = await collectProfileActionDebugSnapshot(page, {
+        messageSelectors: [
+          ...PROFILE_DIRECT_MESSAGE_SELECTORS,
+          ...PROFILE_TOP_ACTION_SELECTORS,
+        ],
+        moreSelectors: PROFILE_MORE_ACTION_SELECTORS,
+      });
+      logProfileActionDebug(accountId, profileDebugSnapshot);
+      if (profileDebugSnapshot?.error) {
+        logSendStep(accountId, `[debug] profile debug collection error: ${profileDebugSnapshot.error}`);
+      }
 
       const landingUrl = page.url();
       if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
