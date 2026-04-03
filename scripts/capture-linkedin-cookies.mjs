@@ -34,14 +34,38 @@ function isBlockedAuthPage(url) {
   return AUTH_BLOCK_TOKENS.some((token) => value.includes(token));
 }
 
+function isLikelyMemberUrl(url) {
+  const value = String(url || '').toLowerCase();
+  if (!value.includes('linkedin.com')) return false;
+  if (isBlockedAuthPage(value)) return false;
+  try {
+    const u = new URL(value);
+    const p = String(u.pathname || '/').toLowerCase();
+    return (
+      p === '/' ||
+      p === '/feed/' || p.startsWith('/feed') ||
+      p.startsWith('/in/') ||
+      p.startsWith('/messaging') ||
+      p.startsWith('/search') ||
+      p.startsWith('/mynetwork') ||
+      p.startsWith('/notifications') ||
+      p.startsWith('/jobs')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isAuthenticatedLinkedInPage(state) {
+  const hasUiSignal = Boolean(state?.hasSignedInNav || state?.hasMessagingShell);
+  const hasMemberUrlSignal = isLikelyMemberUrl(state?.url);
   return Boolean(
     state &&
     !state.blockedAuthPage &&
     !state.hasLoginForm &&
     !state.hasAuthwallMarkers &&
     !state.hasGuestCta &&
-    (state.hasSignedInNav || state.hasMessagingShell)
+    (hasUiSignal || hasMemberUrlSignal)
   );
 }
 
@@ -77,7 +101,7 @@ function explainCaptureRejection(state) {
 function logCaptureState(source, state, stableForMs = 0) {
   const title = String(state?.title || '').trim() || 'n/a';
   console.log(
-    `[capture:${source}] url=${state?.url || 'n/a'} | title=${title} | li_at=${Boolean(state?.hasLiAt)} | JSESSIONID=${Boolean(state?.hasJsession)} | authenticated=${Boolean(state?.authenticated)} | blocked=${Boolean(state?.blockedAuthPage)} | stableMs=${stableForMs} | reason=${state?.failureReason || 'none'}`
+    `[capture:${source}] url=${state?.url || 'n/a'} | title=${title} | li_at=${Boolean(state?.hasLiAt)} | JSESSIONID=${Boolean(state?.hasJsession)} | signedInNav=${Boolean(state?.hasSignedInNav)} | messagingShell=${Boolean(state?.hasMessagingShell)} | authenticated=${Boolean(state?.authenticated)} | blocked=${Boolean(state?.blockedAuthPage)} | stableMs=${stableForMs} | reason=${state?.failureReason || 'none'}`
   );
 }
 

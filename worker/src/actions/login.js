@@ -95,12 +95,36 @@ function isLoggedOutState(state) {
   return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers || state?.hasGuestCta);
 }
 
+function isLikelyMemberUrl(url) {
+  const value = String(url || '').toLowerCase();
+  if (!value.includes('linkedin.com')) return false;
+  if (isBlockedAuthPage(value)) return false;
+  try {
+    const u = new URL(value);
+    const p = String(u.pathname || '/').toLowerCase();
+    return (
+      p === '/' ||
+      p === '/feed/' || p.startsWith('/feed') ||
+      p.startsWith('/in/') ||
+      p.startsWith('/messaging') ||
+      p.startsWith('/search') ||
+      p.startsWith('/mynetwork') ||
+      p.startsWith('/notifications') ||
+      p.startsWith('/jobs')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isAuthenticatedLinkedInPage(state) {
+  const hasUiSignal = Boolean(state?.hasSignedInNav || state?.hasMessagingShell);
+  const hasMemberUrlSignal = isLikelyMemberUrl(state?.url);
   return Boolean(
     state &&
     !isBlockedAuthPage(state.url) &&
     !isLoggedOutState(state) &&
-    isAuthenticatedState(state)
+    (hasUiSignal || hasMemberUrlSignal)
   );
 }
 
