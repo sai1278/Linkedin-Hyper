@@ -156,7 +156,8 @@ function Validate-CookieShape {
 
 function Invoke-AutoCapture {
   param(
-    [Parameter(Mandatory = $true)][string]$OutputFile
+    [Parameter(Mandatory = $true)][string]$OutputFile,
+    [switch]$ForceLiveProfile
   )
 
   $captureScript = Join-Path $repoRoot "scripts\\capture-linkedin-cookies.mjs"
@@ -251,12 +252,14 @@ function Invoke-AutoCapture {
   }
   $browserCandidates = $browserCandidates | Select-Object -Unique
 
+  $effectiveUseLiveProfile = $UseLiveProfile -or $ForceLiveProfile
+
   foreach ($browserName in $browserCandidates) {
     if ($browserName -ne $Browser) {
       Write-Warning "Retrying auto-capture with browser fallback: $browserName"
     }
 
-    if ($UseLiveProfile) {
+    if ($effectiveUseLiveProfile) {
       foreach ($port in $portCandidates) {
         $result = Invoke-CaptureAttempt -BrowserName $browserName -LiveProfileMode $true -Port $port
         if ($result.code -eq 0) { return }
@@ -279,6 +282,46 @@ function Invoke-AutoCapture {
   }
 
   throw "Auto-capture failed after retries on all browsers/ports. Please ensure the launched browser window appears and login can be completed."
+}
+
+function Invoke-ImportAndVerify {
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountId,
+    [Parameter(Mandatory = $true)][object[]]$Cookies,
+    [Parameter(Mandatory = $true)][string]$SourcePath
+  )
+
+  $body = $Cookies | ConvertTo-Json -Depth 8 -Compress
+  $headers = @{ "X-Api-Key" = $ApiKey }
+  if ($RouteAuthToken -and $RouteAuthToken.Trim()) {
+    $headers["Authorization"] = "Bearer $RouteAuthToken"
+  }
+
+  Write-Host "Importing cookies for account '$AccountId' from '$SourcePath'..."
+  $import = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/session" -Headers $headers -ContentType "application/json" -Body $body
+  $import | ConvertTo-Json -Depth 6 | Write-Host
+
+  Write-Host ""
+  Write-Host "Verifying session..."
+  $verify = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify" -Headers $headers
+  $verify | ConvertTo-Json -Depth 6 | Write-Host
+
+  Write-Host ""
+  Write-Host "Done."
+}
+
+function Should-RetryWithLiveProfile {
+  param([Parameter(Mandatory = $true)]$ErrorRecord)
+
+  if (-not $ErrorRecord) { return $false }
+  $text = ""
+  if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+    $text += [string]$ErrorRecord.ErrorDetails.Message
+  }
+  if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Message) {
+    $text += "`n" + [string]$ErrorRecord.Exception.Message
+  }
+  return ($text -match 'SESSION_EXPIRED|Session expired')
 }
 
 try {
@@ -315,23 +358,30 @@ try {
 
   $cookies = $selected.cookies
 
-  $body = $cookies | ConvertTo-Json -Depth 8 -Compress
-  $headers = @{ "X-Api-Key" = $ApiKey }
-  if ($RouteAuthToken -and $RouteAuthToken.Trim()) {
-    $headers["Authorization"] = "Bearer $RouteAuthToken"
+  $firstError = $null
+  try {
+    Invoke-ImportAndVerify -AccountId $AccountId -Cookies $cookies -SourcePath $selected.path
+  } catch {
+    $firstError = $_
   }
 
-  Write-Host "Importing cookies for account '$AccountId' from '$($selected.path)'..."
-  $import = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/session" -Headers $headers -ContentType "application/json" -Body $body
-  $import | ConvertTo-Json -Depth 6 | Write-Host
-
-  Write-Host ""
-  Write-Host "Verifying session..."
-  $verify = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify" -Headers $headers
-  $verify | ConvertTo-Json -Depth 6 | Write-Host
-
-  Write-Host ""
-  Write-Host "Done."
+  if (
+    $firstError -and
+    $AutoCapture -and
+    -not $UseLiveProfile -and
+    (Should-RetryWithLiveProfile -ErrorRecord $firstError)
+  ) {
+    Write-Warning "Imported cookies were not active on server. Retrying auto-capture once with live-profile mode..."
+    $capturedPath = if ($CookieFile -and $CookieFile.Trim()) { $CookieFile } else { Join-Path $repoRoot "linkedin-cookies-plain.json" }
+    Invoke-AutoCapture -OutputFile $capturedPath -ForceLiveProfile
+    $retrySelected = Try-LoadCookiesFromFile -Path $capturedPath
+    if (-not $retrySelected) {
+      throw $firstError
+    }
+    Invoke-ImportAndVerify -AccountId $AccountId -Cookies $retrySelected.cookies -SourcePath $retrySelected.path
+  } elseif ($firstError) {
+    throw $firstError
+  }
 } catch {
   $response = $null
   if (
