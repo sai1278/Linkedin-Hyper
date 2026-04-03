@@ -90,6 +90,15 @@ mkdir -p "$OUT_DIR"
 echo "Output directory: $OUT_DIR"
 echo
 
+echo "0) Ensure services are up (build worker/frontend)"
+"${COMPOSE[@]}" up -d --build worker frontend > "$OUT_DIR/compose-up.txt" 2>&1 || {
+  cat "$OUT_DIR/compose-up.txt"
+  echo "Failed to start services."
+  exit 1
+}
+echo "Services are up."
+echo
+
 echo "1) Services"
 "${COMPOSE[@]}" ps | tee "$OUT_DIR/compose-ps.txt"
 echo
@@ -148,4 +157,3 @@ else
 fi
 
 echo "All debug artifacts are in: $OUT_DIR"
-
