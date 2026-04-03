@@ -4,6 +4,8 @@ const { getAccountContext, cleanupContext, withAccountLock } = require('../brows
 const { loadCookies, saveCookies }                  = require('../session');
 const { delay, humanClick, humanScroll, humanType } = require('../humanBehavior');
 const { checkAndIncrement }                         = require('../rateLimit');
+const fs                                            = require('fs');
+const path                                          = require('path');
 const { getRedis }                                  = require('../redisClient');
 
 const COMPOSER_SELECTORS = [
@@ -15,6 +17,34 @@ const COMPOSER_SELECTORS = [
   '.msg-form__msg-content-container textarea',
   '[data-view-name="messaging-compose-box"] textarea',
 ].join(', ');
+
+const DEBUG_SCREENSHOT_DIR =
+  process.env.LI_DEBUG_SCREENSHOT_DIR || '/tmp/linkedin-hyper-debug';
+
+const PROFILE_DIRECT_MESSAGE_SELECTORS = [
+  'main button[aria-label*="Message"]',
+  'main a[aria-label*="Message"]',
+  'main button[data-control-name*="message"]',
+  'main a[data-control-name*="message"]',
+  'main button[data-test-id*="message"]',
+  'main a[data-test-id*="message"]',
+];
+
+const PROFILE_TOP_ACTION_SELECTORS = [
+  '.pv-top-card-v2-ctas button[aria-label*="Message"]',
+  '.pv-top-card-v2-ctas a[aria-label*="Message"]',
+  '.pvs-profile-actions button[aria-label*="Message"]',
+  '.pvs-profile-actions a[aria-label*="Message"]',
+  'main .artdeco-button[aria-label*="Message"]',
+];
+
+const PROFILE_MORE_ACTION_SELECTORS = [
+  'button[aria-label*="More actions"]',
+  'button[aria-label*="More"]',
+  'button[data-control-name*="overflow"]',
+  'button[data-control-name*="more"]',
+  'div[role="button"][aria-label*="More"]',
+];
 
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -66,103 +96,216 @@ function normalizeParticipantName(candidate, profileUrl) {
   return deriveNameFromProfileUrl(profileUrl);
 }
 
-async function clickMessageTriggerOnProfile(page) {
-  const selectors = [
-    'button[aria-label*="Message"]',
-    'a[aria-label*="Message"]',
-    'button[data-control-name*="message"]',
-    'a[data-control-name*="message"]',
-    'button[data-test-id*="message"]',
-    'a[data-test-id*="message"]',
-  ];
+function logSendStep(accountId, message) {
+  console.log(`[sendMessageNew:${accountId}] ${message}`);
+}
 
-  for (const selector of selectors) {
-    try {
-      await humanClick(page, selector, { timeout: 2500 });
-      return true;
-    } catch (_) {}
-  }
-
-  // LinkedIn often keeps Message inside "More actions" dropdown.
-  const moreActionSelectors = [
-    'button[aria-label*="More actions"]',
-    'button[aria-label*="More"]',
-    'button[data-control-name*="overflow"]',
-    'button[data-control-name*="more"]',
-    'div[role="button"][aria-label*="More"]',
-  ];
-
-  for (const selector of moreActionSelectors) {
-    try {
-      await humanClick(page, selector, { timeout: 2500 });
-      await delay(400, 800);
-      const clickedFromMenu = await page.evaluate(() => {
-        const isVisible = (el) => {
-          if (!el) return false;
-          const style = window.getComputedStyle(el);
-          const rect = el.getBoundingClientRect();
-          const hidden = style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0';
-          return !hidden && rect.width > 0 && rect.height > 0;
-        };
-
-        const candidates = Array.from(
-          document.querySelectorAll(
-            [
-              'div[role="menu"] [role="menuitem"]',
-              '.artdeco-dropdown__content-inner [role="menuitem"]',
-              '.artdeco-dropdown__content-inner button',
-              '.artdeco-dropdown__content-inner a',
-              '.artdeco-dropdown__item',
-              '[data-control-name*="message"]',
-            ].join(', ')
-          )
-        );
-
-        const target = candidates.find((el) => {
-          if (!isVisible(el)) return false;
-          const text = `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`.toLowerCase();
-          if (!text.includes('message')) return false;
-          const disabled = el.getAttribute('disabled') !== null || el.getAttribute('aria-disabled') === 'true';
-          return !disabled;
-        });
-
-        if (!target) return false;
-        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        return true;
-      });
-
-      if (clickedFromMenu) return true;
-    } catch (_) {}
-  }
-
+function ensureDebugDir() {
   try {
-    const clicked = await page.evaluate(() => {
-      const isVisible = (el) => {
-        if (!el) return false;
-        const style = window.getComputedStyle(el);
-        const rect = el.getBoundingClientRect();
-        const hidden = style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0';
-        return !hidden && rect.width > 0 && rect.height > 0;
-      };
+    fs.mkdirSync(DEBUG_SCREENSHOT_DIR, { recursive: true });
+  } catch (_) {}
+}
 
-      const nodes = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-      const target = nodes.find((el) => {
-        if (!isVisible(el)) return false;
-        const text = `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`.toLowerCase();
-        if (!text.includes('message')) return false;
-        const disabled = el.getAttribute('disabled') !== null || el.getAttribute('aria-disabled') === 'true';
-        return !disabled;
-      });
+function safeName(value) {
+  return String(value || 'unknown')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'unknown';
+}
 
-      if (!target) return false;
-      target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      return true;
-    });
+async function captureFailureScreenshot(page, accountId, label) {
+  try {
+    if (!page || page.isClosed?.()) return null;
+    ensureDebugDir();
+    const filename = `${safeName(accountId)}-${Date.now()}-${safeName(label)}.png`;
+    const filePath = path.join(DEBUG_SCREENSHOT_DIR, filename);
+    await page.screenshot({ path: filePath, fullPage: true });
+    console.warn(`[sendMessageNew:${accountId}] screenshot saved: ${filePath}`);
+    return filePath;
+  } catch (err) {
+    console.warn(
+      `[sendMessageNew:${accountId}] screenshot capture failed: ${String(err?.message || err)}`
+    );
+    return null;
+  }
+}
 
-    return Boolean(clicked);
+async function waitForComposerOpen(page, timeoutMs = 7000) {
+  const composer = await page.waitForSelector(COMPOSER_SELECTORS, { timeout: timeoutMs }).catch(() => null);
+  return Boolean(composer);
+}
+
+async function clickVisibleSelector(page, selector, timeoutMs = 2000) {
+  try {
+    const locator = page.locator(selector).first();
+    const visible = await locator.isVisible({ timeout: timeoutMs }).catch(() => false);
+    if (!visible) return false;
+    await humanClick(page, selector, { timeout: Math.max(timeoutMs, 2500) });
+    return true;
   } catch (_) {
     return false;
   }
+}
+
+async function clickMessageByText(page) {
+  return page.evaluate(() => {
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      const hidden = style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0';
+      return !hidden && rect.width > 0 && rect.height > 0;
+    };
+
+    const scopes = [
+      document.querySelector('.pv-top-card-v2-ctas'),
+      document.querySelector('.pvs-profile-actions'),
+      document.querySelector('main'),
+      document,
+    ].filter(Boolean);
+
+    for (const scope of scopes) {
+      const nodes = Array.from(scope.querySelectorAll('button, a, div[role="button"]'));
+      const candidate = nodes.find((el) => {
+        if (!isVisible(el)) return false;
+        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+        const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (el.getAttribute('disabled') !== null || el.getAttribute('aria-disabled') === 'true') return false;
+        return aria.includes('message') || txt === 'message' || txt.startsWith('message ');
+      });
+      if (candidate) {
+        candidate.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return { clicked: true, matchedText: (candidate.textContent || '').trim() || candidate.getAttribute('aria-label') || '' };
+      }
+    }
+
+    return { clicked: false, matchedText: '' };
+  }).catch(() => ({ clicked: false, matchedText: '' }));
+}
+
+async function clickMessageInOverflowMenu(page) {
+  return page.evaluate(() => {
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      const hidden = style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0';
+      return !hidden && rect.width > 0 && rect.height > 0;
+    };
+
+    const candidates = Array.from(
+      document.querySelectorAll(
+        [
+          'div[role="menu"] [role="menuitem"]',
+          '.artdeco-dropdown__content-inner [role="menuitem"]',
+          '.artdeco-dropdown__content-inner button',
+          '.artdeco-dropdown__content-inner a',
+          '.artdeco-dropdown__item',
+          '[data-control-name*="message"]',
+        ].join(', ')
+      )
+    );
+
+    const target = candidates.find((el) => {
+      if (!isVisible(el)) return false;
+      const text = `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`.toLowerCase();
+      return text.includes('message');
+    });
+
+    if (!target) return { clicked: false, disabled: false, label: '' };
+
+    const disabled = target.getAttribute('disabled') !== null || target.getAttribute('aria-disabled') === 'true';
+    const label = `${target.getAttribute('aria-label') || ''} ${target.textContent || ''}`.replace(/\s+/g, ' ').trim();
+    if (disabled) return { clicked: false, disabled: true, label };
+
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return { clicked: true, disabled: false, label };
+  }).catch(() => ({ clicked: false, disabled: false, label: '' }));
+}
+
+async function clickMessageTriggerOnProfile(page, { accountId, profileUrl, maxAttempts = 3 }) {
+  let lastReason = 'No visible Message action was found on this profile.';
+  let disabledMessageDetected = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    logSendStep(accountId, `message-button search attempt ${attempt}/${maxAttempts}`);
+    await page.waitForSelector('main, body', { timeout: 12000 }).catch(() => null);
+
+    const strategyGroups = [
+      { name: 'direct-message-button', selectors: PROFILE_DIRECT_MESSAGE_SELECTORS },
+      { name: 'top-action-bar', selectors: PROFILE_TOP_ACTION_SELECTORS },
+    ];
+
+    for (const group of strategyGroups) {
+      for (const selector of group.selectors) {
+        const clicked = await clickVisibleSelector(page, selector, 1500);
+        if (!clicked) continue;
+        logSendStep(accountId, `message button found via ${group.name}: ${selector}`);
+        if (await waitForComposerOpen(page, 7000)) {
+          logSendStep(accountId, `composer opened via selector: ${selector}`);
+          return { opened: true, strategy: group.name, matched: selector };
+        }
+        lastReason = `Selector matched (${selector}) but composer did not open.`;
+        const shot = await captureFailureScreenshot(page, accountId, `composer-not-open-${attempt}`);
+        if (shot) logSendStep(accountId, `composer did not open; screenshot: ${shot}`);
+      }
+    }
+
+    const textClick = await clickMessageByText(page);
+    if (textClick.clicked) {
+      logSendStep(accountId, `message button found via text strategy: ${textClick.matchedText || '(text-match)'}`);
+      if (await waitForComposerOpen(page, 7000)) {
+        logSendStep(accountId, 'composer opened via text strategy');
+        return { opened: true, strategy: 'text-based', matched: textClick.matchedText || 'message-text' };
+      }
+      lastReason = 'Text-based Message control clicked but composer did not open.';
+      const shot = await captureFailureScreenshot(page, accountId, `composer-not-open-text-${attempt}`);
+      if (shot) logSendStep(accountId, `composer not open after text-click; screenshot: ${shot}`);
+    }
+
+    for (const moreSelector of PROFILE_MORE_ACTION_SELECTORS) {
+      const openedMore = await clickVisibleSelector(page, moreSelector, 1200);
+      if (!openedMore) continue;
+      logSendStep(accountId, `overflow opened via selector: ${moreSelector}`);
+      await delay(300, 700);
+      const overflowResult = await clickMessageInOverflowMenu(page);
+      if (overflowResult.disabled) {
+        disabledMessageDetected = true;
+        lastReason = `Message option is present but disabled in overflow menu (${overflowResult.label || 'Message'}).`;
+        break;
+      }
+      if (overflowResult.clicked) {
+        logSendStep(accountId, `message selected from overflow menu: ${overflowResult.label || 'Message'}`);
+        if (await waitForComposerOpen(page, 7000)) {
+          logSendStep(accountId, 'composer opened via overflow menu');
+          return { opened: true, strategy: 'overflow-menu', matched: overflowResult.label || moreSelector };
+        }
+        lastReason = 'Message menu item clicked in overflow menu but composer did not open.';
+        const shot = await captureFailureScreenshot(page, accountId, `composer-not-open-overflow-${attempt}`);
+        if (shot) logSendStep(accountId, `composer not open after overflow click; screenshot: ${shot}`);
+      }
+    }
+
+    if (attempt < maxAttempts) {
+      await humanScroll(page, 180).catch(() => {});
+      await delay(500, 900);
+    }
+  }
+
+  const screenshotPath = await captureFailureScreenshot(page, accountId, 'message-button-not-found');
+  const reason = disabledMessageDetected
+    ? 'Profile has a Message action but it is disabled for this account (likely not connected or restricted).'
+    : `No usable Message action was found on profile page ${profileUrl}.`;
+  if (screenshotPath) {
+    logSendStep(accountId, `message button not found; screenshot: ${screenshotPath}`);
+  }
+
+  return {
+    opened: false,
+    reason: `${reason} ${lastReason}`.trim(),
+    screenshotPath,
+  };
 }
 
 function normalizeThreadIdCandidate(value) {
@@ -867,7 +1010,12 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
 
     if (!usedDirectUrl) {
       // Fallback: navigate to recipient's profile page and click "Message"
+      logSendStep(accountId, `opening profile URL: ${profileUrl}`);
       await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
+      await page.waitForSelector('main, body', { timeout: 15000 }).catch(() => null);
+      logSendStep(accountId, `profile page load successful: ${page.url()}`);
+
       const landingUrl = page.url();
       if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
         const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
@@ -893,13 +1041,26 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
         participantName = normalizeParticipantName(candidateName, profileUrl);
       } catch (_) {}
 
-      const openedComposer = await clickMessageTriggerOnProfile(page);
-      if (!openedComposer) {
-        const err = new Error('Could not open message composer from profile. Ensure target profile is messageable and you are connected.');
+      const openComposerResult = await clickMessageTriggerOnProfile(page, {
+        accountId,
+        profileUrl,
+        maxAttempts: 3,
+      });
+      if (!openComposerResult.opened) {
+        const screenshotInfo = openComposerResult.screenshotPath
+          ? ` Screenshot: ${openComposerResult.screenshotPath}`
+          : '';
+        const reason = openComposerResult.reason
+          || 'Profile is not messageable for this account or LinkedIn UI does not expose a usable Message control.';
+        const err = new Error(`Could not open message composer from profile. ${reason}${screenshotInfo}`);
         err.code = 'NOT_MESSAGEABLE';
         err.status = 400;
         throw err;
       }
+      logSendStep(
+        accountId,
+        `composer opened successfully via ${openComposerResult.strategy} (${openComposerResult.matched})`
+      );
       await delay(1500, 3000);
     }
 
@@ -908,10 +1069,12 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     try {
       await humanType(page, composeSelector, text, { timeout: 20000 });
     } catch (typeErr) {
+      const typeScreenshot = await captureFailureScreenshot(page, accountId, 'composer-input-not-found');
       const msg = String(typeErr?.message || typeErr || '');
       if (msg.includes('waitForSelector') || msg.includes('contenteditable') || msg.includes('textarea')) {
         const err = new Error(
-          'Message composer input not available after opening chat. Ensure recipient is messageable for this account.'
+          `Message composer input not available after opening chat. Ensure recipient is messageable for this account.` +
+          (typeScreenshot ? ` Screenshot: ${typeScreenshot}` : '')
         );
         err.code = 'NOT_MESSAGEABLE';
         err.status = 400;
