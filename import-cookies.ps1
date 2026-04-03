@@ -5,6 +5,7 @@ param(
   [switch]$UseLiveProfile,
   [ValidateSet("chrome", "edge")][string]$Browser = "chrome",
   [int]$CaptureTimeoutSec = 240,
+  [int]$CapturePort = 9229,
   [string]$CaptureProfile = "",
   [string]$ApiKey = "dev-api-secret-key-change-in-production",
   [string]$RouteAuthToken = "",
@@ -141,6 +142,7 @@ function Invoke-AutoCapture {
     $captureScript,
     "--browser", $Browser,
     "--timeoutSec", $CaptureTimeoutSec.ToString(),
+    "--port", $CapturePort.ToString(),
     "--output", $OutputFile
   )
   if (-not $UseLiveProfile) {
