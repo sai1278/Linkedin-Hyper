@@ -73,6 +73,58 @@ async function clickMessageTriggerOnProfile(page) {
     } catch (_) {}
   }
 
+  // LinkedIn often keeps Message inside "More actions" dropdown.
+  const moreActionSelectors = [
+    'button[aria-label*="More actions"]',
+    'button[aria-label*="More"]',
+    'button[data-control-name*="overflow"]',
+    'button[data-control-name*="more"]',
+    'div[role="button"][aria-label*="More"]',
+  ];
+
+  for (const selector of moreActionSelectors) {
+    try {
+      await humanClick(page, selector, { timeout: 2500 });
+      await delay(400, 800);
+      const clickedFromMenu = await page.evaluate(() => {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          const hidden = style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0';
+          return !hidden && rect.width > 0 && rect.height > 0;
+        };
+
+        const candidates = Array.from(
+          document.querySelectorAll(
+            [
+              'div[role="menu"] [role="menuitem"]',
+              '.artdeco-dropdown__content-inner [role="menuitem"]',
+              '.artdeco-dropdown__content-inner button',
+              '.artdeco-dropdown__content-inner a',
+              '.artdeco-dropdown__item',
+              '[data-control-name*="message"]',
+            ].join(', ')
+          )
+        );
+
+        const target = candidates.find((el) => {
+          if (!isVisible(el)) return false;
+          const text = `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`.toLowerCase();
+          if (!text.includes('message')) return false;
+          const disabled = el.getAttribute('disabled') !== null || el.getAttribute('aria-disabled') === 'true';
+          return !disabled;
+        });
+
+        if (!target) return false;
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return true;
+      });
+
+      if (clickedFromMenu) return true;
+    } catch (_) {}
+  }
+
   try {
     const clicked = await page.evaluate(() => {
       const isVisible = (el) => {
