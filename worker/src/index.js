@@ -116,6 +116,10 @@ function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
     'NO_ACTIVE_SESSION',
     'NO_SESSION',
     'SESSION_EXPIRED',
+    'CHECKPOINT_INCOMPLETE',
+    'LOGIN_NOT_FINISHED',
+    'COOKIES_MISSING',
+    'AUTHENTICATED_STATE_NOT_REACHED',
     'NOT_MESSAGEABLE',
     'SEND_NOT_CONFIRMED',
     'RATE_LIMIT_EXCEEDED',
@@ -663,7 +667,22 @@ async function runJob(name, data, timeoutMs = 120_000) {
 
     // BullMQ often stores only failedReason (message string), so infer safe codes.
     if (!failErr.code) {
-      if (reason.includes('Session expired for account')) {
+      if (
+        reason.includes('CHECKPOINT_INCOMPLETE') ||
+        lowerReason.includes('checkpoint/challenge is still pending')
+      ) {
+        failErr.code = 'CHECKPOINT_INCOMPLETE';
+        failErr.status = 401;
+      } else if (reason.includes('LOGIN_NOT_FINISHED') || lowerReason.includes('login is not fully completed')) {
+        failErr.code = 'LOGIN_NOT_FINISHED';
+        failErr.status = 401;
+      } else if (reason.includes('COOKIES_MISSING') || lowerReason.includes('li_at/jsessionid')) {
+        failErr.code = 'COOKIES_MISSING';
+        failErr.status = 401;
+      } else if (reason.includes('AUTHENTICATED_STATE_NOT_REACHED') || lowerReason.includes('authenticated linkedin member state was not reached')) {
+        failErr.code = 'AUTHENTICATED_STATE_NOT_REACHED';
+        failErr.status = 401;
+      } else if (reason.includes('Session expired for account')) {
         failErr.code = 'SESSION_EXPIRED';
         failErr.status = 401;
       } else if (reason.includes('No session for account')) {

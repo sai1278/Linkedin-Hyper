@@ -79,6 +79,18 @@ function Invoke-Api {
     if ($statusCode -eq 401 -and ($responseBody -match 'SESSION_EXPIRED|NO_SESSION|Unauthorized')) {
       Write-Host ""
       Write-Host "Hint: session is not active on server. Re-import fresh cookies and verify again."
+    } elseif ($statusCode -eq 401 -and ($responseBody -match 'CHECKPOINT_INCOMPLETE')) {
+      Write-Host ""
+      Write-Host "Hint: LinkedIn checkpoint/challenge is still pending. Complete checkpoint in browser first."
+    } elseif ($statusCode -eq 401 -and ($responseBody -match 'LOGIN_NOT_FINISHED')) {
+      Write-Host ""
+      Write-Host "Hint: LinkedIn login is not fully completed in capture flow."
+    } elseif ($statusCode -eq 401 -and ($responseBody -match 'COOKIES_MISSING')) {
+      Write-Host ""
+      Write-Host "Hint: Required cookies li_at/JSESSIONID are missing from imported session."
+    } elseif ($statusCode -eq 401 -and ($responseBody -match 'AUTHENTICATED_STATE_NOT_REACHED')) {
+      Write-Host ""
+      Write-Host "Hint: Browser never reached stable logged-in member page before capture finished."
     }
     if ($statusCode -eq 429 -or $responseBody -match 'RATE_LIMIT_EXCEEDED|Daily limit reached') {
       Write-Host ""

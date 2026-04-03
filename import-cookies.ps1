@@ -237,6 +237,10 @@ function Invoke-AutoCapture {
   function Should-StopRetry {
     param([string]$OutputText)
 
+    if ($OutputText -match '\[(CHECKPOINT_INCOMPLETE|LOGIN_NOT_FINISHED|COOKIES_MISSING|AUTHENTICATED_STATE_NOT_REACHED)\]') {
+      return $true
+    }
+
     if (-not $OutputText) { return $false }
     $text = $OutputText.ToLowerInvariant()
     return (
@@ -244,6 +248,24 @@ function Invoke-AutoCapture {
       $text.Contains("playwright fallback timed out waiting for li_at + jsessionid cookies") -or
       $text.Contains("auto-capture failed after retries on all browsers/ports")
     )
+  }
+
+  function Get-CaptureFailureCode {
+    param([string]$OutputText)
+    if ($OutputText -match '\[(CHECKPOINT_INCOMPLETE|LOGIN_NOT_FINISHED|COOKIES_MISSING|AUTHENTICATED_STATE_NOT_REACHED)\]') {
+      return $Matches[1]
+    }
+    return ""
+  }
+
+  function Get-CaptureFailureHint {
+    param([string]$Code)
+    switch ($Code) {
+      "CHECKPOINT_INCOMPLETE" { return "LinkedIn checkpoint/challenge is still pending. Complete checkpoint in browser and retry." }
+      "LOGIN_NOT_FINISHED" { return "LinkedIn login is not fully completed. Finish login and wait for feed page before retry." }
+      "COOKIES_MISSING" { return "Required cookies li_at and/or JSESSIONID were not captured from authenticated state." }
+      default { return "Authenticated LinkedIn member state was not reached before timeout." }
+    }
   }
 
   $browserCandidates = @($Browser)
@@ -264,6 +286,11 @@ function Invoke-AutoCapture {
         $result = Invoke-CaptureAttempt -BrowserName $browserName -LiveProfileMode $true -Port $port
         if ($result.code -eq 0) { return }
         Write-Warning "Live-profile capture failed on port $port ($browserName)."
+        $captureCode = Get-CaptureFailureCode -OutputText $result.outputText
+        if ($captureCode) {
+          $hint = Get-CaptureFailureHint -Code $captureCode
+          throw "Capture failed with code $captureCode. $hint"
+        }
         if (Should-StopRetry -OutputText $result.outputText) {
           throw "Capture failed because login/cookie activation did not complete in browser. Complete LinkedIn sign-in/challenge and retry once."
         }
@@ -275,6 +302,11 @@ function Invoke-AutoCapture {
       $result = Invoke-CaptureAttempt -BrowserName $browserName -LiveProfileMode $false -Port $port
       if ($result.code -eq 0) { return }
       Write-Warning "Temp-profile-copy capture failed on port $port ($browserName)."
+      $captureCode = Get-CaptureFailureCode -OutputText $result.outputText
+      if ($captureCode) {
+        $hint = Get-CaptureFailureHint -Code $captureCode
+        throw "Capture failed with code $captureCode. $hint"
+      }
       if (Should-StopRetry -OutputText $result.outputText) {
         throw "Capture failed because login/cookie activation did not complete in browser. Complete LinkedIn sign-in/challenge and retry once."
       }
@@ -405,6 +437,18 @@ try {
       if ($statusCode -eq 401 -and ($body -match 'SESSION_EXPIRED|NO_SESSION|Unauthorized')) {
         Write-Host ""
         Write-Host "Hint: imported cookies are not active now. Re-capture fresh cookies and import again."
+      } elseif ($statusCode -eq 401 -and ($body -match 'CHECKPOINT_INCOMPLETE')) {
+        Write-Host ""
+        Write-Host "Hint: LinkedIn checkpoint/challenge is still pending. Complete it in browser, then re-capture."
+      } elseif ($statusCode -eq 401 -and ($body -match 'LOGIN_NOT_FINISHED')) {
+        Write-Host ""
+        Write-Host "Hint: LinkedIn login is not fully completed in capture browser. Sign in and wait for feed page."
+      } elseif ($statusCode -eq 401 -and ($body -match 'COOKIES_MISSING')) {
+        Write-Host ""
+        Write-Host "Hint: Required LinkedIn cookies (li_at/JSESSIONID) missing from capture."
+      } elseif ($statusCode -eq 401 -and ($body -match 'AUTHENTICATED_STATE_NOT_REACHED')) {
+        Write-Host ""
+        Write-Host "Hint: Capture did not reach stable logged-in member page before export."
       }
       exit 1
     } catch {

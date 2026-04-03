@@ -7,6 +7,169 @@ import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createRequire } from 'node:module';
 
+const DEBUG_SCREENSHOT_DIR =
+  process.env.LI_DEBUG_SCREENSHOT_DIR ||
+  path.resolve(process.cwd(), 'artifacts', 'cookie-capture-debug');
+const CAPTURE_STABLE_MS = Math.max(3000, Number(process.env.LI_CAPTURE_STABLE_MS || 5000));
+const CAPTURE_POLL_MS = 2000;
+const AUTH_BLOCK_TOKENS = [
+  '/uas/login',
+  '/login',
+  '/checkpoint',
+  '/authwall',
+  'challenge',
+];
+
+function safeName(value) {
+  return String(value || 'unknown')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96) || 'unknown';
+}
+
+function isBlockedAuthPage(url) {
+  const value = String(url || '').toLowerCase();
+  if (!value.includes('linkedin.com')) return true;
+  return AUTH_BLOCK_TOKENS.some((token) => value.includes(token));
+}
+
+function isAuthenticatedLinkedInPage(state) {
+  return Boolean(
+    state &&
+    !state.blockedAuthPage &&
+    !state.hasLoginForm &&
+    !state.hasAuthwallMarkers &&
+    !state.hasGuestCta &&
+    (state.hasSignedInNav || state.hasMessagingShell)
+  );
+}
+
+function classifyCaptureFailureCode(state) {
+  if (state?.blockedAuthPage) {
+    const u = String(state?.url || '').toLowerCase();
+    if (u.includes('/checkpoint') || u.includes('challenge')) {
+      return 'CHECKPOINT_INCOMPLETE';
+    }
+    return 'LOGIN_NOT_FINISHED';
+  }
+  if (!state?.hasLiAt || !state?.hasJsession) {
+    return 'COOKIES_MISSING';
+  }
+  return 'AUTHENTICATED_STATE_NOT_REACHED';
+}
+
+function explainCaptureRejection(state) {
+  if (!state) return 'No browser state available during capture.';
+  if (state.blockedAuthPage) {
+    const u = String(state.url || '').toLowerCase();
+    if (u.includes('/checkpoint') || u.includes('challenge')) {
+      return `LinkedIn checkpoint/challenge is still active at ${state.url || 'unknown URL'}.`;
+    }
+    return `LinkedIn login flow is not finished yet at ${state.url || 'unknown URL'}.`;
+  }
+  if (!state.hasLiAt || !state.hasJsession) {
+    return `Required cookies missing (li_at=${state.hasLiAt}, JSESSIONID=${state.hasJsession}).`;
+  }
+  return 'Authenticated LinkedIn UI state was not reached.';
+}
+
+function logCaptureState(source, state, stableForMs = 0) {
+  const title = String(state?.title || '').trim() || 'n/a';
+  console.log(
+    `[capture:${source}] url=${state?.url || 'n/a'} | title=${title} | li_at=${Boolean(state?.hasLiAt)} | JSESSIONID=${Boolean(state?.hasJsession)} | authenticated=${Boolean(state?.authenticated)} | blocked=${Boolean(state?.blockedAuthPage)} | stableMs=${stableForMs} | reason=${state?.failureReason || 'none'}`
+  );
+}
+
+function extractLinkedInCookies(allCookies) {
+  return (Array.isArray(allCookies) ? allCookies : []).filter((c) =>
+    String(c?.domain || '').includes('linkedin.com')
+  );
+}
+
+function computeCookieFlags(linkedInCookies) {
+  const liAtCookie = linkedInCookies.find((c) => c?.name === 'li_at' && c?.value);
+  const hasLiAt = Boolean(liAtCookie);
+  const hasJsession = linkedInCookies.some((c) => c?.name === 'JSESSIONID' && c?.value);
+  const liAtExpires = Number(liAtCookie?.expires || -1);
+  const liAtFresh =
+    hasLiAt &&
+    (
+      !Number.isFinite(liAtExpires) ||
+      liAtExpires <= 0 ||
+      liAtExpires > Math.floor(Date.now() / 1000) + 300
+    );
+  return { hasLiAt, hasJsession, liAtFresh };
+}
+
+async function screenshotViaPlaywright(page, label) {
+  if (!page || page.isClosed?.()) return null;
+  ensureDir(DEBUG_SCREENSHOT_DIR);
+  const filePath = path.join(DEBUG_SCREENSHOT_DIR, `${safeName(label)}-${Date.now()}.png`);
+  await page.screenshot({ path: filePath, fullPage: true });
+  console.log(`Screenshot saved: ${filePath}`);
+  return filePath;
+}
+
+async function screenshotViaCdp(cdp, label) {
+  ensureDir(DEBUG_SCREENSHOT_DIR);
+  const result = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true }, 15000);
+  const filePath = path.join(DEBUG_SCREENSHOT_DIR, `${safeName(label)}-${Date.now()}.png`);
+  fs.writeFileSync(filePath, result?.data || '', 'base64');
+  console.log(`Screenshot saved: ${filePath}`);
+  return filePath;
+}
+
+async function waitForStableAuthenticatedState({
+  sourceLabel,
+  timeoutMs,
+  stableMs = CAPTURE_STABLE_MS,
+  pollMs = CAPTURE_POLL_MS,
+  getState,
+  captureScreenshot,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let stableSince = 0;
+  let lastSig = '';
+  let lastState = null;
+
+  while (Date.now() < deadline) {
+    const state = await getState();
+    state.blockedAuthPage = isBlockedAuthPage(state.url);
+    state.authenticated = isAuthenticatedLinkedInPage(state);
+    state.failureCode = classifyCaptureFailureCode(state);
+    state.failureReason = explainCaptureRejection(state);
+    lastState = state;
+
+    if (state.authenticated && state.hasLiAt && state.hasJsession && state.liAtFresh && !state.blockedAuthPage) {
+      if (!stableSince) stableSince = Date.now();
+      const stableFor = Date.now() - stableSince;
+      const sig = `${state.url}|${state.title}|${state.hasLiAt}|${state.hasJsession}|${state.authenticated}|stable:${Math.floor(stableFor / 1000)}`;
+      if (sig !== lastSig) {
+        logCaptureState(sourceLabel, state, stableFor);
+        lastSig = sig;
+      }
+      if (stableFor >= stableMs) {
+        return state;
+      }
+    } else {
+      stableSince = 0;
+      const sig = `${state.url}|${state.title}|${state.hasLiAt}|${state.hasJsession}|${state.authenticated}|${state.failureReason}`;
+      if (sig !== lastSig) {
+        logCaptureState(sourceLabel, state, 0);
+        lastSig = sig;
+      }
+    }
+
+    await delay(pollMs);
+  }
+
+  const code = lastState?.failureCode || 'AUTHENTICATED_STATE_NOT_REACHED';
+  const reason = lastState?.failureReason || 'Stable authenticated LinkedIn session was not reached before timeout.';
+  const screenshot = captureScreenshot ? await captureScreenshot(code).catch(() => null) : null;
+  throw new Error(`[${code}] ${reason}${screenshot ? ` Screenshot: ${screenshot}` : ''}`);
+}
+
 function parseArgs(argv) {
   const out = {
     browser: 'chrome',
@@ -249,14 +412,7 @@ async function waitForPageTargetWs(port, timeoutMs) {
   throw new Error('Timed out waiting for a LinkedIn page target in DevTools.');
 }
 
-function isAuthLikeUrl(url) {
-  const value = String(url || '').toLowerCase();
-  return (
-    value.includes('/authwall') ||
-    value.includes('/login') ||
-    value.includes('/checkpoint')
-  );
-}
+const isAuthLikeUrl = isBlockedAuthPage;
 
 async function getLinkedInPageUrl(port) {
   const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
@@ -303,6 +459,55 @@ function getRequireFromWorkerPackage() {
   return createRequire(workerPkg);
 }
 
+async function inspectLinkedInDomStateViaCdp(cdp) {
+  const expression = `
+    (() => {
+      const txt = (document.body?.innerText || '').toLowerCase();
+      const hasLoginForm = Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]'));
+      const hasAuthwallMarkers =
+        txt.includes('join linkedin') ||
+        txt.includes('sign in') ||
+        txt.includes('new to linkedin') ||
+        txt.includes('continue to linkedin') ||
+        txt.includes('unlock your profile') ||
+        txt.includes('challenge');
+      const hasSignedInNav = Boolean(
+        document.querySelector(
+          [
+            '.global-nav__me',
+            '.global-nav__me-photo',
+            '.global-nav__primary-link-me-menu-trigger',
+            '#global-nav-search',
+            '.search-global-typeahead',
+            '[data-test-global-nav-me]'
+          ].join(', ')
+        )
+      );
+      const hasMessagingShell = Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list'));
+      const hasGuestCta = Boolean(
+        document.querySelector(
+          [
+            'a[href*="/login"]',
+            'a[href*="/signup"]',
+            'a[data-tracking-control-name*="guest_homepage"]'
+          ].join(', ')
+        )
+      );
+      return {
+        url: location.href,
+        title: document.title || '',
+        hasLoginForm,
+        hasAuthwallMarkers,
+        hasSignedInNav,
+        hasMessagingShell,
+        hasGuestCta
+      };
+    })()
+  `;
+  const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, 12000);
+  return result?.result?.value || {};
+}
+
 async function captureLinkedInCookiesViaPlaywrightFallback({
   cfg,
   userDataDir,
@@ -336,11 +541,10 @@ async function captureLinkedInCookiesViaPlaywrightFallback({
   });
 
   const deadline = Date.now() + timeoutSec * 1000;
-  let lastCount = -1;
-  let lastHint = '';
+  let page;
 
   try {
-    let page = context.pages().find((p) => String(p.url() || '').includes('linkedin.com'));
+    page = context.pages().find((p) => String(p.url() || '').includes('linkedin.com'));
     if (!page) {
       page = await context.newPage();
     }
@@ -348,56 +552,50 @@ async function captureLinkedInCookiesViaPlaywrightFallback({
     await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     console.log('Playwright fallback started. Complete LinkedIn login in the opened browser window if prompted.');
 
-    while (Date.now() < deadline) {
-      const allCookies = await context.cookies();
-      const linkedIn = allCookies.filter((c) => String(c.domain || '').includes('linkedin.com'));
-      if (linkedIn.length !== lastCount) {
-        lastCount = linkedIn.length;
-        console.log(`Observed ${lastCount} LinkedIn cookies...`);
-      }
+    const stableState = await waitForStableAuthenticatedState({
+      sourceLabel: 'playwright',
+      timeoutMs: Math.max(5000, deadline - Date.now()),
+      getState: async () => {
+        const linkedinPages = context.pages().filter((p) => String(p.url() || '').includes('linkedin.com'));
+        const activePage = linkedinPages[linkedinPages.length - 1] || page;
+        page = activePage;
 
-      const liAtCookie = linkedIn.find((c) => c.name === 'li_at' && c.value);
-      const hasLiAt = Boolean(liAtCookie);
-      const hasJsession = linkedIn.some((c) => c.name === 'JSESSIONID' && c.value);
-      const liAtExpires = Number(liAtCookie?.expires || -1);
-      const liAtFresh =
-        hasLiAt &&
-        (
-          !Number.isFinite(liAtExpires) ||
-          liAtExpires <= 0 ||
-          liAtExpires > Math.floor(Date.now() / 1000) + 300
-        );
+        const dom = await activePage.evaluate(() => {
+          const txt = (document.body?.innerText || '').toLowerCase();
+          return {
+            url: location.href,
+            title: document.title || '',
+            hasLoginForm: Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]')),
+            hasAuthwallMarkers:
+              txt.includes('join linkedin') ||
+              txt.includes('sign in') ||
+              txt.includes('new to linkedin') ||
+              txt.includes('continue to linkedin') ||
+              txt.includes('unlock your profile') ||
+              txt.includes('challenge'),
+            hasSignedInNav: Boolean(document.querySelector('.global-nav__me, .global-nav__me-photo, #global-nav-search, .search-global-typeahead')),
+            hasMessagingShell: Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list')),
+            hasGuestCta: Boolean(document.querySelector('a[href*="/login"], a[href*="/signup"]')),
+          };
+        }).catch(() => ({ url: activePage.url(), title: '' }));
 
-      const linkedInUrls = context.pages()
-        .map((p) => String(p.url() || ''))
-        .filter((u) => u.includes('linkedin.com'));
-      const currentUrl = linkedInUrls[0] || '';
-      const onAuthGate = isAuthLikeUrl(currentUrl);
+        const allCookies = await context.cookies();
+        const linkedIn = extractLinkedInCookies(allCookies);
+        const flags = computeCookieFlags(linkedIn);
 
-      if (hasLiAt && hasJsession && liAtFresh && !onAuthGate) {
-        return linkedIn.map(mapCookie);
-      }
-
-      const hint = onAuthGate
-        ? `Waiting: LinkedIn page is still on auth/checkpoint (${currentUrl || 'unknown URL'}).`
-        : (!hasLiAt || !hasJsession)
-          ? 'Waiting: required cookies li_at + JSESSIONID not ready yet.'
-          : !liAtFresh
-            ? 'Waiting: li_at cookie is present but appears expired/stale.'
-            : 'Waiting for stable authenticated LinkedIn page...';
-
-      if (hint !== lastHint) {
-        lastHint = hint;
-        console.log(hint);
-      }
-
-      await delay(2000);
-    }
+        return {
+          ...dom,
+          ...flags,
+          cookies: linkedIn,
+          linkedInCookieCount: linkedIn.length,
+        };
+      },
+      captureScreenshot: async (code) => screenshotViaPlaywright(page, `capture-rejected-${String(code || 'unknown').toLowerCase()}`),
+    });
+    return stableState.cookies.map(mapCookie);
   } finally {
     await context.close().catch(() => {});
   }
-
-  throw new Error('Playwright fallback timed out waiting for li_at + JSESSIONID cookies.');
 }
 
 class CdpClient {
@@ -484,70 +682,51 @@ async function captureLinkedInCookies(port, wsUrl, timeoutSec) {
   const cdp = new CdpClient(wsUrl);
   await cdp.connect();
   await cdp.send('Network.enable');
-
-  const deadline = Date.now() + timeoutSec * 1000;
-  let lastCount = -1;
-  let lastHint = '';
+  await cdp.send('Runtime.enable').catch(() => {});
+  await cdp.send('Page.enable').catch(() => {});
 
   try {
-    while (Date.now() < deadline) {
-      let result;
-      try {
-        result = await cdp.send('Network.getAllCookies', {}, 20_000);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`Cookie poll warning: ${message}. Retrying...`);
-        await delay(2500);
-        continue;
-      }
+    const stableState = await waitForStableAuthenticatedState({
+      sourceLabel: 'cdp',
+      timeoutMs: timeoutSec * 1000,
+      getState: async () => {
+        let result;
+        try {
+          result = await cdp.send('Network.getAllCookies', {}, 20_000);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            url: '',
+            title: '',
+            hasLoginForm: false,
+            hasAuthwallMarkers: false,
+            hasSignedInNav: false,
+            hasMessagingShell: false,
+            hasGuestCta: false,
+            hasLiAt: false,
+            hasJsession: false,
+            liAtFresh: false,
+            cookies: [],
+            linkedInCookieCount: 0,
+            failureReason: `Cookie poll warning: ${message}`,
+          };
+        }
 
-      const all = Array.isArray(result.cookies) ? result.cookies : [];
-      const linkedIn = all.filter((c) => String(c.domain || '').includes('linkedin.com'));
+        const linkedIn = extractLinkedInCookies(result.cookies);
+        const flags = computeCookieFlags(linkedIn);
+        const dom = await inspectLinkedInDomStateViaCdp(cdp).catch(async () => ({
+          url: await getLinkedInPageUrl(port).catch(() => ''),
+          title: '',
+        }));
 
-      if (linkedIn.length !== lastCount) {
-        lastCount = linkedIn.length;
-        console.log(`Observed ${lastCount} LinkedIn cookies...`);
-      }
-
-      const liAtCookie = linkedIn.find((c) => c.name === 'li_at' && c.value);
-      const hasLiAt = Boolean(liAtCookie);
-      const hasJsession = linkedIn.some((c) => c.name === 'JSESSIONID' && c.value);
-      const liAtExpires = Number(liAtCookie?.expires || -1);
-      const liAtFresh =
-        hasLiAt &&
-        (
-          !Number.isFinite(liAtExpires) ||
-          liAtExpires <= 0 ||
-          liAtExpires > Math.floor(Date.now() / 1000) + 300
-        );
-
-      const currentUrl = await getLinkedInPageUrl(port).catch(() => '');
-      const onAuthGate = isAuthLikeUrl(currentUrl);
-
-      if (hasLiAt && hasJsession && liAtFresh && !onAuthGate) {
-        return linkedIn.map(mapCookie);
-      }
-
-      const hint = onAuthGate
-        ? `Waiting: LinkedIn page is still on auth/checkpoint (${currentUrl || 'unknown URL'}).`
-        : (!hasLiAt || !hasJsession)
-          ? 'Waiting: required cookies li_at + JSESSIONID not ready yet.'
-          : !liAtFresh
-            ? 'Waiting: li_at cookie is present but appears expired/stale.'
-            : 'Waiting for stable authenticated LinkedIn page...';
-
-      if (hint !== lastHint) {
-        lastHint = hint;
-        console.log(hint);
-      }
-
-      await delay(2000);
-    }
+        return { ...dom, ...flags, cookies: linkedIn, linkedInCookieCount: linkedIn.length };
+      },
+      captureScreenshot: async (code) => screenshotViaCdp(cdp, `capture-rejected-${String(code || 'unknown').toLowerCase()}`),
+    });
+    return stableState.cookies.map(mapCookie);
   } finally {
     cdp.close();
   }
-
-  throw new Error('Timed out waiting for li_at and JSESSIONID cookies. Sign into LinkedIn in the opened browser window and retry.');
 }
 
 function killProcessTree(pid) {

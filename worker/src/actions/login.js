@@ -9,13 +9,20 @@ const path = require('path');
 const DEBUG_SCREENSHOT_DIR =
   process.env.LI_DEBUG_SCREENSHOT_DIR || '/tmp/linkedin-hyper-debug';
 
-function isAuthUrl(url) {
-  const value = String(url || '');
+function isBlockedAuthPage(url) {
+  const value = String(url || '').toLowerCase();
   return (
+    value.includes('/uas/login') ||
     value.includes('/login') ||
     value.includes('/checkpoint') ||
-    value.includes('/authwall')
+    value.includes('/authwall') ||
+    value.includes('challenge')
   );
+}
+
+function isCheckpointLike(url) {
+  const value = String(url || '').toLowerCase();
+  return value.includes('/checkpoint') || value.includes('challenge');
 }
 
 async function inspectAuthState(page) {
@@ -88,6 +95,50 @@ function isLoggedOutState(state) {
   return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers || state?.hasGuestCta);
 }
 
+function isAuthenticatedLinkedInPage(state) {
+  return Boolean(
+    state &&
+    !isBlockedAuthPage(state.url) &&
+    !isLoggedOutState(state) &&
+    isAuthenticatedState(state)
+  );
+}
+
+function getCookieFlags(cookies) {
+  const list = Array.isArray(cookies) ? cookies : [];
+  const linkedIn = list.filter((c) => String(c?.domain || '').includes('linkedin.com'));
+  return {
+    total: linkedIn.length,
+    hasLiAt: linkedIn.some((c) => c?.name === 'li_at' && c?.value),
+    hasJsession: linkedIn.some((c) => c?.name === 'JSESSIONID' && c?.value),
+  };
+}
+
+function classifyVerifyFailure({ accountId, feedUrl, messagingUrl, feedState, messagingState, cookieFlags }) {
+  if (!cookieFlags.hasLiAt || !cookieFlags.hasJsession) {
+    return {
+      code: 'COOKIES_MISSING',
+      message: `Required LinkedIn cookies (li_at/JSESSIONID) are missing for account ${accountId}. Re-import cookies.`,
+    };
+  }
+  if (isCheckpointLike(feedUrl) || isCheckpointLike(messagingUrl)) {
+    return {
+      code: 'CHECKPOINT_INCOMPLETE',
+      message: `LinkedIn checkpoint/challenge is still pending for account ${accountId}. Complete checkpoint and re-import cookies.`,
+    };
+  }
+  if (isBlockedAuthPage(feedUrl) || isBlockedAuthPage(messagingUrl) || isLoggedOutState(feedState) || isLoggedOutState(messagingState)) {
+    return {
+      code: 'LOGIN_NOT_FINISHED',
+      message: `LinkedIn login is not fully completed for account ${accountId}. Complete login and re-import cookies.`,
+    };
+  }
+  return {
+    code: 'AUTHENTICATED_STATE_NOT_REACHED',
+    message: `Authenticated LinkedIn member state was not reached for account ${accountId}. Re-import cookies.`,
+  };
+}
+
 function safeName(value) {
   return String(value || 'unknown')
     .toLowerCase()
@@ -156,19 +207,19 @@ async function verifySession({ accountId, proxyUrl }) {
     await delay(600, 1200);
     const messagingUrl = page.url();
     const messagingState = await inspectAuthState(page);
+    const contextCookies = await context.cookies().catch(() => []);
+    const cookieFlags = getCookieFlags(contextCookies);
 
     const feedAuthenticated = (
       feedResult.ok &&
-      !isAuthUrl(feedUrl) &&
-      isAuthenticatedState(feedState) &&
-      !isLoggedOutState(feedState)
+      !isBlockedAuthPage(feedUrl) &&
+      isAuthenticatedLinkedInPage(feedState)
     );
 
     const messagingAuthenticated = (
       messagingResult.ok &&
-      !isAuthUrl(messagingUrl) &&
-      isAuthenticatedState(messagingState) &&
-      !isLoggedOutState(messagingState)
+      !isBlockedAuthPage(messagingUrl) &&
+      isAuthenticatedLinkedInPage(messagingState)
     );
 
     if (messagingAuthenticated) {
@@ -189,33 +240,23 @@ async function verifySession({ accountId, proxyUrl }) {
         feed: feedState,
         messaging: messagingState,
       },
+      cookieFlags,
     };
-    if (
-      String(feedResult.error || '').includes('ERR_TOO_MANY_REDIRECTS') ||
-      String(messagingResult.error || '').includes('ERR_TOO_MANY_REDIRECTS') ||
-      isAuthUrl(feedUrl) ||
-      isAuthUrl(messagingUrl) ||
-      isLoggedOutState(feedState) ||
-      isLoggedOutState(messagingState) ||
-      !messagingAuthenticated
-    ) {
-      const screenshot = await captureFailureScreenshot(page, accountId, 'verify-session-expired');
-      const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
-      if (screenshot) {
-        err.message += ` Screenshot: ${screenshot}`;
-      }
-      err.code   = 'SESSION_EXPIRED';
-      err.status = 401;
-      err.details = details;
-      throw err;
-    }
+    const failure = classifyVerifyFailure({
+      accountId,
+      feedUrl,
+      messagingUrl,
+      feedState,
+      messagingState,
+      cookieFlags,
+    });
 
-    const screenshot = await captureFailureScreenshot(page, accountId, 'verify-session-failed');
-    const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+    const screenshot = await captureFailureScreenshot(page, accountId, `verify-${failure.code.toLowerCase()}`);
+    const err = new Error(failure.message);
     if (screenshot) {
       err.message += ` Screenshot: ${screenshot}`;
     }
-    err.code = 'SESSION_EXPIRED';
+    err.code = failure.code;
     err.status = 401;
     err.details = details;
     throw err;
