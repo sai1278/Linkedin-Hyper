@@ -119,6 +119,8 @@ function isRecoverableBrowserError(err) {
   if (!msg) return false;
 
   return (
+    msg === 'operation failed' ||
+    msg.includes('operation failed') ||
     msg.includes('session closed') ||
     msg.includes('frame was detached') ||
     msg.includes('target page, context or browser has been closed') ||
@@ -923,10 +925,20 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       isRead:    true,
     };
   } catch (err) {
-    if (__attempt < 2 && isRecoverableBrowserError(err)) {
+    if (__attempt < 3 && isRecoverableBrowserError(err)) {
       await cleanupContext(accountId).catch(() => {});
-      await delay(700, 1300);
+      await delay(700 + (__attempt * 300), 1300 + (__attempt * 300));
       return sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, __attempt: __attempt + 1 });
+    }
+
+    const msg = String(err?.message || err || '');
+    if (msg.toLowerCase().includes('operation failed')) {
+      const wrapped = new Error(
+        'LinkedIn UI transient failure while sending message. Please retry once with fresh cookies.'
+      );
+      wrapped.code = 'SEND_NOT_CONFIRMED';
+      wrapped.status = 502;
+      throw wrapped;
     }
     throw err;
   } finally {

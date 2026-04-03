@@ -673,6 +673,10 @@ async function runJob(name, data, timeoutMs = 120_000) {
       ) {
         failErr.code = 'SEND_NOT_CONFIRMED';
         failErr.status = 502;
+      } else if (lowerReason.includes('operation failed')) {
+        failErr.code = 'SEND_NOT_CONFIRMED';
+        failErr.status = 502;
+        failErr.message = 'LinkedIn UI transient failure while sending message. Please retry once with fresh cookies.';
       } else if (reason.includes('Daily limit reached:')) {
         failErr.code = 'RATE_LIMIT_EXCEEDED';
         failErr.status = 429;

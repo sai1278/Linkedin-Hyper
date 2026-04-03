@@ -60,7 +60,13 @@ function startWorker() {
     });
 
     worker.on('failed', (job, err) => {
-      console.error(`[Worker:${accountId}] Job ${job.id} (${job?.name}) failed:`, err.message);
+      console.error(
+        `[Worker:${accountId}] Job ${job.id} (${job?.name}) failed:`,
+        err?.message || String(err)
+      );
+      if (err?.stack) {
+        console.error(`[Worker:${accountId}] Failure stack:\n${err.stack}`);
+      }
     });
 
     worker.on('error', (err) => {
