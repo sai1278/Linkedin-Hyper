@@ -825,7 +825,7 @@ async function resolveThreadIdFromConversationPreview(page, messageText, waitMs 
   return '';
 }
 
-async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantName, messageText }, waitMs = 15000) {
+function buildConversationNeedles(profileUrl, participantName, messageText) {
   const targetSlug = String(profileUrl || '').match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] || '';
   const slugNeedle = slugToName(targetSlug).toLowerCase();
   const nameNeedle = normalizeText(participantName).toLowerCase();
@@ -836,6 +836,38 @@ async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantN
       .map((token) => token.trim())
       .filter((token) => token.length >= 3)
   ));
+
+  return {
+    slugNeedle,
+    nameNeedle,
+    textNeedle,
+    tokenNeedles,
+  };
+}
+
+function scoreConversationRowText(rowText, { slugNeedle, nameNeedle, textNeedle, tokenNeedles }) {
+  const hay = normalizeText(rowText).toLowerCase();
+  if (!hay) return 0;
+
+  let score = 0;
+  if (textNeedle && hay.includes(textNeedle)) score += 5;
+  if (nameNeedle && hay.includes(nameNeedle)) score += 3;
+  if (slugNeedle && hay.includes(slugNeedle)) score += 2;
+  if (Array.isArray(tokenNeedles)) {
+    let tokenHits = 0;
+    for (const token of tokenNeedles) {
+      if (token && hay.includes(String(token).toLowerCase())) {
+        tokenHits += 1;
+      }
+    }
+    score += Math.min(4, tokenHits);
+  }
+  return score;
+}
+
+async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantName, messageText }, waitMs = 15000) {
+  const { slugNeedle, nameNeedle, textNeedle, tokenNeedles } =
+    buildConversationNeedles(profileUrl, participantName, messageText);
 
   try {
     await page.goto('https://www.linkedin.com/messaging/', {
@@ -947,6 +979,80 @@ async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantN
   return '';
 }
 
+async function resolveThreadIdByClickingConversationCandidates(
+  page,
+  { accountId, profileUrl, participantName, messageText },
+  waitMs = 22000
+) {
+  const needles = buildConversationNeedles(profileUrl, participantName, messageText);
+  const deadline = Date.now() + waitMs;
+
+  while (Date.now() < deadline) {
+    try {
+      await page.goto('https://www.linkedin.com/messaging/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      });
+    } catch (_) {
+      return '';
+    }
+
+    await page.waitForSelector('a[href*="/messaging/thread/"], .msg-conversation-listitem', {
+      timeout: 12000,
+    }).catch(() => null);
+
+    const rowLocator = page.locator(
+      '.msg-conversation-listitem, .msg-conversation-card, li[data-view-name*="conversation"]'
+    );
+    const rowCount = Math.min(await rowLocator.count().catch(() => 0), 15);
+    if (rowCount === 0) {
+      await delay(700, 1000);
+      continue;
+    }
+
+    const ranked = [];
+    for (let i = 0; i < rowCount; i += 1) {
+      const row = rowLocator.nth(i);
+      const rowText = await row.innerText().catch(() => '');
+      const score = scoreConversationRowText(rowText, needles);
+      if (score > 0) {
+        ranked.push({ index: i, score, text: truncateForLog(rowText, 90) });
+      }
+    }
+
+    ranked.sort((a, b) => b.score - a.score);
+    const candidates = ranked.slice(0, Math.min(5, ranked.length));
+    if (candidates.length === 0) {
+      await delay(700, 1000);
+      continue;
+    }
+
+    for (const candidate of candidates) {
+      const row = rowLocator.nth(candidate.index);
+      try {
+        await row.scrollIntoViewIfNeeded().catch(() => {});
+        await row.click({ timeout: 5000 });
+      } catch (_) {
+        continue;
+      }
+
+      await delay(500, 900);
+      const chatId = await resolveThreadIdAfterSend(page, 5000);
+      if (isValidThreadId(chatId)) {
+        logSendStep(
+          accountId,
+          `thread id resolved by opening conversation row (score=${candidate.score}): ${candidate.text}`
+        );
+        return chatId;
+      }
+    }
+
+    await delay(700, 1000);
+  }
+
+  return '';
+}
+
 async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 15000) {
   const normalizedChatId = String(chatId || '').trim();
   const target = normalizeText(text);
@@ -1031,6 +1137,42 @@ async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 1
   }).catch(() => null);
 
   return waitForPersistedText(Math.max(8000, Math.floor(timeoutMs / 2)));
+}
+
+async function confirmMessageVisibleInCurrentView(page, text, timeoutMs = 15000) {
+  const target = normalizeText(text);
+  if (!target) return false;
+
+  try {
+    await page.waitForFunction(
+      (needle) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const targetText = normalize(needle);
+        if (!targetText) return false;
+
+        const nodes = Array.from(
+          document.querySelectorAll(
+            [
+              '.msg-s-message-list__event--own-turn .msg-s-event__content',
+              '[data-view-name="messaging-self-message"] .msg-s-event__content',
+              '.msg-s-event-listitem .msg-s-event__content',
+              '[data-view-name="messaging-message-list-item"] .msg-s-event__content',
+              '.msg-s-event__content',
+            ].join(', ')
+          )
+        );
+        return nodes.some((node) => {
+          const value = normalize(node?.textContent);
+          return value && (value.includes(targetText) || targetText.includes(value));
+        });
+      },
+      text,
+      { timeout: timeoutMs }
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, __attempt = 1 }) {
@@ -1219,12 +1361,15 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     // W2 — Burn quota only after the send click succeeds.
     let chatId = preResolvedChatId || (await resolveThreadIdAfterSend(page, 12000));
     if (!chatId) {
+      logSendStep(accountId, 'thread id unresolved after URL probe; waiting on network probe');
       chatId = await networkThreadProbe.waitForThreadId(12000);
     }
     if (!chatId) {
+      logSendStep(accountId, 'thread id unresolved after network probe; trying conversation preview match');
       chatId = await resolveThreadIdFromConversationPreview(page, text, 12000);
     }
     if (!chatId) {
+      logSendStep(accountId, 'thread id unresolved after preview match; scanning messaging home');
       chatId = await resolveThreadIdFromMessagingHome(
         page,
         { profileUrl, participantName, messageText: text },
@@ -1232,13 +1377,37 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       );
     }
     if (!chatId) {
-      const err = new Error('Send clicked but LinkedIn thread ID was not resolved. Message may not be delivered.');
-      err.code = 'SEND_NOT_CONFIRMED';
-      err.status = 502;
-      throw err;
+      logSendStep(accountId, 'thread id unresolved after messaging-home scan; opening ranked conversation rows');
+      chatId = await resolveThreadIdByClickingConversationCandidates(
+        page,
+        { accountId, profileUrl, participantName, messageText: text },
+        25000
+      );
+    }
+    if (!chatId) {
+      const messageStillVisible = await confirmMessageVisibleInCurrentView(page, text, 15000);
+      if (messageStillVisible) {
+        logSendStep(
+          accountId,
+          'thread id still unresolved, but sent message remains visible in composer view; returning provisional chatId=new'
+        );
+        chatId = 'new';
+      } else {
+        const unresolvedShot = await captureFailureScreenshot(page, accountId, 'thread-id-unresolved');
+        const err = new Error(
+          `Send clicked but LinkedIn thread ID was not resolved. Message may not be delivered.` +
+            (unresolvedShot ? ` Screenshot: ${unresolvedShot}` : '')
+        );
+        err.code = 'SEND_NOT_CONFIRMED';
+        err.status = 502;
+        throw err;
+      }
     }
 
-    const persisted = await confirmMessagePersistedInThread(page, chatId, text, 30000);
+    const persisted =
+      chatId === 'new'
+        ? await confirmMessageVisibleInCurrentView(page, text, 15000)
+        : await confirmMessagePersistedInThread(page, chatId, text, 30000);
     if (!persisted) {
       const err = new Error('Message was not found in thread after send confirmation. Message may not be delivered.');
       err.code = 'SEND_NOT_CONFIRMED';
