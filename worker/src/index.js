@@ -1002,8 +1002,10 @@ app.post('/messages/send-new', async (req, res) => {
       const shouldFallbackToThread =
         code === 'NOT_MESSAGEABLE' ||
         code === 'SEND_NOT_CONFIRMED' ||
+        code === 'SESSION_EXPIRED' ||
         msg.includes('could not open message composer from profile') ||
         msg.includes('send clicked but linkedin thread id was not resolved') ||
+        msg.includes('session expired for account') ||
         msg.includes('operation failed');
 
       if (!shouldFallbackToThread) throw sendNewErr;
