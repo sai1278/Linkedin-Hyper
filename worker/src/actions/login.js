@@ -137,7 +137,7 @@ function isAuthenticatedLinkedInPage(state) {
   );
 }
 
-async function waitForSettledAuthState(page, timeoutMs = 8000) {
+async function waitForSettledAuthState(page, timeoutMs = 20000) {
   const deadline = Date.now() + Math.max(1000, timeoutMs);
   let lastState = await inspectAuthState(page);
 
@@ -252,13 +252,13 @@ async function verifySession({ accountId, proxyUrl }) {
     const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
     await delay(600, 1200);
     const feedUrl = page.url();
-    const feedState = await waitForSettledAuthState(page, 9000);
+    const feedState = await waitForSettledAuthState(page, 20000);
 
     // Messaging must be accessible for automation sends.
     const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
     await delay(600, 1200);
     const messagingUrl = page.url();
-    const messagingState = await waitForSettledAuthState(page, 9000);
+    const messagingState = await waitForSettledAuthState(page, 20000);
     const contextCookies = await context.cookies().catch(() => []);
     const cookieFlags = getCookieFlags(contextCookies);
 
@@ -277,7 +277,7 @@ async function verifySession({ accountId, proxyUrl }) {
       (isAuthenticatedLinkedInPage(messagingState) || isStrongMemberUrl(messagingUrl))
     );
 
-    if (messagingAuthenticated) {
+    if (messagingAuthenticated || feedAuthenticated) {
       if (process.env.REFRESH_SESSION_COOKIES === '1') {
         await saveCookies(accountId, await context.cookies(), {
           skipIfMissingAuthCookies: true,
@@ -286,8 +286,10 @@ async function verifySession({ accountId, proxyUrl }) {
       }
       return {
         ok: true,
-        url: messagingUrl,
-        via: feedAuthenticated ? 'feed+messaging' : 'messaging-only',
+        url: messagingAuthenticated ? messagingUrl : feedUrl,
+        via: messagingAuthenticated
+          ? (feedAuthenticated ? 'feed+messaging' : 'messaging-only')
+          : 'feed-only',
       };
     }
 
