@@ -190,35 +190,38 @@ function Get-CookieFileCandidates {
   )
 
   $CookieFileMap = To-HashtableSafe -InputObject $CookieFileMap
-  $candidates = New-Object System.Collections.Generic.List[string]
+  $candidates = @()
+  $hasExplicitMap = $CookieFileMap.ContainsKey($AccountId)
 
-  if ($CookieFileMap.ContainsKey($AccountId)) {
+  if ($hasExplicitMap) {
     $mapped = $CookieFileMap[$AccountId]
     if (-not [string]::IsNullOrWhiteSpace($mapped)) {
       $mappedPath = if ([System.IO.Path]::IsPathRooted($mapped)) { $mapped } else { Join-Path $CookieDir $mapped }
-      [void]$candidates.Add($mappedPath)
+      $candidates += ,$mappedPath
     }
   }
 
-  [void]$candidates.Add((Join-Path $CookieDir ("cookies-" + $AccountId + ".json")))
+  $candidates += ,(Join-Path $CookieDir ("cookies-" + $AccountId + ".json"))
 
-  $fallbackFiles = @(Get-ChildItem -Path $CookieDir -Filter 'cookies-*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
-  foreach ($file in $fallbackFiles) {
-    [void]$candidates.Add($file.FullName)
+  if (-not $hasExplicitMap) {
+    $fallbackFiles = @(Get-ChildItem -Path $CookieDir -Filter 'cookies-*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+    foreach ($file in $fallbackFiles) {
+      $candidates += ,$file.FullName
+    }
   }
 
   # De-dupe while preserving order
   $seen = @{}
-  $result = New-Object System.Collections.Generic.List[string]
+  $result = @()
   foreach ($path in $candidates) {
     if ([string]::IsNullOrWhiteSpace($path)) { continue }
-    $full = [System.IO.Path]::GetFullPath($path)
+    $full = [string]$path
     if ($seen.ContainsKey($full)) { continue }
     $seen[$full] = $true
-    [void]$result.Add($full)
+    $result += ,$full
   }
 
-  return @($result)
+  return $result
 }
 
 function Try-ImportAndVerifyFromCookies {
@@ -227,13 +230,13 @@ function Try-ImportAndVerifyFromCookies {
     [Parameter(Mandatory = $true)]$CookieFileMap
   )
 
-  $attemptLogs = New-Object System.Collections.Generic.List[object]
+  $attemptLogs = @()
   $candidates = @()
   try {
     $CookieFileMap = To-HashtableSafe -InputObject $CookieFileMap
     $candidates = @(Get-CookieFileCandidates -AccountId $AccountId -CookieFileMap $CookieFileMap)
   } catch {
-    [void]$attemptLogs.Add([pscustomobject]@{
+    $attemptLogs += ,([pscustomobject]@{
       file = '<preflight>'
       stage = 'exception'
       error = $_.Exception.Message
@@ -246,7 +249,7 @@ function Try-ImportAndVerifyFromCookies {
   }
 
   if ($candidates.Length -gt 0) {
-    [void]$attemptLogs.Add([pscustomobject]@{
+    $attemptLogs += ,([pscustomobject]@{
       file = "<candidate-order>"
       stage = 'discover'
       error = ($candidates -join '; ')
@@ -258,20 +261,20 @@ function Try-ImportAndVerifyFromCookies {
     try {
       $raw = Get-Content -LiteralPath $path -Raw
       if ([string]::IsNullOrWhiteSpace($raw)) {
-        [void]$attemptLogs.Add([pscustomobject]@{ file = $path; stage = 'read'; error = 'empty file' })
+        $attemptLogs += ,([pscustomobject]@{ file = $path; stage = 'read'; error = 'empty file' })
         continue
       }
       $parsed = $raw | ConvertFrom-Json
       $cookies = Normalize-CookieArray -Parsed $parsed
       if ($cookies.Length -eq 0) {
-        [void]$attemptLogs.Add([pscustomobject]@{ file = $path; stage = 'parse'; error = 'no cookie array found' })
+        $attemptLogs += ,([pscustomobject]@{ file = $path; stage = 'parse'; error = 'no cookie array found' })
         continue
       }
 
       $body = $cookies | ConvertTo-Json -Depth 10 -Compress
       $import = Invoke-Api -Method "POST" -Uri "$BaseUrl/accounts/$AccountId/session" -BodyJson $body -AllowFailure
       if ($import.PSObject.Properties.Name -contains '__failed') {
-        [void]$attemptLogs.Add([pscustomobject]@{
+        $attemptLogs += ,([pscustomobject]@{
           file = $path
           stage = 'import'
           status = $import.status
@@ -289,13 +292,13 @@ function Try-ImportAndVerifyFromCookies {
           attempts = @($attemptLogs)
         }
       }
-      [void]$attemptLogs.Add([pscustomobject]@{
+      $attemptLogs += ,([pscustomobject]@{
         file = $path
         stage = 'verify'
         error = [string]$verify.body
       })
     } catch {
-      [void]$attemptLogs.Add([pscustomobject]@{
+      $attemptLogs += ,([pscustomobject]@{
         file = $path
         stage = 'exception'
         error = $_.Exception.Message
@@ -377,6 +380,8 @@ foreach ($accountId in $targetAccountIds) {
               stage = 'exception'
               error = $_.Exception.Message
               detail = ($_ | Out-String).Trim()
+              stack = $_.ScriptStackTrace
+              where = $_.InvocationInfo.PositionMessage
             }
           )
         }
@@ -392,6 +397,12 @@ foreach ($accountId in $targetAccountIds) {
           foreach ($attempt in $heal.attempts) {
             $statusInfo = if ($attempt.PSObject.Properties.Name -contains 'status' -and $attempt.status) { " status=$($attempt.status)" } else { "" }
             Write-Host "  - file=$($attempt.file) stage=$($attempt.stage)$statusInfo error=$($attempt.error)"
+            if ($attempt.PSObject.Properties.Name -contains 'where' -and $attempt.where) {
+              Write-Host "    where: $($attempt.where)"
+            }
+            if ($attempt.PSObject.Properties.Name -contains 'stack' -and $attempt.stack) {
+              Write-Host "    stack: $($attempt.stack)"
+            }
           }
         } else {
           Write-Host "Self-heal attempts: no cookie files were usable for this account."
