@@ -199,7 +199,7 @@ function decrypt(payload) {
 
 /** Normalise sameSite values to what Playwright accepts */
 function normaliseCookies(cookies) {
-  return cookies.map((c) => {
+  const normalizedList = cookies.map((c) => {
     const normalized = {
       ...c,
       sameSite: (() => {
@@ -219,6 +219,37 @@ function normaliseCookies(cookies) {
 
     return normalized;
   });
+
+  const deduped = [];
+  const seen = new Set();
+  const addUnique = (cookie) => {
+    if (!cookie || !cookie.name || !cookie.domain || !cookie.path) return;
+    const key = `${cookie.name}|${cookie.domain}|${cookie.path}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(cookie);
+  };
+
+  // Keep originals first.
+  for (const cookie of normalizedList) {
+    addUnique(cookie);
+  }
+
+  // Harden LinkedIn auth cookie domain coverage to survive redirect/domain hops.
+  for (const cookie of normalizedList) {
+    const name = String(cookie?.name || '');
+    if (name !== 'li_at' && name !== 'JSESSIONID') continue;
+    const domain = String(cookie?.domain || '').toLowerCase();
+    if (!domain.includes('linkedin.com')) continue;
+
+    if (domain.includes('www.linkedin.com')) {
+      addUnique({ ...cookie, domain: '.linkedin.com' });
+    } else if (domain === '.linkedin.com' || domain === 'linkedin.com') {
+      addUnique({ ...cookie, domain: '.www.linkedin.com' });
+    }
+  }
+
+  return deduped;
 }
 
 function getLinkedInCookieFlags(cookies) {
