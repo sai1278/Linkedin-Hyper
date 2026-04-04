@@ -1156,20 +1156,91 @@ async function confirmMessageVisibleInCurrentView(page, text, timeoutMs = 15000)
               '.msg-s-message-list__event--own-turn .msg-s-event__content',
               '[data-view-name="messaging-self-message"] .msg-s-event__content',
               '.msg-s-event-listitem .msg-s-event__content',
+              '.msg-s-event-listitem .msg-s-event-listitem__body',
               '[data-view-name="messaging-message-list-item"] .msg-s-event__content',
+              '[data-view-name="messaging-message-list-item"] .msg-s-event-listitem__body',
+              '[data-view-name="messaging-message-list-item"] [dir]',
               '.msg-s-event__content',
+              '[data-test-message-content]',
             ].join(', ')
           )
         );
-        return nodes.some((node) => {
+        const hasDirectMatch = nodes.some((node) => {
           const value = normalize(node?.textContent);
           return value && (value.includes(targetText) || targetText.includes(value));
         });
+        if (hasDirectMatch) return true;
+
+        const rowNodes = Array.from(
+          document.querySelectorAll('.msg-s-event-listitem, [data-view-name="messaging-message-list-item"]')
+        );
+        const hasRowMatch = rowNodes.some((row) => {
+          const value = normalize(row?.textContent);
+          return value && (value.includes(targetText) || targetText.includes(value));
+        });
+        if (hasRowMatch) return true;
+
+        const listContainer = document.querySelector('.msg-s-message-list, [data-view-name="messaging-message-list"]');
+        const listText = normalize(listContainer?.textContent);
+        return Boolean(listText && (listText.includes(targetText) || targetText.includes(listText)));
       },
       text,
       { timeout: timeoutMs }
     );
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isComposerDraftCleared(page) {
+  try {
+    return await page.evaluate(() => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const selectors = [
+        '.msg-form__contenteditable',
+        '[contenteditable][role="textbox"]',
+        'div[role="textbox"][contenteditable="true"]',
+        '[data-view-name="messaging-compose-box"] [contenteditable="true"]',
+        '.msg-form textarea',
+        '.msg-form__msg-content-container textarea',
+        '[data-view-name="messaging-compose-box"] textarea',
+      ];
+
+      for (const selector of selectors) {
+        const node = document.querySelector(selector);
+        if (!node) continue;
+        const value =
+          node.tagName === 'TEXTAREA'
+            ? normalize(node.value)
+            : normalize(node.textContent);
+        if (value) return false;
+      }
+      return true;
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function detectSendErrorBanner(page) {
+  try {
+    return await page.evaluate(() => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const hay = normalize(document.body?.innerText || '');
+      if (!hay) return false;
+
+      const patterns = [
+        'unable to send',
+        'couldn\'t send',
+        'could not send',
+        'message not sent',
+        'failed to send',
+        'try again',
+      ];
+
+      return patterns.some((p) => hay.includes(p));
+    });
   } catch {
     return false;
   }
@@ -1386,10 +1457,12 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     }
     if (!chatId) {
       const messageStillVisible = await confirmMessageVisibleInCurrentView(page, text, 15000);
-      if (messageStillVisible) {
+      const composerCleared = await isComposerDraftCleared(page);
+      const hasSendErrorBanner = await detectSendErrorBanner(page);
+      if (!hasSendErrorBanner && (messageStillVisible || composerCleared)) {
         logSendStep(
           accountId,
-          'thread id still unresolved, but sent message remains visible in composer view; returning provisional chatId=new'
+          `thread id unresolved, but send appears accepted (visible=${messageStillVisible}, composerCleared=${composerCleared}); returning provisional chatId=new`
         );
         chatId = 'new';
       } else {
