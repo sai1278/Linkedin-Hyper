@@ -5,9 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const { getRedis } = require('./redisClient');
 
-const ALGORITHM   = 'aes-256-gcm';
-const SESSION_TTL = 86400 * 30; // 30 days
-const META_TTL    = 86400 * 30;
+const ALGORITHM = 'aes-256-gcm';
+const SESSION_TTL_DAYS = Math.max(1, parseInt(process.env.SESSION_TTL_DAYS || '30', 10) || 30);
+const SESSION_TTL = 86400 * SESSION_TTL_DAYS;
+const META_TTL = 86400 * SESSION_TTL_DAYS;
 const REDIS_SESSION_OP_TIMEOUT_MS = parseInt(process.env.REDIS_SESSION_TIMEOUT_MS || '2500', 10);
 
 // Local fallback when Redis is unavailable (dev convenience).

@@ -248,6 +248,131 @@ function normalizeProfileUrlForCompare(url) {
 
 // â”€â”€ Health (no auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+function connectionKey(accountId, name, profileUrl) {
+  const normalizedUrl = normalizeProfileUrlForCompare(profileUrl);
+  const normalizedName = normalizeWhitespace(name).toLowerCase();
+  return `${accountId}|${normalizedUrl || normalizedName}`;
+}
+
+function pushLatestConnection(latestByConnection, item) {
+  if (!item?.accountId) return;
+  const key = connectionKey(item.accountId, item.name, item.profileUrl);
+  const previous = latestByConnection.get(key);
+  const currentTs = Number(item.connectedAt) || 0;
+  const previousTs = Number(previous?.connectedAt) || 0;
+  if (!previous || currentTs >= previousTs) {
+    latestByConnection.set(key, item);
+  }
+}
+
+function mapActivityEntryToConnection(accountId, entry) {
+  if (!entry || (entry.type !== 'connectionSent' && entry.type !== 'messageSent')) {
+    return null;
+  }
+  const profileUrl = String(entry.targetProfileUrl || '');
+  const name = normalizeParticipantName(entry.targetName, profileUrl);
+  if (!name || name === 'Unknown') return null;
+
+  return {
+    accountId,
+    name,
+    profileUrl,
+    connectedAt: Number(entry.timestamp) || Date.now(),
+    source: entry.type,
+  };
+}
+
+async function buildUnifiedConnections(limit = 300) {
+  const ids = await listKnownAccountIds();
+  const latestByConnection = new Map();
+  const redis = getRedis();
+
+  for (const accountId of ids) {
+    try {
+      const rows = await redis.lrange(`activity:log:${accountId}`, 0, 1000);
+      for (const raw of rows) {
+        try {
+          const parsed = JSON.parse(raw);
+          const mapped = mapActivityEntryToConnection(accountId, parsed);
+          if (mapped) {
+            pushLatestConnection(latestByConnection, mapped);
+          }
+        } catch {
+          // Ignore malformed activity rows.
+        }
+      }
+    } catch {
+      // Ignore Redis activity-read issues.
+    }
+
+    try {
+      const messageRepo = require('./db/repositories/MessageRepository');
+      const conversations = await withTimeout(
+        messageRepo.getConversationsByAccount(accountId, 500, 0),
+        4000
+      );
+      for (const conv of conversations || []) {
+        const profileUrl = String(conv?.participantProfileUrl || '');
+        const name = normalizeParticipantName(conv?.participantName, profileUrl);
+        if (!name || name === 'Unknown') continue;
+        pushLatestConnection(latestByConnection, {
+          accountId,
+          name,
+          profileUrl,
+          connectedAt: Number(new Date(conv?.lastMessageAt || Date.now()).getTime()) || Date.now(),
+          source: 'conversation',
+        });
+      }
+    } catch (err) {
+      if (!isDatabaseUnavailable(err)) {
+        console.warn(`[Connections] DB fallback failed for ${accountId}:`, err?.message || String(err));
+      }
+    }
+  }
+
+  const connections = Array.from(latestByConnection.values())
+    .sort((a, b) => (Number(b.connectedAt) || 0) - (Number(a.connectedAt) || 0))
+    .slice(0, limit)
+    .map(({ source, ...rest }) => rest);
+
+  return { connections };
+}
+
+const UNIFIED_CONNECTIONS_CACHE_TTL_MS = 60_000;
+let unifiedConnectionsCache = {
+  expiresAt: 0,
+  payload: { connections: [] },
+};
+let unifiedConnectionsInFlight = null;
+
+async function getUnifiedConnectionsWithCache(limit = 300) {
+  const now = Date.now();
+  if (unifiedConnectionsCache.expiresAt > now) {
+    return { connections: unifiedConnectionsCache.payload.connections.slice(0, limit) };
+  }
+
+  if (unifiedConnectionsInFlight) {
+    const payload = await unifiedConnectionsInFlight;
+    return { connections: payload.connections.slice(0, limit) };
+  }
+
+  unifiedConnectionsInFlight = (async () => {
+    const payload = await buildUnifiedConnections(limit);
+    unifiedConnectionsCache = {
+      expiresAt: Date.now() + UNIFIED_CONNECTIONS_CACHE_TTL_MS,
+      payload,
+    };
+    return payload;
+  })();
+
+  try {
+    const payload = await unifiedConnectionsInFlight;
+    return { connections: payload.connections.slice(0, limit) };
+  } finally {
+    unifiedConnectionsInFlight = null;
+  }
+}
+
 async function buildUnifiedInboxFromActivity(limit = 100) {
   const ids = await listKnownAccountIds();
   const redis = getRedis();
@@ -1102,6 +1227,24 @@ app.post('/connections/send', async (req, res) => {
 });
 
 // GET /inbox/unified â€” Query conversations from database (all accounts)
+app.get('/connections/unified', async (req, res) => {
+  try {
+    const limit = parseLimit(req.query.limit, 300, 1000);
+    const payload = await getUnifiedConnectionsWithCache(limit);
+    res.json(payload);
+  } catch (err) {
+    if (err?.status) {
+      return res.status(err.status).json({
+        error: toPublicOperationError(err),
+        code: err.code,
+      });
+    }
+
+    console.error('[API] Error fetching unified connections:', err);
+    res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
+  }
+});
+
 app.get('/inbox/unified', async (req, res) => {
   try {
     const messageRepo = require('./db/repositories/MessageRepository');

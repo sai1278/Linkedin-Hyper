@@ -8,11 +8,12 @@ ENV_FILE=".env"
 ACCOUNT_ID=""
 PROFILE_URL=""
 TEXT="Hi, test message from automation"
+ALL_ACCOUNTS=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  bash deployment/run-send-debug.sh --profile-url <linkedin-profile-url> [--account-id <id>] [--text <message>] [--env-file .env]
+  bash deployment/run-send-debug.sh --profile-url <linkedin-profile-url> [--account-id <id>] [--all-accounts] [--text <message>] [--env-file .env]
 
 Example:
   bash deployment/run-send-debug.sh \
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
     --text)
       TEXT="${2:-}"
       shift 2
+      ;;
+    --all-accounts)
+      ALL_ACCOUNTS=1
+      shift 1
       ;;
     --env-file)
       ENV_FILE="${2:-.env}"
@@ -62,11 +67,11 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-if [[ -z "$ACCOUNT_ID" ]]; then
+if [[ "$ALL_ACCOUNTS" != "1" && -z "$ACCOUNT_ID" ]]; then
   ACCOUNT_ID="$(grep -E '^ACCOUNT_IDS=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- | cut -d, -f1 | xargs || true)"
 fi
 
-if [[ -z "$ACCOUNT_ID" ]]; then
+if [[ "$ALL_ACCOUNTS" != "1" && -z "$ACCOUNT_ID" ]]; then
   echo "Could not resolve account id from $ENV_FILE. Pass --account-id."
   exit 1
 fi
@@ -187,11 +192,18 @@ echo "3) Snapshot worker logs (before run)"
 
 echo "4) Run e2e smoke send"
 set +e
-bash deployment/e2e-smoke.sh \
-  --profile-url "$PROFILE_URL" \
-  --account-id "$ACCOUNT_ID" \
-  --text "$TEXT" \
-  --env-file "$ENV_FILE" > "$OUT_DIR/e2e.out" 2>&1
+if [[ "$ALL_ACCOUNTS" == "1" ]]; then
+  bash deployment/e2e-smoke-dual.sh \
+    --profile-url "$PROFILE_URL" \
+    --text "$TEXT" \
+    --env-file "$ENV_FILE" > "$OUT_DIR/e2e.out" 2>&1
+else
+  bash deployment/e2e-smoke.sh \
+    --profile-url "$PROFILE_URL" \
+    --account-id "$ACCOUNT_ID" \
+    --text "$TEXT" \
+    --env-file "$ENV_FILE" > "$OUT_DIR/e2e.out" 2>&1
+fi
 E2E_RC=$?
 set -e
 cat "$OUT_DIR/e2e.out"

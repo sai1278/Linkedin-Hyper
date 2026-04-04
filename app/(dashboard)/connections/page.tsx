@@ -2,11 +2,10 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { Connection, Account } from '@/types/dashboard';
-import { getAccounts, getAccountActivity } from '@/lib/api-client';
+import { getAccounts, getUnifiedConnections } from '@/lib/api-client';
 import { ConnectionGrid } from '@/components/connections/ConnectionGrid';
 import { Spinner } from '@/components/ui/Spinner';
 import { ErrorState } from '@/components/ui/ErrorState';
-import { deriveDisplayName } from '@/lib/display-name';
 
 export default function ConnectionsPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -26,25 +25,12 @@ export default function ConnectionsPage() {
 
   const load = useCallback(async () => {
     try {
-      const { accounts: accs } = await getAccounts();
+      const [{ accounts: accs }, { connections: unifiedConnections }] = await Promise.all([
+        getAccounts(),
+        getUnifiedConnections(500),
+      ]);
       setAccounts(accs);
-
-      const logs = await Promise.all(
-        accs.map(async (a) => {
-          const { entries } = await getAccountActivity(a.id, 0, 200);
-          return entries
-            .filter((e) => e.type === 'connectionSent')
-            .map((e): Connection => ({
-              accountId:   a.id,
-              name:        deriveDisplayName(e.targetName, e.targetProfileUrl || ''),
-              profileUrl:  e.targetProfileUrl,
-              connectedAt: e.timestamp,
-            }));
-        })
-      );
-
-      const all = logs
-        .flat()
+      const all = unifiedConnections
         .sort((a, b) => (b.connectedAt ?? 0) - (a.connectedAt ?? 0));
 
       setConnections(all);

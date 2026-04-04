@@ -91,7 +91,7 @@ export function ConnectionGrid({
         {connections.length === 0 ? (
           <div className="flex items-center justify-center h-40">
             <p style={{ color: 'var(--text-muted)' }}>
-              No automated connection activity found yet
+              No connections found yet
             </p>
           </div>
         ) : (

@@ -1,4 +1,4 @@
-import type { Account, Conversation, ActivityEntry, Message } from '@/types/dashboard';
+import type { Account, Conversation, ActivityEntry, Message, Connection } from '@/types/dashboard';
 import { deriveDisplayName } from '@/lib/display-name';
 
 const BASE = '/api';
@@ -101,6 +101,12 @@ export async function getAllAccountsSummary(): Promise<{
 }> {
   // Stats summary revalidates every 60 s — fast enough to feel current.
   return apiFetch('stats/all/summary', { ttl: 60 });
+}
+
+export async function getUnifiedConnections(limit = 300): Promise<{ connections: Connection[] }> {
+  return apiFetch<{ connections: Connection[] }>(
+    `connections/unified?limit=${encodeURIComponent(String(limit))}`
+  );
 }
 
 export async function sendMessage(

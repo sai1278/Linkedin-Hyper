@@ -59,6 +59,12 @@ const ALLOWLIST: readonly RouteRule[] = [
     injectApiKey: true,
   },
   {
+    pattern:      /^connections\/unified$/,
+    methods:      new Set(['GET']),
+    roles:        new Set(['user', 'admin']),
+    injectApiKey: true,
+  },
+  {
     pattern:      /^messages\/thread$/,
     methods:      new Set(['GET']),
     roles:        new Set(['user', 'admin']),
