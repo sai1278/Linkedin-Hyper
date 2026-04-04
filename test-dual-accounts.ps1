@@ -227,9 +227,24 @@ function Try-ImportAndVerifyFromCookies {
     [Parameter(Mandatory = $true)]$CookieFileMap
   )
 
-  $CookieFileMap = To-HashtableSafe -InputObject $CookieFileMap
-  $candidates = @(Get-CookieFileCandidates -AccountId $AccountId -CookieFileMap $CookieFileMap)
   $attemptLogs = New-Object System.Collections.Generic.List[object]
+  $candidates = @()
+  try {
+    $CookieFileMap = To-HashtableSafe -InputObject $CookieFileMap
+    $candidates = @(Get-CookieFileCandidates -AccountId $AccountId -CookieFileMap $CookieFileMap)
+  } catch {
+    [void]$attemptLogs.Add([pscustomobject]@{
+      file = '<preflight>'
+      stage = 'exception'
+      error = $_.Exception.Message
+      detail = ($_ | Out-String).Trim()
+    })
+    return [pscustomobject]@{
+      ok = $false
+      attempts = @($attemptLogs)
+    }
+  }
+
   if ($candidates.Length -gt 0) {
     [void]$attemptLogs.Add([pscustomobject]@{
       file = "<candidate-order>"
@@ -351,7 +366,21 @@ foreach ($accountId in $targetAccountIds) {
 
     if ($isRecoverableSessionFailure) {
       Write-Host "Self-heal: re-importing cookies for $accountId from local cookie files..."
-      $heal = Try-ImportAndVerifyFromCookies -AccountId $accountId -CookieFileMap $cookieFileMap
+      try {
+        $heal = Try-ImportAndVerifyFromCookies -AccountId $accountId -CookieFileMap $cookieFileMap
+      } catch {
+        $heal = [pscustomobject]@{
+          ok = $false
+          attempts = @(
+            [pscustomobject]@{
+              file = '<callsite>'
+              stage = 'exception'
+              error = $_.Exception.Message
+              detail = ($_ | Out-String).Trim()
+            }
+          )
+        }
+      }
       if ($heal.ok) {
         Write-Host "Self-heal success using: $($heal.cookieFile)"
         $verify = $heal.verify
