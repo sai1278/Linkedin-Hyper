@@ -187,6 +187,10 @@ function classifyVerifyFailure({ accountId, feedUrl, messagingUrl, feedState, me
   };
 }
 
+function hasRequiredAuthCookies(flags) {
+  return Boolean(flags?.hasLiAt && flags?.hasJsession);
+}
+
 function safeName(value) {
   return String(value || 'unknown')
     .toLowerCase()
@@ -258,16 +262,19 @@ async function verifySession({ accountId, proxyUrl }) {
     const contextCookies = await context.cookies().catch(() => []);
     const cookieFlags = getCookieFlags(contextCookies);
 
+    // LinkedIn UI markers can be flaky; accept strong member URL signal when required cookies exist.
     const feedAuthenticated = (
       feedResult.ok &&
       !isBlockedAuthPage(feedUrl) &&
-      isAuthenticatedLinkedInPage(feedState)
+      hasRequiredAuthCookies(cookieFlags) &&
+      (isAuthenticatedLinkedInPage(feedState) || isStrongMemberUrl(feedUrl))
     );
 
     const messagingAuthenticated = (
       messagingResult.ok &&
       !isBlockedAuthPage(messagingUrl) &&
-      isAuthenticatedLinkedInPage(messagingState)
+      hasRequiredAuthCookies(cookieFlags) &&
+      (isAuthenticatedLinkedInPage(messagingState) || isStrongMemberUrl(messagingUrl))
     );
 
     if (messagingAuthenticated) {
