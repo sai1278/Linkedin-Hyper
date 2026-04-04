@@ -146,12 +146,50 @@ function Parse-CookieFileMap {
   }
 }
 
+function To-HashtableSafe {
+  param([Parameter(Mandatory = $true)]$InputObject)
+
+  if ($null -eq $InputObject) {
+    return @{}
+  }
+
+  if ($InputObject -is [hashtable]) {
+    return $InputObject
+  }
+
+  if ($InputObject -is [System.Collections.IDictionary]) {
+    $dict = @{}
+    foreach ($key in $InputObject.Keys) {
+      $name = [string]$key
+      if (-not [string]::IsNullOrWhiteSpace($name)) {
+        $dict[$name] = [string]$InputObject[$key]
+      }
+    }
+    return $dict
+  }
+
+  $objMap = @{}
+  try {
+    foreach ($prop in $InputObject.PSObject.Properties) {
+      $name = [string]$prop.Name
+      $value = [string]$prop.Value
+      if (-not [string]::IsNullOrWhiteSpace($name) -and -not [string]::IsNullOrWhiteSpace($value)) {
+        $objMap[$name.Trim()] = $value.Trim()
+      }
+    }
+  } catch {
+    return @{}
+  }
+  return $objMap
+}
+
 function Get-CookieFileCandidates {
   param(
     [Parameter(Mandatory = $true)][string]$AccountId,
-    [Parameter(Mandatory = $true)][hashtable]$CookieFileMap
+    [Parameter(Mandatory = $true)]$CookieFileMap
   )
 
+  $CookieFileMap = To-HashtableSafe -InputObject $CookieFileMap
   $candidates = New-Object System.Collections.Generic.List[string]
 
   if ($CookieFileMap.ContainsKey($AccountId)) {
@@ -186,9 +224,10 @@ function Get-CookieFileCandidates {
 function Try-ImportAndVerifyFromCookies {
   param(
     [Parameter(Mandatory = $true)][string]$AccountId,
-    [Parameter(Mandatory = $true)][hashtable]$CookieFileMap
+    [Parameter(Mandatory = $true)]$CookieFileMap
   )
 
+  $CookieFileMap = To-HashtableSafe -InputObject $CookieFileMap
   $candidates = @(Get-CookieFileCandidates -AccountId $AccountId -CookieFileMap $CookieFileMap)
   $attemptLogs = New-Object System.Collections.Generic.List[object]
   if ($candidates.Length -gt 0) {
