@@ -34,15 +34,29 @@ function isBlockedAuthPage(url) {
   return AUTH_BLOCK_TOKENS.some((token) => value.includes(token));
 }
 
+function isStrongMemberUrl(url) {
+  const value = String(url || '').toLowerCase();
+  if (!value.includes('linkedin.com') || isBlockedAuthPage(value)) return false;
+  try {
+    const parsed = new URL(value);
+    const pathname = String(parsed.pathname || '/').toLowerCase();
+    return pathname === '/feed/' || pathname.startsWith('/feed') || pathname.startsWith('/messaging');
+  } catch {
+    return false;
+  }
+}
+
 function isAuthenticatedLinkedInPage(state) {
   const hasUiSignal = Boolean(state?.hasSignedInNav || state?.hasMessagingShell);
+  const hasStrongUrlSignal = isStrongMemberUrl(state?.url);
+  const guestOnlyState = Boolean(state?.hasGuestCta && !hasUiSignal);
   return Boolean(
     state &&
     !state.blockedAuthPage &&
     !state.hasLoginForm &&
     !state.hasAuthwallMarkers &&
-    !state.hasGuestCta &&
-    hasUiSignal
+    !guestOnlyState &&
+    (hasUiSignal || hasStrongUrlSignal)
   );
 }
 
@@ -503,9 +517,9 @@ async function inspectLinkedInDomStateViaCdp(cdp) {
       const hasGuestCta = Boolean(
         document.querySelector(
           [
-            'a[href*="/login"]',
-            'a[href*="/signup"]',
-            'a[data-tracking-control-name*="guest_homepage"]'
+            'a[data-tracking-control-name*="guest_homepage"]',
+            '.nav__button-secondary',
+            'main section a[href*="/signup"]'
           ].join(', ')
         )
       );
@@ -609,7 +623,11 @@ async function captureLinkedInCookiesViaPlaywrightFallback({
                 )
               ),
             hasMessagingShell: Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list')),
-            hasGuestCta: Boolean(document.querySelector('a[href*="/login"], a[href*="/signup"]')),
+            hasGuestCta: Boolean(
+              document.querySelector(
+                'a[data-tracking-control-name*="guest_homepage"], .nav__button-secondary, main section a[href*="/signup"]'
+              )
+            ),
           };
         }).catch(() => ({ url: activePage.url(), title: '' }));
 

@@ -738,6 +738,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
   const queue       = getQueue(accountId);
   const queueEvents = getQueueEvents(accountId);
   const nonIdempotentJobs = new Set(['sendMessage', 'sendMessageNew', 'sendConnectionRequest']);
+  const dedupeWindowJobs = new Set(['messageSync']);
 
   const toQueueUnavailableError = (originalErr) => {
     const msg = originalErr instanceof Error ? originalErr.message : String(originalErr);
@@ -758,9 +759,11 @@ async function runJob(name, data, timeoutMs = 120_000) {
     );
   };
   
-  // Deterministic jobId deduplicates the same job within a 30-second window.
-  // BullMQ silently drops adds with a jobId that already exists in the queue.
-  const jobId = `${name}:${accountId}:${Math.floor(Date.now() / 30_000)}`;
+  // Only dedupe periodic background jobs.
+  // Verify/send/read jobs must always run fresh so cookie or UI state changes are honored immediately.
+  const jobId = dedupeWindowJobs.has(name)
+    ? `${name}:${accountId}:${Math.floor(Date.now() / 30_000)}`
+    : undefined;
 
   let job;
   try {
@@ -773,7 +776,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
         };
 
     job = await queue.add(name, data, {
-      jobId,
+      ...(jobId ? { jobId } : {}),
       // Bounded job retention so Redis doesn't accumulate gigabytes of job history.
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },

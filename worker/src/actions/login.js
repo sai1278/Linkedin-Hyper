@@ -70,10 +70,10 @@ async function inspectAuthState(page) {
         Boolean(
           document.querySelector(
             [
-              'a[href*="/login"]',
-              'a[href*="/signup"]',
               'a[data-tracking-control-name*="guest_homepage"]',
               'a[data-test-id="home-hero-sign-in-cta"]',
+              '.nav__button-secondary',
+              'main section a[href*="/signup"]',
             ].join(', ')
           )
         );
@@ -105,7 +105,12 @@ function isAuthenticatedState(state) {
 }
 
 function isLoggedOutState(state) {
-  return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers || state?.hasGuestCta);
+  const guestOnlyState = Boolean(
+    state?.hasGuestCta &&
+    !state?.hasSignedInNav &&
+    !state?.hasMessagingShell
+  );
+  return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers || guestOnlyState);
 }
 
 function isStrongMemberUrl(url) {
@@ -130,6 +135,21 @@ function isAuthenticatedLinkedInPage(state) {
     !isLoggedOutState(state) &&
     (hasUiSignal || hasStrongUrlSignal)
   );
+}
+
+async function waitForSettledAuthState(page, timeoutMs = 8000) {
+  const deadline = Date.now() + Math.max(1000, timeoutMs);
+  let lastState = await inspectAuthState(page);
+
+  while (Date.now() < deadline) {
+    if (isAuthenticatedLinkedInPage(lastState)) {
+      return lastState;
+    }
+    await delay(700, 1000);
+    lastState = await inspectAuthState(page);
+  }
+
+  return lastState;
 }
 
 function getCookieFlags(cookies) {
@@ -228,13 +248,13 @@ async function verifySession({ accountId, proxyUrl }) {
     const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
     await delay(600, 1200);
     const feedUrl = page.url();
-    const feedState = await inspectAuthState(page);
+    const feedState = await waitForSettledAuthState(page, 9000);
 
     // Messaging must be accessible for automation sends.
     const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
     await delay(600, 1200);
     const messagingUrl = page.url();
-    const messagingState = await inspectAuthState(page);
+    const messagingState = await waitForSettledAuthState(page, 9000);
     const contextCookies = await context.cookies().catch(() => []);
     const cookieFlags = getCookieFlags(contextCookies);
 

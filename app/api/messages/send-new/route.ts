@@ -23,6 +23,8 @@ export async function POST(req: NextRequest) {
       method: 'POST',
       path: '/messages/send-new',
       body: { accountId, profileUrl, text },
+      // send-new can perform profile flow + thread fallback; allow a longer upstream window.
+      timeoutMs: 240_000,
     });
   } catch (err) {
     return badRequest(err);

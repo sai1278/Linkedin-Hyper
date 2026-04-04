@@ -87,17 +87,22 @@ interface ForwardOptions {
   path: string;
   query?: URLSearchParams;
   body?: unknown;
+  timeoutMs?: number;
 }
 
 /**
  * Forward a request to the worker Express API.
  * Adds X-Api-Key header automatically.
- * Includes a 120-second AbortSignal timeout (aligned with Express 130 s / runJob 120 s).
+ * Includes a default 120-second AbortSignal timeout (override via timeoutMs).
  */
 export async function forwardToBackend(opts: ForwardOptions): Promise<NextResponse> {
-  const { method, path, query, body } = opts;
+  const { method, path, query, body, timeoutMs } = opts;
   const qs = query ? `?${query.toString()}` : '';
   const url = `${API_URL}${path}${qs}`;
+  const parsedTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : NaN;
+  const effectiveTimeoutMs = Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
+    ? parsedTimeoutMs
+    : 120_000;
 
   try {
     const res = await fetch(url, {
@@ -107,7 +112,7 @@ export async function forwardToBackend(opts: ForwardOptions): Promise<NextRespon
         'X-Api-Key': API_SECRET,
       },
       body: body != null ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(effectiveTimeoutMs),
     });
 
     const data = await res.text();
