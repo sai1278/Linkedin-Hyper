@@ -34,38 +34,15 @@ function isBlockedAuthPage(url) {
   return AUTH_BLOCK_TOKENS.some((token) => value.includes(token));
 }
 
-function isLikelyMemberUrl(url) {
-  const value = String(url || '').toLowerCase();
-  if (!value.includes('linkedin.com')) return false;
-  if (isBlockedAuthPage(value)) return false;
-  try {
-    const u = new URL(value);
-    const p = String(u.pathname || '/').toLowerCase();
-    return (
-      p === '/' ||
-      p === '/feed/' || p.startsWith('/feed') ||
-      p.startsWith('/in/') ||
-      p.startsWith('/messaging') ||
-      p.startsWith('/search') ||
-      p.startsWith('/mynetwork') ||
-      p.startsWith('/notifications') ||
-      p.startsWith('/jobs')
-    );
-  } catch {
-    return false;
-  }
-}
-
 function isAuthenticatedLinkedInPage(state) {
   const hasUiSignal = Boolean(state?.hasSignedInNav || state?.hasMessagingShell);
-  const hasMemberUrlSignal = isLikelyMemberUrl(state?.url);
   return Boolean(
     state &&
     !state.blockedAuthPage &&
     !state.hasLoginForm &&
     !state.hasAuthwallMarkers &&
     !state.hasGuestCta &&
-    (hasUiSignal || hasMemberUrlSignal)
+    hasUiSignal
   );
 }
 
@@ -496,7 +473,19 @@ async function inspectLinkedInDomStateViaCdp(cdp) {
         txt.includes('continue to linkedin') ||
         txt.includes('unlock your profile') ||
         txt.includes('challenge');
-      const hasSignedInNav = Boolean(
+      const navLinkSelectors = [
+        'a[href*="/feed"]',
+        'a[href*="/mynetwork"]',
+        'a[href*="/messaging"]',
+        'a[href*="/notifications"]'
+      ].join(', ');
+      const navLinks = Array.from(document.querySelectorAll(navLinkSelectors))
+        .filter((el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+      const hasPrimaryNavLinks = navLinks.length >= 2;
+      const hasSignedInNav = hasPrimaryNavLinks || Boolean(
         document.querySelector(
           [
             '.global-nav__me',
@@ -504,7 +493,9 @@ async function inspectLinkedInDomStateViaCdp(cdp) {
             '.global-nav__primary-link-me-menu-trigger',
             '#global-nav-search',
             '.search-global-typeahead',
-            '[data-test-global-nav-me]'
+            '[data-test-global-nav-me]',
+            'header.global-nav',
+            '.global-nav'
           ].join(', ')
         )
       );
@@ -587,6 +578,18 @@ async function captureLinkedInCookiesViaPlaywrightFallback({
 
         const dom = await activePage.evaluate(() => {
           const txt = (document.body?.innerText || '').toLowerCase();
+          const navLinkSelectors = [
+            'a[href*="/feed"]',
+            'a[href*="/mynetwork"]',
+            'a[href*="/messaging"]',
+            'a[href*="/notifications"]'
+          ].join(', ');
+          const navLinks = Array.from(document.querySelectorAll(navLinkSelectors))
+            .filter((el) => {
+              const rect = el.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            });
+          const hasPrimaryNavLinks = navLinks.length >= 2;
           return {
             url: location.href,
             title: document.title || '',
@@ -598,7 +601,13 @@ async function captureLinkedInCookiesViaPlaywrightFallback({
               txt.includes('continue to linkedin') ||
               txt.includes('unlock your profile') ||
               txt.includes('challenge'),
-            hasSignedInNav: Boolean(document.querySelector('.global-nav__me, .global-nav__me-photo, #global-nav-search, .search-global-typeahead')),
+            hasSignedInNav:
+              hasPrimaryNavLinks ||
+              Boolean(
+                document.querySelector(
+                  '.global-nav__me, .global-nav__me-photo, #global-nav-search, .search-global-typeahead, header.global-nav, .global-nav'
+                )
+              ),
             hasMessagingShell: Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list')),
             hasGuestCta: Boolean(document.querySelector('a[href*="/login"], a[href*="/signup"]')),
           };

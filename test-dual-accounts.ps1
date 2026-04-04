@@ -12,6 +12,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if ([string]::IsNullOrWhiteSpace($CookieDir) -or $CookieDir.Trim() -eq ".") {
+  $CookieDir = (Get-Location).Path
+} elseif (-not [System.IO.Path]::IsPathRooted($CookieDir)) {
+  $CookieDir = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $CookieDir))
+} else {
+  $CookieDir = [System.IO.Path]::GetFullPath($CookieDir)
+}
+
 if ([string]::IsNullOrWhiteSpace($ProfileUrl)) {
   Write-Error "Provide -ProfileUrl, for example: -ProfileUrl 'https://www.linkedin.com/in/someone/'"
   exit 1
@@ -46,8 +54,19 @@ function Invoke-Api {
     if ($_.Exception.Response) {
       try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
       try {
+        if ($_.Exception.Response.Content) {
+          $contentText = $_.Exception.Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+          if (-not [string]::IsNullOrWhiteSpace($contentText)) {
+            $responseBody = $contentText
+          }
+        }
+      } catch {}
+      try {
         $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-        $responseBody = $reader.ReadToEnd()
+        $legacyBody = $reader.ReadToEnd()
+        if (-not [string]::IsNullOrWhiteSpace($legacyBody)) {
+          $responseBody = $legacyBody
+        }
       } catch {}
     }
 
@@ -171,19 +190,41 @@ function Try-ImportAndVerifyFromCookies {
   )
 
   $candidates = @(Get-CookieFileCandidates -AccountId $AccountId -CookieFileMap $CookieFileMap)
+  $attemptLogs = New-Object System.Collections.Generic.List[object]
+  if ($candidates.Length -gt 0) {
+    [void]$attemptLogs.Add([pscustomobject]@{
+      file = "<candidate-order>"
+      stage = 'discover'
+      error = ($candidates -join '; ')
+    })
+  }
   foreach ($path in $candidates) {
     if (-not (Test-Path -LiteralPath $path)) { continue }
 
     try {
       $raw = Get-Content -LiteralPath $path -Raw
-      if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+      if ([string]::IsNullOrWhiteSpace($raw)) {
+        [void]$attemptLogs.Add([pscustomobject]@{ file = $path; stage = 'read'; error = 'empty file' })
+        continue
+      }
       $parsed = $raw | ConvertFrom-Json
       $cookies = Normalize-CookieArray -Parsed $parsed
-      if ($cookies.Length -eq 0) { continue }
+      if ($cookies.Length -eq 0) {
+        [void]$attemptLogs.Add([pscustomobject]@{ file = $path; stage = 'parse'; error = 'no cookie array found' })
+        continue
+      }
 
       $body = $cookies | ConvertTo-Json -Depth 10 -Compress
       $import = Invoke-Api -Method "POST" -Uri "$BaseUrl/accounts/$AccountId/session" -BodyJson $body -AllowFailure
-      if ($import.PSObject.Properties.Name -contains '__failed') { continue }
+      if ($import.PSObject.Properties.Name -contains '__failed') {
+        [void]$attemptLogs.Add([pscustomobject]@{
+          file = $path
+          stage = 'import'
+          status = $import.status
+          error = [string]$import.body
+        })
+        continue
+      }
 
       $verify = Invoke-Api -Method "POST" -Uri "$BaseUrl/accounts/$AccountId/verify" -AllowFailure
       if (-not ($verify.PSObject.Properties.Name -contains '__failed')) {
@@ -191,15 +232,27 @@ function Try-ImportAndVerifyFromCookies {
           ok = $true
           cookieFile = $path
           verify = $verify
+          attempts = @($attemptLogs)
         }
       }
+      [void]$attemptLogs.Add([pscustomobject]@{
+        file = $path
+        stage = 'verify'
+        error = [string]$verify.body
+      })
     } catch {
+      [void]$attemptLogs.Add([pscustomobject]@{
+        file = $path
+        stage = 'exception'
+        error = $_.Exception.Message
+      })
       continue
     }
   }
 
   return [pscustomobject]@{
     ok = $false
+    attempts = @($attemptLogs)
   }
 }
 
@@ -266,6 +319,15 @@ foreach ($accountId in $targetAccountIds) {
       } else {
         $failed = $true
         Write-Host "FAILED: $($verify.body)"
+        if ($heal.attempts -and $heal.attempts.Length -gt 0) {
+          Write-Host "Self-heal attempts:"
+          foreach ($attempt in $heal.attempts) {
+            $statusInfo = if ($attempt.PSObject.Properties.Name -contains 'status' -and $attempt.status) { " status=$($attempt.status)" } else { "" }
+            Write-Host "  - file=$($attempt.file) stage=$($attempt.stage)$statusInfo error=$($attempt.error)"
+          }
+        } else {
+          Write-Host "Self-heal attempts: no cookie files were usable for this account."
+        }
         continue
       }
     } else {
