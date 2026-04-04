@@ -1430,6 +1430,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     }
 
     // W2 — Burn quota only after the send click succeeds.
+    let provisionalSendAccepted = false;
     let chatId = preResolvedChatId || (await resolveThreadIdAfterSend(page, 12000));
     if (!chatId) {
       logSendStep(accountId, 'thread id unresolved after URL probe; waiting on network probe');
@@ -1465,6 +1466,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
           `thread id unresolved, but send appears accepted (visible=${messageStillVisible}, composerCleared=${composerCleared}); returning provisional chatId=new`
         );
         chatId = 'new';
+        provisionalSendAccepted = true;
       } else {
         const unresolvedShot = await captureFailureScreenshot(page, accountId, 'thread-id-unresolved');
         const err = new Error(
@@ -1477,12 +1479,29 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       }
     }
 
-    const persisted =
+    let persisted =
       chatId === 'new'
         ? await confirmMessageVisibleInCurrentView(page, text, 15000)
         : await confirmMessagePersistedInThread(page, chatId, text, 30000);
+
+    if (!persisted && chatId === 'new' && provisionalSendAccepted) {
+      const composerClearedAfterSend = await isComposerDraftCleared(page);
+      const hasSendErrorBannerAfterSend = await detectSendErrorBanner(page);
+      if (!hasSendErrorBannerAfterSend && composerClearedAfterSend) {
+        logSendStep(
+          accountId,
+          'message not visible yet for provisional chatId=new, but composer remains clear with no send-error banner; accepting provisional delivery'
+        );
+        persisted = true;
+      }
+    }
+
     if (!persisted) {
-      const err = new Error('Message was not found in thread after send confirmation. Message may not be delivered.');
+      const persistedShot = await captureFailureScreenshot(page, accountId, 'message-not-found-after-send');
+      const err = new Error(
+        'Message was not found in thread after send confirmation. Message may not be delivered.' +
+        (persistedShot ? ` Screenshot: ${persistedShot}` : '')
+      );
       err.code = 'SEND_NOT_CONFIRMED';
       err.status = 502;
       throw err;
