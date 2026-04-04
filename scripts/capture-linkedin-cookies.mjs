@@ -439,8 +439,6 @@ async function waitForPageTargetWs(port, timeoutMs) {
   throw new Error('Timed out waiting for a LinkedIn page target in DevTools.');
 }
 
-const isAuthLikeUrl = isBlockedAuthPage;
-
 async function getLinkedInPageUrl(port) {
   const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
   if (!Array.isArray(targets)) return '';

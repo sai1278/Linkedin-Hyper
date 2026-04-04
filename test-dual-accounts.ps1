@@ -2,6 +2,8 @@ param(
   [string]$AccountIds = "",
   [string]$ProfileUrl = "",
   [string]$Text = "",
+  [string]$CookieDir = ".",
+  [string]$CookieFileMapJson = "",
   [string]$ApiKey = "dev-api-secret-key-change-in-production",
   [string]$RouteAuthToken = "",
   [string]$BaseUrl = "http://localhost:3001"
@@ -87,6 +89,120 @@ function Resolve-TargetAccountIds {
   throw "No active account sessions found. Import cookies first."
 }
 
+function Normalize-CookieArray {
+  param([Parameter(Mandatory = $true)]$Parsed)
+
+  if ($Parsed -is [System.Array]) {
+    return @($Parsed)
+  }
+
+  if ($Parsed -and $Parsed.PSObject -and ($Parsed.PSObject.Properties.Name -contains 'cookies') -and ($Parsed.cookies -is [System.Array])) {
+    return @($Parsed.cookies)
+  }
+
+  return @()
+}
+
+function Parse-CookieFileMap {
+  param([string]$RawJson)
+
+  if (-not $RawJson -or -not $RawJson.Trim()) {
+    return @{}
+  }
+
+  try {
+    $parsed = $RawJson | ConvertFrom-Json
+    $map = @{}
+    foreach ($prop in $parsed.PSObject.Properties) {
+      $key = [string]$prop.Name
+      $value = [string]$prop.Value
+      if (-not [string]::IsNullOrWhiteSpace($key) -and -not [string]::IsNullOrWhiteSpace($value)) {
+        $map[$key.Trim()] = $value.Trim()
+      }
+    }
+    return $map
+  } catch {
+    Write-Host "WARNING: invalid -CookieFileMapJson; ignoring map."
+    return @{}
+  }
+}
+
+function Get-CookieFileCandidates {
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountId,
+    [Parameter(Mandatory = $true)][hashtable]$CookieFileMap
+  )
+
+  $candidates = New-Object System.Collections.Generic.List[string]
+
+  if ($CookieFileMap.ContainsKey($AccountId)) {
+    $mapped = $CookieFileMap[$AccountId]
+    if (-not [string]::IsNullOrWhiteSpace($mapped)) {
+      $mappedPath = if ([System.IO.Path]::IsPathRooted($mapped)) { $mapped } else { Join-Path $CookieDir $mapped }
+      [void]$candidates.Add($mappedPath)
+    }
+  }
+
+  [void]$candidates.Add((Join-Path $CookieDir ("cookies-" + $AccountId + ".json")))
+
+  $fallbackFiles = @(Get-ChildItem -Path $CookieDir -Filter 'cookies-*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+  foreach ($file in $fallbackFiles) {
+    [void]$candidates.Add($file.FullName)
+  }
+
+  # De-dupe while preserving order
+  $seen = @{}
+  $result = New-Object System.Collections.Generic.List[string]
+  foreach ($path in $candidates) {
+    if ([string]::IsNullOrWhiteSpace($path)) { continue }
+    $full = [System.IO.Path]::GetFullPath($path)
+    if ($seen.ContainsKey($full)) { continue }
+    $seen[$full] = $true
+    [void]$result.Add($full)
+  }
+
+  return @($result)
+}
+
+function Try-ImportAndVerifyFromCookies {
+  param(
+    [Parameter(Mandatory = $true)][string]$AccountId,
+    [Parameter(Mandatory = $true)][hashtable]$CookieFileMap
+  )
+
+  $candidates = @(Get-CookieFileCandidates -AccountId $AccountId -CookieFileMap $CookieFileMap)
+  foreach ($path in $candidates) {
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+
+    try {
+      $raw = Get-Content -LiteralPath $path -Raw
+      if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+      $parsed = $raw | ConvertFrom-Json
+      $cookies = Normalize-CookieArray -Parsed $parsed
+      if ($cookies.Length -eq 0) { continue }
+
+      $body = $cookies | ConvertTo-Json -Depth 10 -Compress
+      $import = Invoke-Api -Method "POST" -Uri "$BaseUrl/accounts/$AccountId/session" -BodyJson $body -AllowFailure
+      if ($import.PSObject.Properties.Name -contains '__failed') { continue }
+
+      $verify = Invoke-Api -Method "POST" -Uri "$BaseUrl/accounts/$AccountId/verify" -AllowFailure
+      if (-not ($verify.PSObject.Properties.Name -contains '__failed')) {
+        return [pscustomobject]@{
+          ok = $true
+          cookieFile = $path
+          verify = $verify
+        }
+      }
+    } catch {
+      continue
+    }
+  }
+
+  return [pscustomobject]@{
+    ok = $false
+  }
+}
+
 function Get-ConnectionsFallbackFromActivity {
   param([string[]]$AccountIds)
 
@@ -120,6 +236,7 @@ function Get-ConnectionsFallbackFromActivity {
 }
 
 $targetAccountIds = Resolve-TargetAccountIds -ExplicitCsv $AccountIds
+$cookieFileMap = Parse-CookieFileMap -RawJson $CookieFileMapJson
 Write-Host "Testing accounts: $($targetAccountIds -join ', ')"
 
 $failed = $false
@@ -132,9 +249,30 @@ foreach ($accountId in $targetAccountIds) {
   Write-Host "1) Verify session"
   $verify = Invoke-Api -Method "POST" -Uri "$BaseUrl/accounts/$accountId/verify" -AllowFailure
   if ($verify.PSObject.Properties.Name -contains '__failed') {
-    $failed = $true
-    Write-Host "FAILED: $($verify.body)"
-    continue
+    $verifyBody = [string]$verify.body
+    $isRecoverableSessionFailure = (
+      $verifyBody -match 'NO_SESSION' -or
+      $verifyBody -match 'COOKIES_MISSING' -or
+      $verifyBody -match 'SESSION_EXPIRED' -or
+      $verifyBody -match 'AUTHENTICATED_STATE_NOT_REACHED'
+    )
+
+    if ($isRecoverableSessionFailure) {
+      Write-Host "Self-heal: re-importing cookies for $accountId from local cookie files..."
+      $heal = Try-ImportAndVerifyFromCookies -AccountId $accountId -CookieFileMap $cookieFileMap
+      if ($heal.ok) {
+        Write-Host "Self-heal success using: $($heal.cookieFile)"
+        $verify = $heal.verify
+      } else {
+        $failed = $true
+        Write-Host "FAILED: $($verify.body)"
+        continue
+      }
+    } else {
+      $failed = $true
+      Write-Host "FAILED: $($verify.body)"
+      continue
+    }
   }
   $verify | ConvertTo-Json -Depth 6 | Write-Host
 
