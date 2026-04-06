@@ -15,5 +15,7 @@ export async function POST(
   return forwardToBackend({
     method: 'POST',
     path: `/accounts/${accountId}/verify`,
+    // Verify can now take longer because we wait for feed/messaging auth state to settle.
+    timeoutMs: 240_000,
   });
 }
