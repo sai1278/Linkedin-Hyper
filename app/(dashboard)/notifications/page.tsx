@@ -9,24 +9,25 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { ExportButton } from '@/components/ui/ExportButton';
 
 export default function NotificationsPage() {
-  const [entries,  setEntries]  = useState<ActivityEntry[]>([]);
+  const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [tab,      setTab]      = useState<ActivityTab>('all');
-  const [loading,  setLoading]  = useState(true);
-  const [error,    setError]    = useState<string | null>(null);
+  const [tab, setTab] = useState<ActivityTab>('all');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const { accounts: accs } = await getAccounts();
       setAccounts(accs);
 
-      // Promise.all (NOT allSettled) — if any account fails, bubble the error
-      const logs = await Promise.all(
+      // Partial failures should not crash the page.
+      const settledLogs = await Promise.allSettled(
         accs.map((a) => getAccountActivity(a.id, 0, 100).then((r) => r.entries))
       );
 
-      const merged = logs
-        .flat()
+      const merged = settledLogs
+        .filter((result): result is PromiseFulfilledResult<ActivityEntry[]> => result.status === 'fulfilled')
+        .flatMap((result) => result.value)
         .sort((a, b) => b.timestamp - a.timestamp);
 
       setEntries(merged);
@@ -40,11 +41,12 @@ export default function NotificationsPage() {
 
   useEffect(() => {
     void load();
-    const interval = setInterval(() => void load(), 60_000);
+    const interval = setInterval(() => {
+      void load();
+    }, 60_000);
     return () => clearInterval(interval);
   }, [load]);
 
-  // Filter in the page — pass pre-filtered to NotificationFeed
   const filtered = tab === 'all' ? entries : entries.filter((e) => e.type === tab);
 
   if (loading) {
@@ -61,8 +63,10 @@ export default function NotificationsPage() {
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-base)' }}>
-      {/* Header with export button */}
-      <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: 'var(--border-color, var(--border))' }}>
+      <div
+        className="flex items-center justify-between px-6 py-4 border-b"
+        style={{ borderColor: 'var(--border-color, var(--border))' }}
+      >
         <div>
           <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
             Activity
@@ -71,14 +75,9 @@ export default function NotificationsPage() {
             {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
           </p>
         </div>
-        <ExportButton 
-          type="activity" 
-          label="Export Activity"
-          size="sm"
-        />
+        <ExportButton type="activity" label="Export Activity" size="sm" />
       </div>
-      
-      {/* Feed */}
+
       <div className="flex-1 overflow-hidden">
         <NotificationFeed
           entries={filtered}

@@ -33,11 +33,16 @@ export interface Conversation {
 }
 
 export interface ActivityEntry {
-  type: 'messageSent' | 'connectionSent' | 'profileViewed';
+  type: string;
   accountId: string;
-  targetName: string;
-  targetProfileUrl: string;
+  targetName?: string;
+  targetProfileUrl?: string;
   message?: string;
+  stats?: {
+    conversations?: number;
+    newMessages?: number;
+    errors?: number;
+  };
   timestamp: number;   // unix ms
 }
 
@@ -55,4 +60,4 @@ export interface JobResult {
   error?: string;
 }
 
-export type ActivityTab = 'all' | 'messageSent' | 'connectionSent' | 'profileViewed';
+export type ActivityTab = 'all' | 'messageSent' | 'connectionSent' | 'profileViewed' | 'sync';

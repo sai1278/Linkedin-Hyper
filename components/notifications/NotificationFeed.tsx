@@ -9,6 +9,7 @@ const TABS: { id: ActivityTab; label: string }[] = [
   { id: 'messageSent',    label: 'Messages'      },
   { id: 'connectionSent', label: 'Connections'   },
   { id: 'profileViewed',  label: 'Profile Views' },
+  { id: 'sync',           label: 'Sync'          },
 ];
 
 interface NotificationFeedProps {

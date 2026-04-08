@@ -1,8 +1,8 @@
-function normalizeWhitespace(value: string): string {
+function normalizeWhitespace(value: string | undefined): string {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function isGenericUiLabel(value: string): boolean {
+function isGenericUiLabel(value: string | undefined): boolean {
   const normalized = normalizeWhitespace(value).toLowerCase();
   if (!normalized) return true;
 
@@ -25,7 +25,7 @@ function isGenericUiLabel(value: string): boolean {
   return blocked.has(normalized);
 }
 
-export function deriveDisplayName(name: string, profileUrl: string): string {
+export function deriveDisplayName(name?: string, profileUrl?: string): string {
   const normalized = normalizeWhitespace(name);
   if (normalized && !isGenericUiLabel(normalized)) {
     return normalized;
