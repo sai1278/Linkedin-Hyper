@@ -433,6 +433,8 @@ function isRecoverableBrowserError(err) {
   return (
     msg === 'operation failed' ||
     msg.includes('operation failed') ||
+    msg.includes('err_too_many_redirects') ||
+    msg.includes('too many redirects') ||
     msg.includes('session closed') ||
     msg.includes('frame was detached') ||
     msg.includes('target page, context or browser has been closed') ||
@@ -1549,6 +1551,14 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     }
 
     const msg = String(err?.message || err || '');
+    if (msg.toLowerCase().includes('err_too_many_redirects') || msg.toLowerCase().includes('too many redirects')) {
+      const wrapped = new Error(
+        `LinkedIn redirected too many times for account ${accountId}. Session is likely invalid or challenged. Re-import cookies and retry.`
+      );
+      wrapped.code = 'SESSION_EXPIRED';
+      wrapped.status = 401;
+      throw wrapped;
+    }
     if (msg.toLowerCase().includes('operation failed')) {
       const wrapped = new Error(
         'LinkedIn UI transient failure while sending message. Please retry once with fresh cookies.'

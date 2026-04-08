@@ -826,6 +826,10 @@ async function runJob(name, data, timeoutMs = 120_000) {
       } else if (reason.includes('Session expired for account')) {
         failErr.code = 'SESSION_EXPIRED';
         failErr.status = 401;
+      } else if (lowerReason.includes('err_too_many_redirects') || lowerReason.includes('too many redirects')) {
+        failErr.code = 'SESSION_EXPIRED';
+        failErr.status = 401;
+        failErr.message = 'LinkedIn redirected too many times. Session is likely invalid or challenged; re-import cookies.';
       } else if (reason.includes('No session for account')) {
         failErr.code = 'NO_SESSION';
         failErr.status = 401;
