@@ -119,8 +119,19 @@ function isStrongMemberUrl(url) {
   if (isBlockedAuthPage(value)) return false;
   try {
     const parsed = new URL(value);
-    const path = String(parsed.pathname || '/').toLowerCase();
-    return path === '/feed/' || path.startsWith('/feed') || path.startsWith('/messaging');
+    const memberPath = String(parsed.pathname || '/').toLowerCase();
+    return (
+      memberPath === '/feed/' ||
+      memberPath.startsWith('/feed') ||
+      memberPath.startsWith('/messaging') ||
+      memberPath.startsWith('/mynetwork') ||
+      memberPath.startsWith('/notifications') ||
+      memberPath.startsWith('/jobs') ||
+      memberPath.startsWith('/search') ||
+      memberPath.startsWith('/in/') ||
+      memberPath.startsWith('/sales/') ||
+      memberPath.startsWith('/groups/')
+    );
   } catch {
     return false;
   }
@@ -246,80 +257,122 @@ async function verifySession({ accountId, proxyUrl }) {
     }
 
     await context.addCookies(cookies);
-    page = await context.newPage();
+    let lastVerifyError = null;
+    const maxVerifyAttempts = 2;
 
-    // Check feed first for baseline auth signal.
-    const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
-    await delay(600, 1200);
-    const feedUrl = page.url();
-    const feedState = await waitForSettledAuthState(page, 20000);
+    for (let attempt = 1; attempt <= maxVerifyAttempts; attempt += 1) {
+      page = await context.newPage();
 
-    // Messaging must be accessible for automation sends.
-    const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
-    await delay(600, 1200);
-    const messagingUrl = page.url();
-    const messagingState = await waitForSettledAuthState(page, 20000);
-    const contextCookies = await context.cookies().catch(() => []);
-    const cookieFlags = getCookieFlags(contextCookies);
+      // Check feed first for baseline auth signal.
+      const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
+      await delay(600, 1200);
+      const feedUrl = page.url();
+      const feedState = await waitForSettledAuthState(page, 20000);
 
-    // LinkedIn UI markers can be flaky; accept strong member URL signal when required cookies exist.
-    const feedAuthenticated = (
-      feedResult.ok &&
-      !isBlockedAuthPage(feedUrl) &&
-      hasRequiredAuthCookies(cookieFlags) &&
-      (isAuthenticatedLinkedInPage(feedState) || isStrongMemberUrl(feedUrl))
-    );
+      // Messaging must be accessible for automation sends.
+      const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
+      await delay(600, 1200);
+      const messagingUrl = page.url();
+      const messagingState = await waitForSettledAuthState(page, 20000);
+      const contextCookies = await context.cookies().catch(() => []);
+      const cookieFlags = getCookieFlags(contextCookies);
 
-    const messagingAuthenticated = (
-      messagingResult.ok &&
-      !isBlockedAuthPage(messagingUrl) &&
-      hasRequiredAuthCookies(cookieFlags) &&
-      (isAuthenticatedLinkedInPage(messagingState) || isStrongMemberUrl(messagingUrl))
-    );
+      // LinkedIn UI markers can be flaky; accept strong member URL signal when required cookies exist.
+      const feedAuthenticated = (
+        feedResult.ok &&
+        !isBlockedAuthPage(feedUrl) &&
+        hasRequiredAuthCookies(cookieFlags) &&
+        !isLoggedOutState(feedState) &&
+        (isAuthenticatedLinkedInPage(feedState) || isStrongMemberUrl(feedUrl))
+      );
 
-    if (messagingAuthenticated || feedAuthenticated) {
-      if (process.env.REFRESH_SESSION_COOKIES === '1') {
-        await saveCookies(accountId, await context.cookies(), {
-          skipIfMissingAuthCookies: true,
-          source: 'verifySession',
-        });
-      }
-      return {
-        ok: true,
-        url: messagingAuthenticated ? messagingUrl : feedUrl,
-        via: messagingAuthenticated
+      const messagingAuthenticated = (
+        messagingResult.ok &&
+        !isBlockedAuthPage(messagingUrl) &&
+        hasRequiredAuthCookies(cookieFlags) &&
+        !isLoggedOutState(messagingState) &&
+        (isAuthenticatedLinkedInPage(messagingState) || isStrongMemberUrl(messagingUrl))
+      );
+
+      // Soft fallback: member cookies + no logged-out markers + non-blocked page.
+      const feedSoftAuthenticated = (
+        feedResult.ok &&
+        !isBlockedAuthPage(feedUrl) &&
+        hasRequiredAuthCookies(cookieFlags) &&
+        !isLoggedOutState(feedState)
+      );
+
+      const messagingSoftAuthenticated = (
+        messagingResult.ok &&
+        !isBlockedAuthPage(messagingUrl) &&
+        hasRequiredAuthCookies(cookieFlags) &&
+        !isLoggedOutState(messagingState)
+      );
+
+      if (messagingAuthenticated || feedAuthenticated || messagingSoftAuthenticated || feedSoftAuthenticated) {
+        if (process.env.REFRESH_SESSION_COOKIES === '1') {
+          await saveCookies(accountId, await context.cookies(), {
+            skipIfMissingAuthCookies: true,
+            source: 'verifySession',
+          });
+        }
+        const via = messagingAuthenticated
           ? (feedAuthenticated ? 'feed+messaging' : 'messaging-only')
-          : 'feed-only',
+          : messagingSoftAuthenticated
+            ? 'messaging-soft'
+            : feedAuthenticated
+              ? 'feed-only'
+              : 'feed-soft';
+        return {
+          ok: true,
+          url: (messagingAuthenticated || messagingSoftAuthenticated) ? messagingUrl : feedUrl,
+          via,
+        };
+      }
+
+      const details = {
+        feed: { ok: feedResult.ok, url: feedUrl, error: feedResult.error || null },
+        messaging: { ok: messagingResult.ok, url: messagingUrl, error: messagingResult.error || null },
+        authState: {
+          feed: feedState,
+          messaging: messagingState,
+        },
+        cookieFlags,
+        attempt,
       };
+      const failure = classifyVerifyFailure({
+        accountId,
+        feedUrl,
+        messagingUrl,
+        feedState,
+        messagingState,
+        cookieFlags,
+      });
+
+      const screenshot = await captureFailureScreenshot(page, accountId, `verify-${failure.code.toLowerCase()}-attempt-${attempt}`);
+      const err = new Error(failure.message);
+      if (screenshot) {
+        err.message += ` Screenshot: ${screenshot}`;
+      }
+      err.code = failure.code;
+      err.status = 401;
+      err.details = details;
+      lastVerifyError = err;
+
+      // Retry once for this flaky LinkedIn state before failing.
+      if (failure.code === 'AUTHENTICATED_STATE_NOT_REACHED' && attempt < maxVerifyAttempts) {
+        await page.close().catch(() => {});
+        page = null;
+        await delay(1200, 1800);
+        continue;
+      }
+
+      throw err;
     }
 
-    const details = {
-      feed: { ok: feedResult.ok, url: feedUrl, error: feedResult.error || null },
-      messaging: { ok: messagingResult.ok, url: messagingUrl, error: messagingResult.error || null },
-      authState: {
-        feed: feedState,
-        messaging: messagingState,
-      },
-      cookieFlags,
-    };
-    const failure = classifyVerifyFailure({
-      accountId,
-      feedUrl,
-      messagingUrl,
-      feedState,
-      messagingState,
-      cookieFlags,
-    });
-
-    const screenshot = await captureFailureScreenshot(page, accountId, `verify-${failure.code.toLowerCase()}`);
-    const err = new Error(failure.message);
-    if (screenshot) {
-      err.message += ` Screenshot: ${screenshot}`;
+    if (lastVerifyError) {
+      throw lastVerifyError;
     }
-    err.code = failure.code;
-    err.status = 401;
-    err.details = details;
-    throw err;
   } finally {
     if (page) await page.close().catch(() => {});
   }
