@@ -61,16 +61,16 @@
   --badge-purple:  #183257;
   --badge-text:    #b8ddff;
   
-  /* New Semantic Variables (Light Theme - can be toggled) */
-  --bg-primary: var(--color-gray-50);
-  --bg-secondary: #ffffff;
-  --bg-tertiary: var(--color-gray-100);
-  --border-color: var(--color-gray-200);
-  --border-color-hover: var(--color-gray-300);
+  /* Semantic Surface Variables (dark dashboard skin) */
+  --bg-primary: #0a1426;
+  --bg-secondary: #0f1a2e;
+  --bg-tertiary: #162640;
+  --border-color: #2c4c79;
+  --border-color-hover: #3a5f93;
   
-  --text-primary-new: var(--color-gray-900);
-  --text-secondary: var(--color-gray-700);
-  --text-muted-new: var(--color-gray-500);
+  --text-primary-new: #eaf2ff;
+  --text-secondary: #c0d2ec;
+  --text-muted-new: #91a7c7;
   
   /* Typography Scale */
   --font-size-xs: 0.75rem;    /* 12px */
