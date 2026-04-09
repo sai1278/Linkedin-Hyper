@@ -31,17 +31,17 @@ export default function InboxPage() {
   const [error,         setError]         = useState<string | null>(null);
   const [isLive,        setIsLive]        = useState(false);
 
-  // B2 — Accounts are stable; fetch once on mount (5-min ISR cache in api-client).
+  // B2 - Accounts are stable; fetch once on mount (5-min ISR cache in api-client).
   const loadAccounts = useCallback(async () => {
     try {
       const { accounts: accs } = await getAccounts();
       setAccounts(accs);
     } catch {
-      // non-fatal — account list stays empty, filter pills just won't show
+      // non-fatal - account list stays empty, filter pills just won't show
     }
   }, []);
 
-  // B2 — Inbox is real-time; poll separately on its own interval.
+  // B2 - Inbox is real-time; poll separately on its own interval.
   const loadInbox = useCallback(async () => {
     try {
       const inboxData = await getUnifiedInbox();
@@ -124,7 +124,7 @@ export default function InboxPage() {
         messages: hasThreadMessages ? thread.messages : fallbackMessages,
       });
     } catch {
-      // ignore — thread shows with previous messages or empty
+      // ignore - thread shows with previous messages or empty
     }
   }
 
@@ -133,7 +133,7 @@ export default function InboxPage() {
       <div className="flex-1 flex flex-col items-center justify-center gap-3 h-full">
         <Spinner size="lg" />
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                    Fetching messages from all accounts...
+          Fetching messages from all accounts...
         </p>
       </div>
     );
@@ -145,15 +145,27 @@ export default function InboxPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header with live indicator */}
-      <div className="flex items-center justify-between px-6 py-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
+      <div
+        className="flex items-center justify-between px-6 py-3 border-b"
+        style={{
+          borderColor: 'var(--border-color)',
+          background:
+            'linear-gradient(180deg, rgba(43, 184, 255, 0.12) 0%, rgba(43, 184, 255, 0.02) 100%)',
+        }}
+      >
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
+          <h1 className="text-xl font-display font-semibold" style={{ color: 'var(--text-primary)' }}>
             Inbox
           </h1>
         </div>
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
+          <div
+            className="flex items-center gap-2 px-3 py-1 rounded-full"
+            style={{
+              background: 'rgba(15, 33, 58, 0.62)',
+              border: '1px solid rgba(84, 128, 176, 0.5)',
+            }}
+          >
             <div 
               className="w-2 h-2 rounded-full" 
               style={{ 
@@ -165,8 +177,7 @@ export default function InboxPage() {
               {isLive ? 'Live' : 'Offline'}
             </span>
           </div>
-          
-          {/* Export button */}
+
           <ExportButton 
             type="messages" 
             accountId={filter !== 'all' ? filter : undefined}

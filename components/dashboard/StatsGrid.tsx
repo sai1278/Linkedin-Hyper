@@ -18,29 +18,29 @@ export function StatsGrid({ stats }: StatsGridProps) {
       label: 'Messages Sent',
       value: stats.totalMessages,
       icon: MessageSquare,
-      color: '#6c63ff',
-      bgColor: 'rgba(108, 99, 255, 0.1)',
+      color: '#2bb8ff',
+      bgColor: 'rgba(43, 184, 255, 0.14)',
     },
     {
       label: 'Connections Sent',
       value: stats.totalConnections,
       icon: Users,
       color: '#22c55e',
-      bgColor: 'rgba(34, 197, 94, 0.1)',
+      bgColor: 'rgba(34, 197, 94, 0.14)',
     },
     {
       label: 'Active Accounts',
       value: stats.activeAccounts,
       icon: TrendingUp,
       color: '#f59e0b',
-      bgColor: 'rgba(245, 158, 11, 0.1)',
+      bgColor: 'rgba(245, 158, 11, 0.14)',
     },
     {
       label: 'Total Activity',
       value: stats.totalActivity,
       icon: Activity,
-      color: '#3b82f6',
-      bgColor: 'rgba(59, 130, 246, 0.1)',
+      color: '#5ca1ff',
+      bgColor: 'rgba(92, 161, 255, 0.14)',
     },
   ];
 
@@ -49,8 +49,13 @@ export function StatsGrid({ stats }: StatsGridProps) {
       {cards.map((card) => (
         <div
           key={card.label}
-          className="rounded-xl border p-6 transition-all hover:border-opacity-50"
-          style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}
+          className="rounded-2xl border p-6 transition-all"
+          style={{
+            background:
+              'linear-gradient(180deg, rgba(31, 57, 97, 0.32) 0%, rgba(16, 28, 49, 0.58) 100%)',
+            borderColor: 'var(--border)',
+            boxShadow: '0 14px 34px rgba(6, 10, 19, 0.34)',
+          }}
         >
           <div className="flex items-start justify-between mb-4">
             <div

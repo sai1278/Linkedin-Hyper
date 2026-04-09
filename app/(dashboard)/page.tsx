@@ -81,24 +81,24 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>
+    <div className="px-6 py-8 md:px-8 max-w-7xl mx-auto space-y-8">
+      <div
+        className="rounded-2xl border p-6 md:p-7"
+        style={{
+          borderColor: 'var(--border)',
+          background:
+            'linear-gradient(140deg, rgba(43, 184, 255, 0.16) 0%, rgba(20, 33, 56, 0.7) 48%, rgba(14, 26, 46, 0.5) 100%)',
+        }}
+      >
+        <h1 className="text-3xl font-bold font-display" style={{ color: 'var(--text-primary)' }}>
           Dashboard
         </h1>
         <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
           Overview of your LinkedIn automation activity
         </p>
       </div>
-
-      {/* Stats Grid */}
       <StatsGrid stats={stats} />
-
-      {/* Account Status */}
       <AccountStatusRow accounts={accounts} />
-
-      {/* Recent Activity */}
       <RecentActivity activities={activities} />
     </div>
   );

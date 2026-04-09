@@ -47,19 +47,19 @@
   --color-info-700: #1d4ed8;
   
   /* Legacy Variables (Dark Theme - keeping for backward compatibility) */
-  --bg-base:       #0a0a0f;
-  --bg-panel:      #111118;
-  --bg-card:       #1a1a24;
-  --bg-hover:      #22222e;
-  --border:        #2a2a38;
-  --text-primary:  #e8e8f0;
-  --text-muted:    #7a7a9a;
-  --text-link:     #8b7cf8;
-  --accent:        #6c63ff;
-  --accent-hover:  #7c73ff;
-  --unread-dot:    #3b82f6;
-  --badge-purple:  #4c1d95;
-  --badge-text:    #c4b5fd;
+  --bg-base:       #060d19;
+  --bg-panel:      #0f1a2e;
+  --bg-card:       #162640;
+  --bg-hover:      #21385d;
+  --border:        #2c4c79;
+  --text-primary:  #eaf2ff;
+  --text-muted:    #91a7c7;
+  --text-link:     #79d0ff;
+  --accent:        #2bb8ff;
+  --accent-hover:  #57c8ff;
+  --unread-dot:    #2bb8ff;
+  --badge-purple:  #183257;
+  --badge-text:    #b8ddff;
   
   /* New Semantic Variables (Light Theme - can be toggled) */
   --bg-primary: var(--color-gray-50);
@@ -145,9 +145,26 @@ html, body {
 
 body {
   background-color: var(--bg-base);
+  background-image:
+    radial-gradient(1200px circle at 8% 8%, rgba(43, 184, 255, 0.14), transparent 60%),
+    radial-gradient(900px circle at 88% -20%, rgba(58, 109, 255, 0.18), transparent 58%),
+    linear-gradient(180deg, #0a1324 0%, #060d19 65%);
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-body), 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display), var(--font-body), sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.font-body {
+  font-family: var(--font-body), 'Segoe UI', sans-serif;
+}
+
+.font-display {
+  font-family: var(--font-display), var(--font-body), sans-serif;
 }
 
 /* Scrollbar styling */

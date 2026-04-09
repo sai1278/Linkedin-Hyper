@@ -21,7 +21,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
       <main className="flex-1 overflow-y-auto">
-        {children}
+        <div
+          className="min-h-full"
+          style={{
+            background:
+              'linear-gradient(180deg, rgba(26, 48, 85, 0.25) 0%, rgba(6, 13, 25, 0) 32%)',
+          }}
+        >
+          {children}
+        </div>
       </main>
     </div>
   );

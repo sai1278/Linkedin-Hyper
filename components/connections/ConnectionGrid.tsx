@@ -27,7 +27,6 @@ export function ConnectionGrid({
 }: ConnectionGridProps) {
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div
         className="flex items-center justify-between px-6 py-4"
         style={{ borderBottom: '1px solid var(--border)' }}
@@ -43,7 +42,7 @@ export function ConnectionGrid({
             {total}
           </span>
         </div>
-        {/* Search input */}
+
         <div
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
           style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
@@ -51,7 +50,7 @@ export function ConnectionGrid({
           <Search size={14} color="var(--text-muted)" />
           <input
             type="text"
-            placeholder="Search…"
+            placeholder="Search..."
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
             className="bg-transparent text-sm outline-none w-36"
@@ -60,7 +59,6 @@ export function ConnectionGrid({
         </div>
       </div>
 
-      {/* Account filter pills */}
       <div
         className="flex gap-2 px-6 py-3"
         style={{ borderBottom: '1px solid var(--border)' }}
@@ -73,11 +71,11 @@ export function ConnectionGrid({
               onClick={() => onFilterChange(acc)}
               className="px-3 py-1 rounded-full text-sm font-medium transition-colors"
               style={{
-                background:  isActive ? 'var(--accent)' : 'var(--bg-card)',
-                color:       isActive ? '#fff'          : 'var(--text-muted)',
-                border:      '1px solid',
+                background: isActive ? 'var(--accent)' : 'var(--bg-card)',
+                color: isActive ? '#fff' : 'var(--text-muted)',
+                border: '1px solid',
                 borderColor: isActive ? 'var(--accent)' : 'var(--border)',
-                cursor:      'pointer',
+                cursor: 'pointer',
               }}
             >
               {acc === 'all' ? 'All Accounts' : acc}
@@ -86,13 +84,10 @@ export function ConnectionGrid({
         })}
       </div>
 
-      {/* Table */}
       <div className="flex-1 overflow-y-auto">
         {connections.length === 0 ? (
           <div className="flex items-center justify-center h-40">
-            <p style={{ color: 'var(--text-muted)' }}>
-              No connections found yet
-            </p>
+            <p style={{ color: 'var(--text-muted)' }}>No connections found yet</p>
           </div>
         ) : (
           <table className="w-full" style={{ borderCollapse: 'collapse' }}>
@@ -113,17 +108,13 @@ export function ConnectionGrid({
               {connections.map((conn, idx) => (
                 <tr
                   key={`${conn.accountId}-${conn.profileUrl}-${idx}`}
-                  // F2 — CSS hover instead of direct style mutation (no layout thrash)
                   className="hover:bg-[var(--bg-hover)] transition-colors"
                   style={{ borderBottom: '1px solid var(--border)' }}
                 >
                   <td className="px-6 py-3">
                     <div className="flex items-center gap-3">
                       <Avatar name={conn.name} size="sm" />
-                      <span
-                        className="text-sm font-medium"
-                        style={{ color: 'var(--text-primary)' }}
-                      >
+                      <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
                         {conn.name}
                       </span>
                     </div>
@@ -133,7 +124,7 @@ export function ConnectionGrid({
                   </td>
                   <td className="px-6 py-3">
                     <span className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                      {conn.connectedAt ? timeAgo(conn.connectedAt) : '—'}
+                      {conn.connectedAt ? timeAgo(conn.connectedAt) : '-'}
                     </span>
                   </td>
                   <td className="px-6 py-3">
@@ -149,7 +140,7 @@ export function ConnectionGrid({
                         View
                       </a>
                     ) : (
-                      <span style={{ color: 'var(--text-muted)' }}>—</span>
+                      <span style={{ color: 'var(--text-muted)' }}>-</span>
                     )}
                   </td>
                 </tr>
