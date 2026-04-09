@@ -67,7 +67,8 @@ export function MessageThread({ conversation, onMessageSent }: MessageThreadProp
     );
   }
 
-  const { participant, accountId, messages } = conversation;
+  const activeConversation: Conversation = conversation;
+  const { participant, accountId, messages } = activeConversation;
 
   async function handleSend(text: string) {
     const optimistic: Message = {
@@ -79,15 +80,15 @@ export function MessageThread({ conversation, onMessageSent }: MessageThreadProp
     };
 
     const updatedConversation: Conversation = {
-      ...conversation,
-      messages: [...conversation.messages, optimistic],
+      ...activeConversation,
+      messages: [...activeConversation.messages, optimistic],
       lastMessage: { text, sentAt: Date.now(), sentByMe: true },
     };
 
     onMessageSent(updatedConversation);
 
     try {
-      await sendMessage(accountId, conversation.conversationId, text);
+      await sendMessage(accountId, activeConversation.conversationId, text);
     } catch (error) {
       const withoutOptimistic = updatedConversation.messages.filter((m) => m.id !== optimistic.id);
       const fallbackLast = withoutOptimistic[withoutOptimistic.length - 1];
@@ -101,7 +102,7 @@ export function MessageThread({ conversation, onMessageSent }: MessageThreadProp
               sentAt: fallbackLast.sentAt,
               sentByMe: fallbackLast.sentByMe,
             }
-          : conversation.lastMessage,
+          : activeConversation.lastMessage,
       });
 
       toast.error(error instanceof Error ? error.message : 'Failed to send message');
