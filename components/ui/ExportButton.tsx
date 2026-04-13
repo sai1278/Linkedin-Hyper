@@ -93,7 +93,7 @@ export function ExportButton({
 
   const variantStyles = {
     default: {
-      backgroundColor: 'var(--color-primary-500, #3b82f6)',
+      backgroundColor: 'var(--accent)',
       color: '#ffffff',
       border: 'none',
     },
@@ -121,11 +121,18 @@ export function ExportButton({
           opacity: isExporting ? 0.6 : 1,
         }}
         onMouseEnter={(e) => {
-          if (!isExporting && variant === 'outline') {
+          if (isExporting) return;
+          if (variant === 'default') {
+            e.currentTarget.style.backgroundColor = 'var(--accent-hover)';
+          }
+          if (variant === 'outline') {
             e.currentTarget.style.backgroundColor = 'var(--color-gray-50, var(--bg-hover))';
           }
         }}
         onMouseLeave={(e) => {
+          if (variant === 'default') {
+            e.currentTarget.style.backgroundColor = 'var(--accent)';
+          }
           if (variant === 'outline') {
             e.currentTarget.style.backgroundColor = 'transparent';
           }
@@ -182,7 +189,7 @@ export function ExportButton({
                 e.currentTarget.style.backgroundColor = 'transparent';
               }}
             >
-              <FileJson size={16} style={{ color: 'var(--color-primary-500, #3b82f6)' }} />
+              <FileJson size={16} style={{ color: 'var(--accent)' }} />
               <span>Export as JSON</span>
             </button>
           </div>

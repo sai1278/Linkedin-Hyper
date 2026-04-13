@@ -24,8 +24,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div
           className="min-h-full"
           style={{
-            background:
-              'linear-gradient(180deg, rgba(26, 48, 85, 0.25) 0%, rgba(6, 13, 25, 0) 32%)',
+            background: 'var(--bg-primary)',
           }}
         >
           {children}

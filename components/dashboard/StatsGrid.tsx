@@ -18,8 +18,8 @@ export function StatsGrid({ stats }: StatsGridProps) {
       label: 'Messages Sent',
       value: stats.totalMessages,
       icon: MessageSquare,
-      color: '#2bb8ff',
-      bgColor: 'rgba(43, 184, 255, 0.14)',
+      color: 'var(--accent)',
+      bgColor: 'var(--bg-hover)',
     },
     {
       label: 'Connections Sent',
@@ -32,15 +32,15 @@ export function StatsGrid({ stats }: StatsGridProps) {
       label: 'Active Accounts',
       value: stats.activeAccounts,
       icon: TrendingUp,
-      color: '#f59e0b',
-      bgColor: 'rgba(245, 158, 11, 0.14)',
+      color: 'var(--accent)',
+      bgColor: 'var(--bg-hover)',
     },
     {
       label: 'Total Activity',
       value: stats.totalActivity,
       icon: Activity,
-      color: '#5ca1ff',
-      bgColor: 'rgba(92, 161, 255, 0.14)',
+      color: 'var(--accent)',
+      bgColor: 'var(--bg-hover)',
     },
   ];
 
@@ -51,10 +51,9 @@ export function StatsGrid({ stats }: StatsGridProps) {
           key={card.label}
           className="rounded-2xl border p-6 transition-all"
           style={{
-            background:
-              'linear-gradient(180deg, rgba(31, 57, 97, 0.32) 0%, rgba(16, 28, 49, 0.58) 100%)',
+            background: 'var(--bg-panel)',
             borderColor: 'var(--border)',
-            boxShadow: '0 14px 34px rgba(6, 10, 19, 0.34)',
+            boxShadow: 'var(--shadow-sm)',
           }}
         >
           <div className="flex items-start justify-between mb-4">

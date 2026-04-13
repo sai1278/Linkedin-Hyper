@@ -86,8 +86,7 @@ export default function DashboardPage() {
         className="rounded-2xl border p-6 md:p-7"
         style={{
           borderColor: 'var(--border)',
-          background:
-            'linear-gradient(140deg, rgba(43, 184, 255, 0.16) 0%, rgba(20, 33, 56, 0.7) 48%, rgba(14, 26, 46, 0.5) 100%)',
+          background: 'var(--bg-secondary)',
         }}
       >
         <h1 className="text-3xl font-bold font-display" style={{ color: 'var(--text-primary)' }}>

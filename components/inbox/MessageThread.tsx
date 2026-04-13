@@ -117,8 +117,7 @@ export function MessageThread({ conversation, onMessageSent }: MessageThreadProp
         className="flex items-center justify-between px-6 py-4 border-b"
         style={{
           borderColor: 'var(--border-color, var(--border))',
-          background:
-            'linear-gradient(180deg, rgba(43, 184, 255, 0.11) 0%, rgba(43, 184, 255, 0.02) 100%)',
+          background: 'var(--bg-secondary)',
         }}
       >
         <div className="flex items-center gap-3 min-w-0">
@@ -140,8 +139,7 @@ export function MessageThread({ conversation, onMessageSent }: MessageThreadProp
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-6 py-6"
         style={{
-          background:
-            'radial-gradient(1000px circle at 0% 0%, rgba(43, 184, 255, 0.08), transparent 54%), var(--bg-primary, var(--bg-base))',
+          background: 'var(--bg-primary, var(--bg-base))',
         }}
       >
         {groupedMessages.map((group, groupIndex) => (
@@ -163,9 +161,9 @@ export function MessageThread({ conversation, onMessageSent }: MessageThreadProp
           }}
           className="absolute bottom-24 right-8 px-4 py-2 rounded-full shadow-lg transition-all text-sm font-medium"
           style={{
-            background: 'linear-gradient(135deg, #1d8fff 0%, #2bb8ff 100%)',
+            background: 'var(--accent)',
             color: 'white',
-            boxShadow: '0 10px 24px rgba(20, 126, 203, 0.45)',
+            boxShadow: 'var(--shadow-sm)',
           }}
         >
           Jump to latest
@@ -254,14 +252,12 @@ function MessageBubble({
         }`}
         style={{
           background: isSentByMe
-            ? 'linear-gradient(135deg, #1f8fff 0%, #2bb8ff 100%)'
-            : 'var(--bg-card, var(--color-gray-100))',
+            ? 'var(--accent)'
+            : 'var(--bg-card)',
           color: isSentByMe ? '#ffffff' : 'var(--text-primary-new, var(--text-primary))',
           maxWidth: '100%',
           wordBreak: 'break-word',
-          boxShadow: isSentByMe
-            ? '0 10px 20px rgba(11, 89, 150, 0.35)'
-            : '0 6px 14px rgba(5, 10, 19, 0.2)',
+          boxShadow: 'var(--shadow-sm)',
         }}
       >
         {text}
@@ -272,7 +268,7 @@ function MessageBubble({
           <span className="text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
             {formatRelativeTime(sentAt)}
           </span>
-          {isSentByMe && <CheckCheck size={14} style={{ color: 'var(--color-primary-500, #3b82f6)' }} />}
+          {isSentByMe && <CheckCheck size={14} style={{ color: 'var(--accent)' }} />}
         </div>
       )}
     </div>

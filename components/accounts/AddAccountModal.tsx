@@ -298,7 +298,7 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts, in
                           {validation.hasLiAt ? (
                             <Check size={16} className="text-green-500" />
                           ) : (
-                            <X size={16} className="text-red-500" />
+                            <X size={16} style={{ color: 'var(--color-error-500)' }} />
                           )}
                           <span className="text-sm" style={{ color: validation.hasLiAt ? '#22c55e' : '#ef4444' }}>
                             li_at cookie
@@ -308,7 +308,7 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts, in
                           {validation.hasJSessionId ? (
                             <Check size={16} className="text-green-500" />
                           ) : (
-                            <X size={16} className="text-red-500" />
+                            <X size={16} style={{ color: 'var(--color-error-500)' }} />
                           )}
                           <span className="text-sm" style={{ color: validation.hasJSessionId ? '#22c55e' : '#ef4444' }}>
                             JSESSIONID cookie
@@ -318,7 +318,7 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts, in
                         {validation.errors.length > 0 && (
                           <div className="p-3 rounded-lg" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444' }}>
                             {validation.errors.map((err, i) => (
-                              <p key={i} className="text-sm text-red-400">{err}</p>
+                              <p key={i} className="text-sm" style={{ color: 'var(--color-error-500)' }}>{err}</p>
                             ))}
                           </div>
                         )}
@@ -326,7 +326,7 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts, in
                         {validation.warnings.length > 0 && (
                           <div className="p-3 rounded-lg" style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid #f59e0b' }}>
                             {validation.warnings.map((warn, i) => (
-                              <p key={i} className="text-sm text-yellow-400">{warn}</p>
+                              <p key={i} className="text-sm" style={{ color: 'var(--color-warning-500)' }}>{warn}</p>
                             ))}
                           </div>
                         )}
@@ -443,7 +443,7 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts, in
                     className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
                     style={{ background: 'rgba(239, 68, 68, 0.1)' }}
                   >
-                    <X size={32} className="text-red-500" />
+                    <X size={32} style={{ color: 'var(--color-error-500)' }} />
                   </div>
                   <p className="text-lg font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
                     Verification Failed

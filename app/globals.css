@@ -6,28 +6,28 @@
   /* Modern Design System - Professional Color Palette */
   
   /* Primary Colors (Blue) */
-  --color-primary-50: #eff6ff;
-  --color-primary-100: #dbeafe;
-  --color-primary-200: #bfdbfe;
-  --color-primary-300: #93c5fd;
-  --color-primary-400: #60a5fa;
-  --color-primary-500: #3b82f6;
-  --color-primary-600: #2563eb;
-  --color-primary-700: #1d4ed8;
-  --color-primary-800: #1e40af;
-  --color-primary-900: #1e3a8a;
+  --color-primary-50: #e7f3ff;
+  --color-primary-100: #d8ebff;
+  --color-primary-200: #bddcff;
+  --color-primary-300: #93c2ff;
+  --color-primary-400: #5da0ff;
+  --color-primary-500: #1877f2;
+  --color-primary-600: #166fe5;
+  --color-primary-700: #125dc0;
+  --color-primary-800: #0f4b9a;
+  --color-primary-900: #0b3a77;
   
   /* Gray/Neutral Colors */
-  --color-gray-50: #f9fafb;
-  --color-gray-100: #f3f4f6;
-  --color-gray-200: #e5e7eb;
-  --color-gray-300: #d1d5db;
-  --color-gray-400: #9ca3af;
-  --color-gray-500: #6b7280;
-  --color-gray-600: #4b5563;
-  --color-gray-700: #374151;
-  --color-gray-800: #1f2937;
-  --color-gray-900: #111827;
+  --color-gray-50: #f0f2f5;
+  --color-gray-100: #eef0f2;
+  --color-gray-200: #dadde1;
+  --color-gray-300: #ccd0d5;
+  --color-gray-400: #b0b3b8;
+  --color-gray-500: #65676b;
+  --color-gray-600: #4e4f50;
+  --color-gray-700: #3a3b3c;
+  --color-gray-800: #242526;
+  --color-gray-900: #050505;
   
   /* Semantic Colors */
   --color-success-50: #f0fdf4;
@@ -42,35 +42,36 @@
   --color-warning-500: #f59e0b;
   --color-warning-700: #b45309;
   
-  --color-info-50: #eff6ff;
-  --color-info-500: #3b82f6;
-  --color-info-700: #1d4ed8;
+  --color-info-50: #e7f3ff;
+  --color-info-500: #1877f2;
+  --color-info-700: #166fe5;
   
-  /* Legacy Variables (Dark Theme - keeping for backward compatibility) */
-  --bg-base:       #060d19;
-  --bg-panel:      #0f1a2e;
-  --bg-card:       #162640;
-  --bg-hover:      #21385d;
-  --border:        #2c4c79;
-  --text-primary:  #eaf2ff;
-  --text-muted:    #91a7c7;
-  --text-link:     #79d0ff;
-  --accent:        #2bb8ff;
-  --accent-hover:  #57c8ff;
-  --unread-dot:    #2bb8ff;
-  --badge-purple:  #183257;
-  --badge-text:    #b8ddff;
+  /* Legacy Variables */
+  --bg-base:       #f0f2f5;
+  --bg-panel:      #ffffff;
+  --bg-card:       #ffffff;
+  --bg-elevated:   #e7f3ff;
+  --bg-hover:      #e7f3ff;
+  --border:        #dadde1;
+  --text-primary:  #050505;
+  --text-muted:    #65676b;
+  --text-link:     #1877f2;
+  --accent:        #1877f2;
+  --accent-hover:  #166fe5;
+  --unread-dot:    #1877f2;
+  --badge-purple:  #e7f3ff;
+  --badge-text:    #1877f2;
   
-  /* Semantic Surface Variables (dark dashboard skin) */
-  --bg-primary: #0a1426;
-  --bg-secondary: #0f1a2e;
-  --bg-tertiary: #162640;
-  --border-color: #2c4c79;
-  --border-color-hover: #3a5f93;
+  /* Semantic Surface Variables */
+  --bg-primary: #f0f2f5;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #ffffff;
+  --border-color: #dadde1;
+  --border-color-hover: #ccd0d5;
   
-  --text-primary-new: #eaf2ff;
-  --text-secondary: #c0d2ec;
-  --text-muted-new: #91a7c7;
+  --text-primary-new: #050505;
+  --text-secondary: #65676b;
+  --text-muted-new: #65676b;
   
   /* Typography Scale */
   --font-size-xs: 0.75rem;    /* 12px */
@@ -145,10 +146,6 @@ html, body {
 
 body {
   background-color: var(--bg-base);
-  background-image:
-    radial-gradient(1200px circle at 8% 8%, rgba(43, 184, 255, 0.14), transparent 60%),
-    radial-gradient(900px circle at 88% -20%, rgba(58, 109, 255, 0.18), transparent 58%),
-    linear-gradient(180deg, #0a1324 0%, #060d19 65%);
   color: var(--text-primary);
   font-family: var(--font-body), 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;

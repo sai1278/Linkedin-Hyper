@@ -103,7 +103,7 @@ export function AccountCard({ account, onRefresh, onImport }: AccountCardProps) 
         </div>
         <div
           className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold"
-          style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #4c1d95 100%)', color: 'white' }}
+          style={{ background: 'var(--accent)', color: 'white' }}
         >
           {account.id.substring(0, 2).toUpperCase()}
         </div>

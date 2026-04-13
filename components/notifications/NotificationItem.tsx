@@ -15,16 +15,16 @@ type ActivityMeta = {
 };
 
 const TYPE_META: Record<string, ActivityMeta> = {
-  messageSent: { icon: MessageSquare, label: 'Message sent', color: '#2bb8ff' },
+  messageSent: { icon: MessageSquare, label: 'Message sent', color: 'var(--accent)' },
   connectionSent: { icon: UserPlus, label: 'Connection sent', color: '#22c55e' },
-  profileViewed: { icon: Eye, label: 'Profile viewed', color: '#f59e0b' },
-  sync: { icon: RefreshCw, label: 'Inbox sync', color: '#5ca1ff' },
+  profileViewed: { icon: Eye, label: 'Profile viewed', color: 'var(--accent)' },
+  sync: { icon: RefreshCw, label: 'Inbox sync', color: 'var(--accent)' },
 };
 
 const FALLBACK_META: ActivityMeta = {
   icon: Bell,
   label: 'Activity',
-  color: '#2bb8ff',
+  color: 'var(--accent)',
 };
 
 export function NotificationRow({ entry }: { entry: ActivityEntry }) {

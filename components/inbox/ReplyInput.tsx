@@ -45,7 +45,7 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
       className="flex items-end gap-3 px-5 py-4"
       style={{
         borderTop: '1px solid var(--border)',
-        background: 'linear-gradient(180deg, rgba(43, 184, 255, 0.05) 0%, rgba(12, 23, 42, 0.45) 100%)',
+        background: 'var(--bg-secondary)',
       }}
     >
       <textarea
@@ -66,8 +66,8 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
           maxHeight: '144px',
         }}
         onFocus={(event) => {
-          event.currentTarget.style.borderColor = 'rgba(108, 206, 255, 0.7)';
-          event.currentTarget.style.boxShadow = '0 0 0 3px rgba(43, 184, 255, 0.12)';
+          event.currentTarget.style.borderColor = 'var(--accent)';
+          event.currentTarget.style.boxShadow = '0 0 0 3px rgba(24, 119, 242, 0.16)';
         }}
         onBlur={(event) => {
           event.currentTarget.style.borderColor = 'var(--border)';
@@ -80,14 +80,12 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
         disabled={!canSend}
         className="flex items-center justify-center w-11 h-11 rounded-2xl transition-all flex-shrink-0"
         style={{
-          background: canSend
-            ? 'linear-gradient(135deg, #1f8fff 0%, #2bb8ff 100%)'
-            : 'var(--bg-card)',
+          background: canSend ? 'var(--accent)' : 'var(--bg-card)',
           color: canSend ? '#ffffff' : 'var(--text-muted)',
           border: '1px solid',
-          borderColor: canSend ? 'rgba(114, 220, 255, 0.8)' : 'var(--border)',
+          borderColor: canSend ? 'var(--accent)' : 'var(--border)',
           cursor: canSend ? 'pointer' : 'not-allowed',
-          boxShadow: canSend ? '0 10px 20px rgba(9, 82, 147, 0.35)' : 'none',
+          boxShadow: canSend ? 'var(--shadow-sm)' : 'none',
         }}
       >
         <Send size={16} />

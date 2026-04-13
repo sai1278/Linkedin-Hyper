@@ -70,28 +70,28 @@ export function Sidebar() {
       icon: Mail,
       label: 'Inbox',
       count: counts.inbox,
-      badgeBg: '#dc2626',
+      badgeBg: 'var(--accent)',
     },
     {
       href: '/connections',
       icon: Users,
       label: 'Network',
       count: counts.connections,
-      badgeBg: '#0ea5e9',
+      badgeBg: 'var(--accent)',
     },
     {
       href: '/notifications',
       icon: Bell,
       label: 'Activity',
       count: counts.notifications,
-      badgeBg: '#f97316',
+      badgeBg: 'var(--accent)',
     },
     {
       href: '/accounts',
       icon: UserCircle,
       label: 'Accounts',
       count: 0,
-      badgeBg: '#2563eb',
+      badgeBg: 'var(--accent)',
     },
   ];
 
@@ -100,19 +100,18 @@ export function Sidebar() {
       className="flex flex-col items-center py-4 gap-3 flex-shrink-0"
       style={{
         width: '72px',
-        background:
-          'linear-gradient(180deg, rgba(19, 38, 67, 0.96) 0%, rgba(14, 26, 46, 0.96) 100%)',
+        background: 'var(--bg-panel)',
         borderRight: '1px solid var(--border)',
         minHeight: '100vh',
-        boxShadow: 'inset -1px 0 0 rgba(133, 188, 255, 0.1)',
+        boxShadow: 'none',
       }}
     >
       <div className="mb-4 flex-shrink-0 text-center">
         <div
           className="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-white text-lg select-none mx-auto"
           style={{
-            background: 'linear-gradient(135deg, #0a66c2 0%, #1e88ff 100%)',
-            boxShadow: '0 10px 26px rgba(10, 102, 194, 0.36)',
+            background: 'var(--accent)',
+            boxShadow: 'none',
           }}
         >
           in
@@ -133,12 +132,10 @@ export function Sidebar() {
               aria-label={label}
               className="relative flex items-center justify-center w-11 h-11 rounded-xl transition-all"
               style={{
-                color: isActive ? '#eaf2ff' : 'var(--text-muted)',
-                background: isActive
-                  ? 'linear-gradient(135deg, rgba(43, 184, 255, 0.28) 0%, rgba(43, 184, 255, 0.12) 100%)'
-                  : 'transparent',
-                border: isActive ? '1px solid rgba(142, 220, 255, 0.45)' : '1px solid transparent',
-                boxShadow: isActive ? '0 6px 18px rgba(28, 144, 234, 0.24)' : 'none',
+                color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+                background: isActive ? 'var(--bg-hover)' : 'transparent',
+                border: isActive ? '1px solid var(--accent)' : '1px solid transparent',
+                boxShadow: 'none',
               }}
             >
               <Icon size={20} />
@@ -147,7 +144,7 @@ export function Sidebar() {
                   className="absolute -top-1 -right-1 text-white text-[9px] font-bold rounded-full min-w-[16px] h-[16px] flex items-center justify-center px-1"
                   style={{
                     background: badgeBg,
-                    boxShadow: '0 4px 10px rgba(4, 6, 11, 0.45)',
+                    boxShadow: 'none',
                   }}
                 >
                   {count > 99 ? '99+' : count}
@@ -162,7 +159,7 @@ export function Sidebar() {
         <div className="relative">
           <div
             className="w-8 h-8 rounded-full flex items-center justify-center text-white text-[10px] font-bold"
-            style={{ background: 'linear-gradient(135deg, #0f74d6 0%, #2bb8ff 100%)' }}
+            style={{ background: 'var(--accent)' }}
           >
             LI
           </div>

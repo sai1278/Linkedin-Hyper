@@ -149,8 +149,7 @@ export default function InboxPage() {
         className="flex items-center justify-between px-6 py-3 border-b"
         style={{
           borderColor: 'var(--border-color)',
-          background:
-            'linear-gradient(180deg, rgba(43, 184, 255, 0.12) 0%, rgba(43, 184, 255, 0.02) 100%)',
+          background: 'var(--bg-secondary)',
         }}
       >
         <div className="flex items-center gap-3">
@@ -162,14 +161,14 @@ export default function InboxPage() {
           <div
             className="flex items-center gap-2 px-3 py-1 rounded-full"
             style={{
-              background: 'rgba(15, 33, 58, 0.62)',
-              border: '1px solid rgba(84, 128, 176, 0.5)',
+              background: 'var(--bg-hover)',
+              border: '1px solid var(--border)',
             }}
           >
             <div 
               className="w-2 h-2 rounded-full" 
               style={{ 
-                backgroundColor: isLive ? '#10b981' : '#6b7280',
+                backgroundColor: isLive ? '#10b981' : 'var(--text-muted)',
                 boxShadow: isLive ? '0 0 8px rgba(16, 185, 129, 0.6)' : 'none',
               }}
             />

@@ -66,8 +66,8 @@ export const ConversationList = memo(function ConversationList({
                     backgroundColor: isActive ? 'var(--accent)' : 'var(--bg-card)',
                     color: isActive ? '#ffffff' : 'var(--text-secondary, var(--text-muted))',
                     border: '1px solid',
-                    borderColor: isActive ? 'rgba(122, 220, 255, 0.65)' : 'var(--border-color, var(--border))',
-                    boxShadow: isActive ? '0 6px 14px rgba(12, 145, 210, 0.28)' : 'none',
+                    borderColor: isActive ? 'var(--accent)' : 'var(--border-color, var(--border))',
+                    boxShadow: 'none',
                     cursor: 'pointer',
                   }}
                 >
@@ -83,8 +83,7 @@ export const ConversationList = memo(function ConversationList({
         className="px-5 py-3 flex items-center justify-between"
         style={{
           borderBottom: '1px solid var(--border-color, var(--border))',
-          background:
-            'linear-gradient(180deg, rgba(43, 184, 255, 0.07) 0%, rgba(43, 184, 255, 0.01) 100%)',
+          background: 'var(--bg-hover)',
         }}
       >
         <span className="text-xs font-semibold tracking-[0.08em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
@@ -134,13 +133,11 @@ export const ConversationList = memo(function ConversationList({
                 onClick={() => onSelect(conversation)}
                 className="w-full text-left flex items-start gap-3 p-3 mb-2 rounded-xl cursor-pointer transition-all hover:translate-y-[-1px]"
                 style={{
-                  backgroundColor: isSelected ? 'rgba(43, 184, 255, 0.12)' : 'rgba(18, 30, 52, 0.42)',
+                  backgroundColor: isSelected ? 'var(--bg-hover)' : 'var(--bg-card)',
                   border: isSelected
-                    ? '1px solid rgba(115, 215, 255, 0.55)'
-                    : '1px solid rgba(54, 82, 120, 0.55)',
-                  boxShadow: isSelected
-                    ? '0 12px 24px rgba(9, 38, 76, 0.42)'
-                    : '0 6px 14px rgba(5, 11, 24, 0.25)',
+                    ? '1px solid var(--accent)'
+                    : '1px solid var(--border-color)',
+                  boxShadow: 'none',
                   animation: 'fadeIn 260ms ease both',
                   animationDelay: `${Math.min(index * 28, 220)}ms`,
                 }}
@@ -153,7 +150,7 @@ export const ConversationList = memo(function ConversationList({
                       style={{
                         backgroundColor: 'var(--unread-dot)',
                         borderColor: 'var(--bg-secondary, white)',
-                        boxShadow: '0 0 10px rgba(43, 184, 255, 0.7)',
+                        boxShadow: 'none',
                       }}
                     />
                   )}

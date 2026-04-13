@@ -46,7 +46,7 @@ export default function LoginPage() {
           <div className="flex items-center gap-3">
             <div
               className="w-12 h-12 rounded-lg flex items-center justify-center text-white text-xl font-bold"
-              style={{ background: '#0a66c2' }}
+              style={{ background: 'var(--accent)' }}
             >
               in
             </div>
@@ -95,7 +95,8 @@ export default function LoginPage() {
               <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="text-sm mt-2 text-red-400"
+                className="text-sm mt-2"
+                style={{ color: 'var(--color-error-500)' }}
               >
                 {error}
               </motion.p>

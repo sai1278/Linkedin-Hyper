@@ -8,7 +8,7 @@ export function LoadingScreen() {
       <div className="text-center">
         <div
           className="w-16 h-16 rounded-xl flex items-center justify-center text-white text-2xl font-bold mx-auto mb-4"
-          style={{ background: '#0a66c2' }}
+          style={{ background: 'var(--accent)' }}
         >
           in
         </div>
