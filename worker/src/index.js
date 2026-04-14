@@ -246,6 +246,47 @@ function normalizeProfileUrlForCompare(url) {
   }
 }
 
+function normalizeActivityToken(value) {
+  return normalizeWhitespace(value).toLowerCase();
+}
+
+function buildActivityDedupKey(entry) {
+  const profileUrl = normalizeProfileUrlForCompare(entry?.targetProfileUrl || '');
+  const participantName = normalizeParticipantName(entry?.targetName, profileUrl);
+  const targetIdentity = profileUrl || normalizeActivityToken(participantName);
+  const messageIdentity = normalizeActivityToken(entry?.message || entry?.textPreview || '');
+  return [
+    normalizeActivityToken(entry?.type || 'activity'),
+    normalizeActivityToken(entry?.accountId || ''),
+    targetIdentity,
+    messageIdentity,
+  ].join('|');
+}
+
+function dedupeRecentActivity(entries, windowMs = 10 * 60 * 1000) {
+  const sorted = [...(entries || [])].sort(
+    (a, b) => (Number(b?.timestamp) || 0) - (Number(a?.timestamp) || 0)
+  );
+
+  const latestSeenByKey = new Map();
+  const deduped = [];
+
+  for (const entry of sorted) {
+    const timestamp = Number(entry?.timestamp) || 0;
+    const key = buildActivityDedupKey(entry);
+    const previousTs = latestSeenByKey.get(key);
+
+    if (typeof previousTs === 'number' && previousTs - timestamp <= windowMs) {
+      continue;
+    }
+
+    latestSeenByKey.set(key, timestamp);
+    deduped.push(entry);
+  }
+
+  return deduped;
+}
+
 // â”€â”€ Health (no auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function connectionKey(accountId, name, profileUrl) {
@@ -486,6 +527,62 @@ function dedupeAndSortConversations(conversations) {
   return Array.from(latestByConversation.values()).sort(
     (a, b) => (Number(b?.lastMessage?.sentAt) || 0) - (Number(a?.lastMessage?.sentAt) || 0)
   );
+}
+
+async function persistOptimisticSendNewResult({ accountId, profileUrl, text, result }) {
+  let messageRepo;
+  try {
+    messageRepo = require('./db/repositories/MessageRepository');
+  } catch {
+    return;
+  }
+
+  const participantProfileUrl = String(profileUrl || '');
+  const participantName = normalizeParticipantName('', participantProfileUrl);
+  const rawChatId = String(result?.chatId || '').trim();
+  const fallbackKey = `${accountId}|${participantName}|${participantProfileUrl}`;
+  const conversationId =
+    rawChatId && rawChatId !== 'new'
+      ? normalizeThreadId(accountId, rawChatId)
+      : `activity-${Buffer.from(fallbackKey).toString('base64url')}`;
+
+  const parsedCreatedAt = new Date(result?.createdAt || Date.now());
+  const createdAt = Number.isNaN(parsedCreatedAt.getTime()) ? new Date() : parsedCreatedAt;
+  const messageId = String(result?.id || `optimistic-${Date.now()}`);
+
+  try {
+    await withTimeout(
+      messageRepo.upsertConversation({
+        id: conversationId,
+        accountId,
+        participantName,
+        participantProfileUrl,
+        participantAvatarUrl: null,
+        lastMessageAt: createdAt,
+        lastMessageText: text,
+        lastMessageSentByMe: true,
+      }),
+      4000
+    );
+
+    await withTimeout(
+      messageRepo.upsertMessage({
+        conversationId,
+        accountId,
+        senderId: '__self__',
+        senderName: accountId,
+        text,
+        sentAt: createdAt.toISOString(),
+        isSentByMe: true,
+        linkedinMessageId: messageId,
+      }),
+      4000
+    );
+  } catch (err) {
+    if (!isDatabaseUnavailable(err)) {
+      console.warn('[send-new] Optimistic DB persistence failed:', err?.message || String(err));
+    }
+  }
 }
 
 async function buildUnifiedInboxFromLive(limit = 100) {
@@ -826,10 +923,6 @@ async function runJob(name, data, timeoutMs = 120_000) {
       } else if (reason.includes('Session expired for account')) {
         failErr.code = 'SESSION_EXPIRED';
         failErr.status = 401;
-      } else if (lowerReason.includes('err_too_many_redirects') || lowerReason.includes('too many redirects')) {
-        failErr.code = 'SESSION_EXPIRED';
-        failErr.status = 401;
-        failErr.message = 'LinkedIn redirected too many times. Session is likely invalid or challenged; re-import cookies.';
       } else if (reason.includes('No session for account')) {
         failErr.code = 'NO_SESSION';
         failErr.status = 401;
@@ -1201,6 +1294,13 @@ app.post('/messages/send-new', async (req, res) => {
       });
     }
 
+    await persistOptimisticSendNewResult({
+      accountId,
+      profileUrl,
+      text,
+      result,
+    });
+
     if (!res.headersSent) {
       res.json(result);
     }
@@ -1283,12 +1383,20 @@ app.get('/inbox/unified', async (req, res) => {
       })),
     };
 
-    if (payload.conversations.length === 0) {
+    // Merge DB-backed conversations with recent activity so newly sent messages
+    // show in the UI even before full thread sync catches up.
+    const activityPayload = await buildUnifiedInboxFromActivity(limit);
+    const mergedConversations = dedupeAndSortConversations([
+      ...payload.conversations,
+      ...(activityPayload?.conversations || []),
+    ]).slice(0, limit);
+
+    if (mergedConversations.length === 0) {
       const livePayload = await buildUnifiedInboxWithFallback(limit);
       return res.json(livePayload);
     }
 
-    res.json(payload);
+    res.json({ conversations: mergedConversations });
   } catch (err) {
     if (isDatabaseUnavailable(err)) {
       try {
@@ -1389,7 +1497,9 @@ app.get('/stats/:accountId/activity', async (req, res) => {
       };
     });
 
-    res.json({ entries, total });
+    const optimizedEntries = dedupeRecentActivity(entries).slice(0, limit);
+
+    res.json({ entries: optimizedEntries, total });
   } catch (err) {
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
   }
