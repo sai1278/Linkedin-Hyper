@@ -510,23 +510,118 @@ function normalizeConversationFromInboxItem(accountId, item) {
   };
 }
 
+function getConversationSentAt(conv) {
+  return Number(conv?.lastMessage?.sentAt) || 0;
+}
+
+function getConversationText(conv) {
+  return normalizeWhitespace(conv?.lastMessage?.text || '');
+}
+
+function getConversationProfileUrl(conv) {
+  return normalizeProfileUrlForCompare(conv?.participant?.profileUrl || '');
+}
+
+function getConversationNameToken(conv) {
+  return normalizeWhitespace(conv?.participant?.name || '').toLowerCase();
+}
+
+function conversationQualityScore(conv) {
+  const hasProfile = Boolean(getConversationProfileUrl(conv));
+  const hasText = Boolean(getConversationText(conv));
+  const hasMessages = Array.isArray(conv?.messages) && conv.messages.length > 0;
+  const conversationId = String(conv?.conversationId || '');
+  const isFallbackId = conversationId.startsWith('fallback-');
+  const isActivityId = conversationId.startsWith('activity-');
+
+  let score = 0;
+  if (hasProfile) score += 40;
+  if (hasText) score += 20;
+  if (hasMessages) score += 10;
+  if (isActivityId) score += 5;
+  if (isFallbackId) score -= 15;
+  return score;
+}
+
+function isLowSignalFallbackConversation(conv) {
+  const conversationId = String(conv?.conversationId || '');
+  const hasProfile = Boolean(getConversationProfileUrl(conv));
+  const hasText = Boolean(getConversationText(conv));
+  return conversationId.startsWith('fallback-') && !hasProfile && !hasText;
+}
+
+function shouldReplaceConversation(previous, current) {
+  const previousScore = conversationQualityScore(previous);
+  const currentScore = conversationQualityScore(current);
+  if (currentScore !== previousScore) {
+    return currentScore > previousScore;
+  }
+
+  const previousSentAt = getConversationSentAt(previous);
+  const currentSentAt = getConversationSentAt(current);
+  if (currentSentAt !== previousSentAt) {
+    return currentSentAt > previousSentAt;
+  }
+
+  const previousUnread = Number(previous?.unreadCount) || 0;
+  const currentUnread = Number(current?.unreadCount) || 0;
+  return currentUnread > previousUnread;
+}
+
 function dedupeAndSortConversations(conversations) {
+  const profileAliasByName = new Map();
+
+  for (const conv of conversations) {
+    if (!conv?.accountId) continue;
+    const profileUrl = getConversationProfileUrl(conv);
+    const nameToken = getConversationNameToken(conv);
+    if (!profileUrl || !nameToken) continue;
+
+    const aliasKey = `${conv.accountId}|${nameToken}`;
+    const previous = profileAliasByName.get(aliasKey);
+    if (!previous || getConversationSentAt(conv) >= previous.sentAt) {
+      profileAliasByName.set(aliasKey, {
+        profileUrl,
+        sentAt: getConversationSentAt(conv),
+      });
+    }
+  }
+
   const latestByConversation = new Map();
 
   for (const conv of conversations) {
     if (!conv?.accountId) continue;
-    const key = `${conv.accountId}|${conv.participant?.name || ''}|${conv.participant?.profileUrl || ''}`;
+
+    const nameToken = getConversationNameToken(conv);
+    const directProfileUrl = getConversationProfileUrl(conv);
+    const aliasProfileUrl = nameToken
+      ? profileAliasByName.get(`${conv.accountId}|${nameToken}`)?.profileUrl || ''
+      : '';
+    const resolvedProfileUrl = directProfileUrl || aliasProfileUrl;
+    const key = resolvedProfileUrl
+      ? `${conv.accountId}|profile|${resolvedProfileUrl}`
+      : `${conv.accountId}|name|${nameToken || String(conv?.conversationId || '').toLowerCase()}`;
+
     const previous = latestByConversation.get(key);
-    const currentSentAt = Number(conv?.lastMessage?.sentAt) || 0;
-    const previousSentAt = Number(previous?.lastMessage?.sentAt) || 0;
-    if (!previous || currentSentAt >= previousSentAt) {
+    if (!previous || shouldReplaceConversation(previous, conv)) {
       latestByConversation.set(key, conv);
     }
   }
 
-  return Array.from(latestByConversation.values()).sort(
+  const sorted = Array.from(latestByConversation.values()).sort(
     (a, b) => (Number(b?.lastMessage?.sentAt) || 0) - (Number(a?.lastMessage?.sentAt) || 0)
   );
+
+  const hasHighSignalRows = sorted.some(
+    (conv) => Boolean(getConversationProfileUrl(conv)) || Boolean(getConversationText(conv))
+  );
+
+  if (!hasHighSignalRows) {
+    return sorted;
+  }
+
+  const cleaned = sorted.filter((conv) => !isLowSignalFallbackConversation(conv));
+  return cleaned.length > 0 ? cleaned : sorted;
 }
 
 async function persistOptimisticSendNewResult({ accountId, profileUrl, text, result }) {
