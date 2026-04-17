@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { authenticateCaller, forwardToBackend, badRequest } from '@/lib/server/backend-api';
 
 export async function POST(req: NextRequest) {
-  const authError = authenticateCaller(req);
+  const authError = await authenticateCaller(req);
   if (authError) return authError;
 
   try {
@@ -23,6 +23,8 @@ export async function POST(req: NextRequest) {
       method: 'POST',
       path: '/messages/send-new',
       body: { accountId, profileUrl, text },
+      // send-new can perform profile flow + thread fallback; allow a longer upstream window.
+      timeoutMs: 240_000,
     });
   } catch (err) {
     return badRequest(err);

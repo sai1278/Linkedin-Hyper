@@ -65,8 +65,9 @@
   --bg-primary: var(--color-gray-50);
   --bg-secondary: #ffffff;
   --bg-tertiary: var(--color-gray-100);
-  --border-color: var(--color-gray-200);
-  --border-color-hover: var(--color-gray-300);
+  /* Legacy alias: prefer --border everywhere so borders share one source token. */
+  --border-color: var(--border);
+  --border-color-hover: var(--border);
   
   --text-primary-new: var(--color-gray-900);
   --text-secondary: var(--color-gray-700);
@@ -177,8 +178,9 @@ html {
 
 /* Focus styles */
 *:focus-visible {
-  outline: 2px solid var(--color-primary-500);
+  outline: 3px solid var(--color-primary-500);
   outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
 }
 
 /* Animation utilities */
@@ -224,4 +226,80 @@ html {
   transition-property: background-color, border-color, color;
   transition-duration: var(--transition-fast);
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.button-primary,
+.button-secondary,
+.button-outline,
+.button-ghost,
+.menu-button,
+.interactive-row,
+.interactive-card {
+  transition-property: background-color, border-color, color, box-shadow, transform;
+  transition-duration: var(--transition-fast);
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.button-primary {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.button-secondary {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.button-secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.button-outline {
+  background: transparent;
+  color: var(--text-primary-new, var(--text-primary));
+  border: 1px solid var(--border);
+}
+
+.button-outline:hover:not(:disabled) {
+  background: var(--color-gray-50, var(--bg-hover));
+}
+
+.button-ghost {
+  background: transparent;
+  color: var(--text-muted-new, var(--text-muted));
+}
+
+.button-ghost:hover:not(:disabled) {
+  background: var(--color-gray-50, var(--bg-hover));
+  color: var(--text-primary-new, var(--text-primary));
+}
+
+.menu-button {
+  width: 100%;
+  background: transparent;
+  color: var(--text-primary-new, var(--text-primary));
+}
+
+.menu-button:hover:not(:disabled) {
+  background: var(--color-gray-50, var(--bg-hover));
+}
+
+.interactive-row:hover {
+  background: var(--color-gray-50, var(--bg-hover));
+}
+
+.interactive-row[data-selected='true'],
+.interactive-row[data-selected='true']:hover {
+  background: var(--color-primary-50, var(--bg-hover));
+}
+
+.interactive-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }

@@ -1,15 +1,18 @@
 // FILE: components/dashboard/RecentActivity.tsx
 'use client';
 
+import Link from 'next/link';
 import { MessageSquare, UserPlus, Eye, ExternalLink } from 'lucide-react';
 import type { ActivityEntry } from '@/types/dashboard';
 import { deriveDisplayName } from '@/lib/display-name';
 
 interface RecentActivityProps {
   activities: ActivityEntry[];
+  viewAllHref: string;
+  freshnessLabel: string;
 }
 
-export function RecentActivity({ activities }: RecentActivityProps) {
+export function RecentActivity({ activities, viewAllHref, freshnessLabel }: RecentActivityProps) {
   const getIcon = (type: ActivityEntry['type']) => {
     switch (type) {
       case 'messageSent':
@@ -70,10 +73,22 @@ export function RecentActivity({ activities }: RecentActivityProps) {
       className="rounded-xl border overflow-hidden"
       style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}
     >
-      <div className="p-4 border-b" style={{ borderColor: 'var(--border)' }}>
-        <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>
-          Recent Activity
-        </h3>
+      <div className="p-4 border-b flex items-center justify-between gap-3" style={{ borderColor: 'var(--border)' }}>
+        <div>
+          <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Recent Activity
+          </h3>
+          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            Latest 10 deduped activity entries. {freshnessLabel}
+          </p>
+        </div>
+        <Link
+          href={viewAllHref}
+          className="text-sm font-medium transition-opacity hover:opacity-80"
+          style={{ color: 'var(--accent)' }}
+        >
+          View full activity
+        </Link>
       </div>
       <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
         {activities.slice(0, 10).map((activity, index) => {
@@ -111,6 +126,7 @@ export function RecentActivity({ activities }: RecentActivityProps) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex-shrink-0"
+                      aria-label={`Open LinkedIn profile for ${displayName}`}
                       style={{ color: 'var(--accent)' }}
                     >
                       <ExternalLink size={14} />

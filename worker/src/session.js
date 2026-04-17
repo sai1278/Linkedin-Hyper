@@ -5,9 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const { getRedis } = require('./redisClient');
 
-const ALGORITHM   = 'aes-256-gcm';
-const SESSION_TTL = 86400 * 30; // 30 days
-const META_TTL    = 86400 * 30;
+const ALGORITHM = 'aes-256-gcm';
+const SESSION_TTL_DAYS = Math.max(1, parseInt(process.env.SESSION_TTL_DAYS || '30', 10) || 30);
+const SESSION_TTL = 86400 * SESSION_TTL_DAYS;
+const META_TTL = 86400 * SESSION_TTL_DAYS;
 const REDIS_SESSION_OP_TIMEOUT_MS = parseInt(process.env.REDIS_SESSION_TIMEOUT_MS || '2500', 10);
 
 // Local fallback when Redis is unavailable (dev convenience).
@@ -198,7 +199,7 @@ function decrypt(payload) {
 
 /** Normalise sameSite values to what Playwright accepts */
 function normaliseCookies(cookies) {
-  return cookies.map((c) => {
+  const normalizedList = cookies.map((c) => {
     const normalized = {
       ...c,
       sameSite: (() => {
@@ -218,6 +219,37 @@ function normaliseCookies(cookies) {
 
     return normalized;
   });
+
+  const deduped = [];
+  const seen = new Set();
+  const addUnique = (cookie) => {
+    if (!cookie || !cookie.name || !cookie.domain || !cookie.path) return;
+    const key = `${cookie.name}|${cookie.domain}|${cookie.path}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(cookie);
+  };
+
+  // Keep originals first.
+  for (const cookie of normalizedList) {
+    addUnique(cookie);
+  }
+
+  // Harden LinkedIn auth cookie domain coverage to survive redirect/domain hops.
+  for (const cookie of normalizedList) {
+    const name = String(cookie?.name || '');
+    if (name !== 'li_at' && name !== 'JSESSIONID') continue;
+    const domain = String(cookie?.domain || '').toLowerCase();
+    if (!domain.includes('linkedin.com')) continue;
+
+    if (domain.includes('www.linkedin.com')) {
+      addUnique({ ...cookie, domain: '.linkedin.com' });
+    } else if (domain === '.linkedin.com' || domain === 'linkedin.com') {
+      addUnique({ ...cookie, domain: '.www.linkedin.com' });
+    }
+  }
+
+  return deduped;
 }
 
 function getLinkedInCookieFlags(cookies) {

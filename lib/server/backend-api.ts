@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getSession } from '@/lib/auth/session';
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001';
 const API_SECRET = process.env.API_SECRET ?? '';
@@ -32,50 +33,86 @@ function buildAllowedOrigins(req: NextRequest): Set<string> {
   return origins;
 }
 
-/**
- * Authenticate incoming requests to the BFF.
- * Enforces Same-Origin and optional API_ROUTE_AUTH_TOKEN.
- * Supports TRUSTED_ORIGINS for reverse-proxy setups.
- */
-export function authenticateCaller(req: NextRequest): NextResponse | null {
-  const hasSessionCookie = Boolean(req.cookies.get('app_session')?.value);
+function extractOrigin(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
 
-  // 1. Origin check - skip if no origin header (SSR/server calls have none)
-  // Also skip strict Origin validation when user has a dashboard session cookie.
-  const origin = req.headers.get('origin');
-  if (origin && !hasSessionCookie) {
-    const allowedOrigins = buildAllowedOrigins(req);
-    const trustedOrigins = (process.env.TRUSTED_ORIGINS ?? '')
-      .split(',')
-      .map((o) => o.trim())
-      .filter(Boolean);
+function isTrustedOrigin(req: NextRequest, candidate: string): boolean {
+  const allowedOrigins = buildAllowedOrigins(req);
+  const trustedOrigins = (process.env.TRUSTED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
 
-    const isTrusted = allowedOrigins.has(origin) || trustedOrigins.includes(origin);
-    if (!isTrusted) {
-      return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
-    }
+  return allowedOrigins.has(candidate) || trustedOrigins.includes(candidate);
+}
+
+function isMutationMethod(method: string): boolean {
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
+}
+
+export function enforceMutationProtection(req: NextRequest): NextResponse | null {
+  if (!isMutationMethod(req.method)) {
+    return null;
   }
 
-  // 2. Sec-Fetch-Site present -> must be same-origin, same-site, or none
-  // Skip this strict check for authenticated dashboard session cookie traffic.
   const secFetchSite = req.headers.get('sec-fetch-site');
-  if (
-    secFetchSite &&
-    !hasSessionCookie &&
-    !['same-origin', 'same-site', 'none'].includes(secFetchSite)
-  ) {
+  if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
     return NextResponse.json({ error: 'Forbidden: Invalid Sec-Fetch-Site' }, { status: 403 });
   }
 
-  // 3. API_ROUTE_AUTH_TOKEN if set:
-  // Allow either a matching bearer token (service calls) OR a session cookie (browser UI).
-  const expectedToken = process.env.API_ROUTE_AUTH_TOKEN?.trim();
-  if (expectedToken) {
-    const authHeader = req.headers.get('authorization');
-    const hasValidBearer = authHeader === `Bearer ${expectedToken}`;
+  const origin = extractOrigin(req.headers.get('origin'));
+  if (origin) {
+    if (!isTrustedOrigin(req, origin)) {
+      return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
+    }
+    return null;
+  }
 
-    if (!hasValidBearer && !hasSessionCookie) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const refererOrigin = extractOrigin(req.headers.get('referer'));
+  if (refererOrigin) {
+    if (!isTrustedOrigin(req, refererOrigin)) {
+      return NextResponse.json({ error: 'Forbidden: Invalid Referer' }, { status: 403 });
+    }
+    return null;
+  }
+
+  return NextResponse.json({ error: 'Forbidden: Missing same-origin proof' }, { status: 403 });
+}
+
+/**
+ * Authenticate incoming requests to the BFF.
+ * Requires either a valid dashboard session cookie or API_ROUTE_AUTH_TOKEN bearer token.
+ * Enforces same-origin checks for cookie-authenticated mutation requests.
+ */
+export async function authenticateCaller(req: NextRequest): Promise<NextResponse | null> {
+  const expectedToken = process.env.API_ROUTE_AUTH_TOKEN?.trim();
+  const authHeader = req.headers.get('authorization');
+  const hasValidBearer = Boolean(expectedToken && authHeader === `Bearer ${expectedToken}`);
+
+  if (hasValidBearer) {
+    return null;
+  }
+
+  const session = await getSession(req);
+  if (!session?.authenticated) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const origin = extractOrigin(req.headers.get('origin'));
+  if (origin && !isTrustedOrigin(req, origin)) {
+    return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
+  }
+
+  if (isMutationMethod(req.method)) {
+    const csrfError = enforceMutationProtection(req);
+    if (csrfError) {
+      return csrfError;
     }
   }
 
@@ -87,17 +124,22 @@ interface ForwardOptions {
   path: string;
   query?: URLSearchParams;
   body?: unknown;
+  timeoutMs?: number;
 }
 
 /**
  * Forward a request to the worker Express API.
  * Adds X-Api-Key header automatically.
- * Includes a 120-second AbortSignal timeout (aligned with Express 130 s / runJob 120 s).
+ * Includes a default 120-second AbortSignal timeout (override via timeoutMs).
  */
 export async function forwardToBackend(opts: ForwardOptions): Promise<NextResponse> {
-  const { method, path, query, body } = opts;
+  const { method, path, query, body, timeoutMs } = opts;
   const qs = query ? `?${query.toString()}` : '';
   const url = `${API_URL}${path}${qs}`;
+  const parsedTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : NaN;
+  const effectiveTimeoutMs = Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
+    ? parsedTimeoutMs
+    : 120_000;
 
   try {
     const res = await fetch(url, {
@@ -107,7 +149,7 @@ export async function forwardToBackend(opts: ForwardOptions): Promise<NextRespon
         'X-Api-Key': API_SECRET,
       },
       body: body != null ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(effectiveTimeoutMs),
     });
 
     const data = await res.text();

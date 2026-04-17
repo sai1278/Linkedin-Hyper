@@ -1,18 +1,24 @@
-// FILE: lib/websocket-client.ts
 'use client';
 
 import { io, Socket } from 'socket.io-client';
 
 type SocketEventPayload = unknown;
 type ListenerCallback = (data: SocketEventPayload) => void;
+const SOCKET_DEBUG = process.env.NODE_ENV === 'development';
+
+function debugSocket(...args: unknown[]): void {
+  if (SOCKET_DEBUG) {
+    console.debug(...args);
+  }
+}
 
 export class WebSocketClient {
   private socket: Socket | null = null;
   private listeners: Map<string, Set<ListenerCallback>> = new Map();
-  private url: string = '';
-  private reconnectAttempts: number = 0;
-  private maxReconnectDelay: number = 30000; // 30 seconds
-  private _isConnected: boolean = false;
+  private url = '';
+  private reconnectAttempts = 0;
+  private maxReconnectDelay = 30000;
+  private _isConnected = false;
 
   get isConnected(): boolean {
     return this._isConnected;
@@ -21,7 +27,6 @@ export class WebSocketClient {
   private normalizeSocketOrigin(rawUrl: string): string {
     try {
       const parsed = new URL(rawUrl);
-      // Socket.IO expects HTTP(S) origin; WS(S) can cause client-side edge-case failures.
       if (parsed.protocol === 'ws:') parsed.protocol = 'http:';
       if (parsed.protocol === 'wss:') parsed.protocol = 'https:';
       return parsed.origin;
@@ -32,8 +37,21 @@ export class WebSocketClient {
 
   connect(url: string): void {
     if (!url || typeof window === 'undefined') return;
-    
+
     const origin = this.normalizeSocketOrigin(url);
+
+    if (this.socket) {
+      if (this.url === origin) {
+        if (!this.socket.connected) {
+          this.socket.connect();
+        }
+        return;
+      }
+
+      this.socket.disconnect();
+      this.socket = null;
+    }
+
     this.url = origin;
 
     try {
@@ -48,39 +66,36 @@ export class WebSocketClient {
       });
 
       this.socket.on('connect', () => {
-        console.log('[WebSocket] Connected');
+        debugSocket('[WebSocket] Connected');
         this._isConnected = true;
         this.reconnectAttempts = 0;
         this.notifyStatusListeners('connected');
       });
 
       this.socket.on('disconnect', (reason) => {
-        console.log('[WebSocket] Disconnected:', reason);
+        debugSocket('[WebSocket] Disconnected:', reason);
         this._isConnected = false;
         this.notifyStatusListeners('disconnected');
       });
 
       this.socket.on('connect_error', (error) => {
-        // In dev mode this can happen during worker restarts or transport fallback.
-        // Use warn instead of error to avoid noisy Next.js error overlays.
         console.warn('[WebSocket] Connection warning:', error.message);
         this.reconnectAttempts++;
         this.notifyStatusListeners('reconnecting');
       });
 
       this.socket.on('reconnect', (attemptNumber) => {
-        console.log(`[WebSocket] Reconnected after ${attemptNumber} attempts`);
+        debugSocket(`[WebSocket] Reconnected after ${attemptNumber} attempts`);
         this._isConnected = true;
         this.reconnectAttempts = 0;
         this.notifyStatusListeners('connected');
       });
 
       this.socket.on('reconnect_attempt', (attemptNumber) => {
-        console.log(`[WebSocket] Reconnection attempt ${attemptNumber}`);
+        debugSocket(`[WebSocket] Reconnection attempt ${attemptNumber}`);
         this.notifyStatusListeners('reconnecting');
       });
 
-      // Listen for all custom events
       this.socket.onAny((event, data) => {
         if (this.listeners.has(event)) {
           this.listeners.get(event)?.forEach((callback) => {
@@ -88,7 +103,6 @@ export class WebSocketClient {
           });
         }
       });
-
     } catch (err) {
       console.error('[WebSocket] Connection failed:', err);
     }
@@ -102,15 +116,26 @@ export class WebSocketClient {
     }
   }
 
+  reconnect(): void {
+    if (this.socket) {
+      this.notifyStatusListeners('reconnecting');
+      this.socket.connect();
+      return;
+    }
+
+    if (this.url) {
+      this.connect(this.url);
+    }
+  }
+
   on<T = unknown>(event: string, callback: (data: T) => void): () => void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
     }
 
     const wrapped = callback as ListenerCallback;
-    this.listeners.get(event)!.add(wrapped);
+    this.listeners.get(event)?.add(wrapped);
 
-    // Return unsubscribe function
     return () => {
       const callbacks = this.listeners.get(event);
       if (callbacks) {

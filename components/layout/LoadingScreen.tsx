@@ -15,6 +15,11 @@ export function LoadingScreen() {
         <div className="animate-pulse" style={{ color: 'var(--text-muted)' }}>
           Loading...
         </div>
+        <noscript>
+          <p className="mt-4 max-w-sm text-sm" style={{ color: 'var(--text-primary)' }}>
+            This dashboard needs JavaScript for authenticated live views. You can still use the documented API and runbook commands from the server if scripting access is available.
+          </p>
+        </noscript>
       </div>
     </div>
   );

@@ -11,11 +11,11 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ accountId: string }> }
 ) {
-  const authError = authenticateCaller(req);
+  const authError = await authenticateCaller(req);
   if (authError) return authError;
 
   try {
-    // Next.js 15+: params is a Promise — must be awaited
+    // Next.js 15+: params is a Promise Ã¢â‚¬â€ must be awaited
     const { accountId: rawAccountId } = await params;
     const accountId = requireString(rawAccountId, 'accountId');
 

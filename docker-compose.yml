@@ -22,8 +22,12 @@ services:
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --save 60 1
       --maxmemory 256mb
       --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
     ports:
       - "6379:6379"
     restart: always
@@ -43,6 +47,7 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - SESSION_ENCRYPTION_KEY=${SESSION_ENCRYPTION_KEY}
+      - SESSION_TTL_DAYS=${SESSION_TTL_DAYS:-30}
       - ACCOUNT_IDS=${ACCOUNT_IDS:-}
       - API_SECRET=${API_SECRET}
       - BROWSER_USE_SYSTEM_CHROME=${BROWSER_USE_SYSTEM_CHROME:-1}
@@ -95,4 +100,6 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  redis_data:
     driver: local

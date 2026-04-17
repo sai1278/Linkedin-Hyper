@@ -9,6 +9,16 @@ const accountRepo = require('../db/repositories/AccountRepository');
 const messageRepo = require('../db/repositories/MessageRepository');
 const { emitInboxUpdate, emitNewMessage } = require('../utils/websocket');
 const { getRedis } = require('../redisClient');
+const {
+  clearSessionIssue,
+  markBulkSyncCompleted,
+  markBulkSyncFailed,
+  markBulkSyncStarted,
+  markSessionIssue,
+  markSyncCompleted,
+  markSyncFailed,
+  markSyncStarted,
+} = require('../healthState');
 
 function isDatabaseUnavailable(err) {
   if (!err) return false;
@@ -51,8 +61,10 @@ async function withTimeout(promise, timeoutMs, code = 'DB_TIMEOUT') {
  * @param {string|null} proxyUrl - Proxy URL if configured
  * @returns {Promise<Object>} Sync stats
  */
-async function syncAccount(accountId, proxyUrl = null) {
+async function syncAccount(accountId, proxyUrl = null, meta = {}) {
   console.log(`[MessageSync] Starting sync for account: ${accountId}`);
+  const source = meta?.source || 'scheduler';
+  markSyncStarted(accountId, source);
   
   const stats = {
     accountId,
@@ -86,9 +98,11 @@ async function syncAccount(accountId, proxyUrl = null) {
     // Fetch conversations from LinkedIn
     console.log(`[MessageSync] Fetching conversations for ${accountId}...`);
     const inboxData = await readMessages({ accountId, proxyUrl, limit: 50 });
+    clearSessionIssue(accountId);
     
     if (!inboxData || !inboxData.items || inboxData.items.length === 0) {
       console.log(`[MessageSync] No conversations found for ${accountId}`);
+      markSyncCompleted(accountId, stats, source);
       return stats;
     }
 
@@ -236,6 +250,7 @@ async function syncAccount(accountId, proxyUrl = null) {
             code: convError.code || 'DB_UNAVAILABLE',
             error: convError.message || String(convError),
           });
+          markSyncCompleted(accountId, stats, source);
           stats.completedAt = new Date();
           stats.durationMs = stats.completedAt - stats.startedAt;
           console.warn(`[MessageSync] Stopping sync for ${accountId} due to database unavailability.`);
@@ -286,15 +301,23 @@ async function syncAccount(accountId, proxyUrl = null) {
     );
     await redis.ltrim(`activity:log:${accountId}`, 0, 999); // Keep last 1000 entries
 
+    markSyncCompleted(accountId, stats, source);
     return stats;
 
   } catch (error) {
     console.error(`[MessageSync] Fatal error syncing account ${accountId}:`, error);
+    if (['NO_SESSION', 'SESSION_EXPIRED', 'AUTHENTICATED_STATE_NOT_REACHED', 'COOKIES_MISSING'].includes(error?.code)) {
+      markSessionIssue(accountId, {
+        code: error.code,
+        message: error.message || 'Session expired. Refresh cookies.',
+      });
+    }
     stats.errors.push({
       fatal: true,
       error: error.message,
       stack: error.stack,
     });
+    markSyncFailed(accountId, error, source);
     stats.completedAt = new Date();
     return stats;
   }
@@ -305,56 +328,65 @@ async function syncAccount(accountId, proxyUrl = null) {
  * @param {string|null} proxyUrl - Proxy URL if configured
  * @returns {Promise<Object>} Aggregated sync stats
  */
-async function syncAllAccounts(proxyUrl = null) {
+async function syncAllAccounts(proxyUrl = null, meta = {}) {
   console.log('[MessageSync] Starting sync for all accounts...');
-  
-  const accountIds = (process.env.ACCOUNT_IDS ?? '').split(',').filter(Boolean);
-  
-  if (accountIds.length === 0) {
-    console.warn('[MessageSync] No accounts configured in ACCOUNT_IDS');
-    return {
-      totalAccounts: 0,
-      results: [],
-    };
-  }
+  const source = meta?.source || 'scheduler';
 
-  const results = [];
-  
-  // Sync accounts sequentially with staggered timing to respect rate limits
-  for (const accountId of accountIds) {
-    try {
-      const accountStats = await syncAccount(accountId, proxyUrl);
-      results.push(accountStats);
-      
-      // Stagger syncs: wait 2-3 minutes between accounts
-      if (accountIds.indexOf(accountId) < accountIds.length - 1) {
-        const staggerDelay = 120000 + Math.random() * 60000; // 2-3 minutes
-        console.log(`[MessageSync] Waiting ${Math.round(staggerDelay/1000)}s before next account...`);
-        await delay(staggerDelay);
-      }
-    } catch (error) {
-      console.error(`[MessageSync] Failed to sync account ${accountId}:`, error);
-      results.push({
-        accountId,
-        error: error.message,
-        errors: [{ fatal: true, error: error.message }],
-      });
+  try {
+    const accountIds = (process.env.ACCOUNT_IDS ?? '').split(',').filter(Boolean);
+    
+    if (accountIds.length === 0) {
+      console.warn('[MessageSync] No accounts configured in ACCOUNT_IDS');
+      return {
+        totalAccounts: 0,
+        results: [],
+      };
     }
+
+    markBulkSyncStarted(accountIds, source);
+    const results = [];
+    
+    // Sync accounts sequentially with staggered timing to respect rate limits
+    for (const accountId of accountIds) {
+      try {
+        const accountStats = await syncAccount(accountId, proxyUrl, meta);
+        results.push(accountStats);
+        
+        // Stagger syncs: wait 2-3 minutes between accounts
+        if (accountIds.indexOf(accountId) < accountIds.length - 1) {
+          const staggerDelay = 120000 + Math.random() * 60000; // 2-3 minutes
+          console.log(`[MessageSync] Waiting ${Math.round(staggerDelay/1000)}s before next account...`);
+          await delay(staggerDelay);
+        }
+      } catch (error) {
+        console.error(`[MessageSync] Failed to sync account ${accountId}:`, error);
+        markSyncFailed(accountId, error, source);
+        results.push({
+          accountId,
+          error: error.message,
+          errors: [{ fatal: true, error: error.message }],
+        });
+      }
+    }
+
+    const aggregated = {
+      totalAccounts: accountIds.length,
+      successfulAccounts: results.filter(r => !r.errors || r.errors.length === 0).length,
+      totalConversations: results.reduce((sum, r) => sum + (r.conversationsProcessed || 0), 0),
+      totalNewMessages: results.reduce((sum, r) => sum + (r.newMessages || 0), 0),
+      totalErrors: results.reduce((sum, r) => sum + (r.errors?.length || 0), 0),
+      results,
+      syncedAt: new Date().toISOString(),
+    };
+
+    console.log('[MessageSync] All accounts sync completed:', aggregated);
+    markBulkSyncCompleted(aggregated, source);
+    
+    return aggregated;
+  } catch (error) {
+    markBulkSyncFailed(error, source);
+    throw error;
   }
-
-  const aggregated = {
-    totalAccounts: accountIds.length,
-    successfulAccounts: results.filter(r => !r.errors || r.errors.length === 0).length,
-    totalConversations: results.reduce((sum, r) => sum + (r.conversationsProcessed || 0), 0),
-    totalNewMessages: results.reduce((sum, r) => sum + (r.newMessages || 0), 0),
-    totalErrors: results.reduce((sum, r) => sum + (r.errors?.length || 0), 0),
-    results,
-    syncedAt: new Date().toISOString(),
-  };
-
-  console.log('[MessageSync] All accounts sync completed:', aggregated);
-  
-  return aggregated;
 }
 
 /**

@@ -9,7 +9,23 @@ BASE_URL="http://127.0.0.1:3001"
 PROFILE_URL=""
 ACCOUNT_ID=""
 TEXT="Hi, test message from automation"
-API_KEY_DEFAULT="dev-api-secret-key-change-in-production"
+
+read_env_value() {
+  local key="$1"
+  local env_file="${2:-$ENV_FILE}"
+  local value=""
+
+  value="${!key:-}"
+  if [[ -n "$value" ]]; then
+    printf '%s' "$value"
+    return
+  fi
+
+  if [[ -f "$env_file" ]]; then
+    value="$(grep -E "^${key}=" "$env_file" | tail -n 1 | cut -d= -f2- || true)"
+    printf '%s' "$value"
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -68,9 +84,21 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-API_KEY="$(grep -E '^API_SECRET=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- || true)"
-if [[ -z "$API_KEY" ]]; then
-  API_KEY="$API_KEY_DEFAULT"
+API_KEY="$(read_env_value API_SECRET)"
+ROUTE_AUTH_TOKEN="$(read_env_value API_ROUTE_AUTH_TOKEN)"
+IS_FRONTEND_API=0
+if [[ "$BASE_URL" == */api || "$BASE_URL" == */api/ ]]; then
+  IS_FRONTEND_API=1
+fi
+
+if [[ "$IS_FRONTEND_API" -eq 1 && -z "$ROUTE_AUTH_TOKEN" ]]; then
+  echo "Missing API_ROUTE_AUTH_TOKEN for public /api usage."
+  exit 1
+fi
+
+if [[ "$IS_FRONTEND_API" -eq 0 && -z "$API_KEY" ]]; then
+  echo "Missing API_SECRET. Set it in $ENV_FILE or the shell environment."
+  exit 1
 fi
 
 if [[ -z "$ACCOUNT_ID" ]]; then
@@ -86,10 +114,17 @@ call_api() {
   local method="$1"
   local url="$2"
   local body="${3:-}"
+  local headers=()
+  if [[ -n "$API_KEY" ]]; then
+    headers+=(-H "X-Api-Key: $API_KEY")
+  fi
+  if [[ -n "$ROUTE_AUTH_TOKEN" ]]; then
+    headers+=(-H "Authorization: Bearer $ROUTE_AUTH_TOKEN")
+  fi
   if [[ -n "$body" ]]; then
-    curl -sS -H "X-Api-Key: $API_KEY" -H "Content-Type: application/json" -X "$method" "$url" -d "$body"
+    curl -sS "${headers[@]}" -H "Content-Type: application/json" -X "$method" "$url" -d "$body"
   else
-    curl -sS -H "X-Api-Key: $API_KEY" -X "$method" "$url"
+    curl -sS "${headers[@]}" -X "$method" "$url"
   fi
 }
 

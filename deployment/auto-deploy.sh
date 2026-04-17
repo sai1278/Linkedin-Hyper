@@ -104,11 +104,9 @@ if command -v openssl >/dev/null 2>&1; then
   RAND_SESSION_KEY="$(openssl rand -hex 32)"
   RAND_JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')"
 else
-  RAND_API_SECRET="q1W2e3R4t5Y6u7I8o9P0a1S2d3F4g5H6j7K8l9Z0x1C2v3B4"
-  RAND_REDIS_PASSWORD="dev-redis-pass-123"
-  RAND_DB_PASSWORD="dev-db-pass-123"
-  RAND_SESSION_KEY="a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
-  RAND_JWT_SECRET="mK9pL2qR8vX4nZ6wA1bC3dE5fG7hJ0kM9pL2qR8vX4nZ6wA1bC3dE5fG7hJ0kM"
+  echo "openssl is required to generate safe deployment secrets."
+  echo "Install openssl and re-run deployment/auto-deploy.sh."
+  exit 1
 fi
 
 set_if_missing API_SECRET "$RAND_API_SECRET"

@@ -6,7 +6,7 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authError = authenticateCaller(req);
+  const authError = await authenticateCaller(req);
   if (authError) return authError;
   
   const { id: accountId } = await params;

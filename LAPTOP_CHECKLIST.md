@@ -1,4 +1,4 @@
-# Laptop Checklist (Before Sir Deploys on DigitalOcean)
+# Laptop Checklist (Before  Deploys on DigitalOcean)
 
 ## 1) Verify local app once
 
@@ -28,7 +28,7 @@ git commit -m "Add production deployment flow for DigitalOcean"
 git push
 ```
 
-## 4) Send sir these files/instructions
+## 4) Send  these files/instructions
 
 - `DEPLOYMENT.md`
 - `deployment/ubuntu-setup.sh`
@@ -39,7 +39,7 @@ git push
 - `docker-compose.prod.yml`
 - `env.example`
 
-## 5) Sir runs on DigitalOcean machine
+## 5)  runs on DigitalOcean machine
 
 ```bash
 bash deployment/ubuntu-setup.sh

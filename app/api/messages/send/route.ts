@@ -7,7 +7,7 @@ import {
 } from '@/lib/server/backend-api';
 
 export async function POST(req: NextRequest) {
-  const authError = authenticateCaller(req);
+  const authError = await authenticateCaller(req);
   if (authError) return authError;
 
   try {

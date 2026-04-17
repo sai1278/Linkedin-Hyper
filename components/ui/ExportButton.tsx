@@ -1,4 +1,4 @@
-// FILE: components/ui/ExportButton.tsx
+﻿// FILE: components/ui/ExportButton.tsx
 // Reusable export button component with CSV and JSON options
 
 'use client';
@@ -72,7 +72,7 @@ export function ExportButton({
       URL.revokeObjectURL(url);
       
       toast.success(`Exported as ${format.toUpperCase()}`, {
-        icon: '📥',
+        icon: 'ðŸ“¥',
         duration: 3000,
       });
     } catch (error) {
@@ -91,44 +91,22 @@ export function ExportButton({
     lg: 'px-6 py-3 text-base',
   };
 
-  const variantStyles = {
-    default: {
-      backgroundColor: 'var(--color-primary-500, #3b82f6)',
-      color: '#ffffff',
-      border: 'none',
-    },
-    outline: {
-      backgroundColor: 'transparent',
-      color: 'var(--text-primary-new, var(--text-primary))',
-      border: '1px solid var(--border-color, var(--border))',
-    },
-    ghost: {
-      backgroundColor: 'transparent',
-      color: 'var(--text-muted-new, var(--text-muted))',
-      border: 'none',
-    },
+  const variantClasses = {
+    default: 'button-primary',
+    outline: 'button-outline',
+    ghost: 'button-ghost',
   };
 
   return (
     <div className="relative">
       <button
+        type="button"
         onClick={() => setShowMenu(!showMenu)}
         disabled={isExporting}
-        className={`flex items-center gap-2 rounded-lg font-medium transition-all ${sizeClasses[size]}`}
+        className={`flex items-center gap-2 rounded-lg font-medium ${sizeClasses[size]} ${variantClasses[variant]}`}
         style={{
-          ...variantStyles[variant],
           cursor: isExporting ? 'not-allowed' : 'pointer',
           opacity: isExporting ? 0.6 : 1,
-        }}
-        onMouseEnter={(e) => {
-          if (!isExporting && variant === 'outline') {
-            e.currentTarget.style.backgroundColor = 'var(--color-gray-50, var(--bg-hover))';
-          }
-        }}
-        onMouseLeave={(e) => {
-          if (variant === 'outline') {
-            e.currentTarget.style.backgroundColor = 'transparent';
-          }
         }}
       >
         {isExporting ? (
@@ -153,34 +131,22 @@ export function ExportButton({
             className="absolute right-0 mt-2 w-48 rounded-lg shadow-lg z-20 py-1"
             style={{
               backgroundColor: 'var(--bg-secondary, var(--bg-card))',
-              border: '1px solid var(--border-color, var(--border))',
+              border: '1px solid var(--border)',
             }}
           >
             <button
+              type="button"
               onClick={() => handleExport('csv')}
-              className="w-full flex items-center gap-3 px-4 py-2 text-sm transition-colors text-left"
-              style={{ color: 'var(--text-primary-new, var(--text-primary))' }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--color-gray-50, var(--bg-hover))';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'transparent';
-              }}
+              className="menu-button flex items-center gap-3 px-4 py-2 text-left text-sm"
             >
               <FileSpreadsheet size={16} style={{ color: 'var(--color-success-500, #22c55e)' }} />
               <span>Export as CSV</span>
             </button>
             
             <button
+              type="button"
               onClick={() => handleExport('json')}
-              className="w-full flex items-center gap-3 px-4 py-2 text-sm transition-colors text-left"
-              style={{ color: 'var(--text-primary-new, var(--text-primary))' }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--color-gray-50, var(--bg-hover))';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'transparent';
-              }}
+              className="menu-button flex items-center gap-3 px-4 py-2 text-left text-sm"
             >
               <FileJson size={16} style={{ color: 'var(--color-primary-500, #3b82f6)' }} />
               <span>Export as JSON</span>
@@ -191,3 +157,4 @@ export function ExportButton({
     </div>
   );
 }
+

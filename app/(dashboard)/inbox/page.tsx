@@ -1,14 +1,17 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import type { Conversation, Account } from '@/types/dashboard';
-import { getUnifiedInbox, getAccounts, getConversationThread } from '@/lib/api-client';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RefreshCw, WifiOff } from 'lucide-react';
+import type { Account, Conversation, Message } from '@/types/dashboard';
+import { getAccounts, getConversationThread, getUnifiedInbox } from '@/lib/api-client';
 import { ConversationList } from '@/components/inbox/ConversationList';
 import { MessageThread } from '@/components/inbox/MessageThread';
-import { Spinner } from '@/components/ui/Spinner';
+import { ConversationListSkeleton, MessageThreadSkeleton } from '@/components/ui/SkeletonLoader';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { wsClient } from '@/lib/websocket-client';
 import { ExportButton } from '@/components/ui/ExportButton';
+import { DASHBOARD_ROUTE_META } from '@/lib/dashboard-route-meta';
+import { getAccountLabel } from '@/lib/account-label';
 
 type InboxUpdatedPayload = {
   conversations?: Conversation[];
@@ -23,89 +26,183 @@ type StatusChangedPayload = {
 };
 
 export default function InboxPage() {
-  const [accounts,      setAccounts]      = useState<Account[]>([]);
+  const routeMeta = DASHBOARD_ROUTE_META.inbox;
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selected,      setSelected]      = useState<Conversation | null>(null);
-  const [filter,        setFilter]        = useState<string>('all');
-  const [loading,       setLoading]       = useState(true);
-  const [error,         setError]         = useState<string | null>(null);
-  const [isLive,        setIsLive]        = useState(false);
+  const [selected, setSelected] = useState<Conversation | null>(null);
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [visibleLimit, setVisibleLimit] = useState(25);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [wsStatus, setWsStatus] = useState<'connected' | 'disconnected' | 'reconnecting'>(
+    wsClient.isConnected ? 'connected' : 'disconnected'
+  );
+  const selectedRef = useRef<Conversation | null>(null);
+  const visibleLimitRef = useRef(25);
 
-  // B2 — Accounts are stable; fetch once on mount (5-min ISR cache in api-client).
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
+  useEffect(() => {
+    visibleLimitRef.current = visibleLimit;
+  }, [visibleLimit]);
+
+  const accountLabelById = useMemo(
+    () => Object.fromEntries(accounts.map((account) => [account.id, getAccountLabel(account)])),
+    [accounts]
+  );
+
+  const getFallbackMessages = useCallback((conversation: Conversation): Message[] => {
+    if (Array.isArray(conversation.messages) && conversation.messages.length > 0) {
+      return conversation.messages;
+    }
+
+    if (!conversation.lastMessage?.text) {
+      return [];
+    }
+
+    return [{
+      id: `preview-${conversation.conversationId}`,
+      text: conversation.lastMessage.text,
+      sentAt: conversation.lastMessage.sentAt,
+      sentByMe: conversation.lastMessage.sentByMe,
+      senderName: conversation.lastMessage.sentByMe ? conversation.accountId : conversation.participant.name,
+      status: conversation.lastMessage.sentByMe ? (conversation.lastMessage.status ?? 'sent') : undefined,
+      error: null,
+    }];
+  }, []);
+
   const loadAccounts = useCallback(async () => {
     try {
-      const { accounts: accs } = await getAccounts();
-      setAccounts(accs);
+      const { accounts: nextAccounts } = await getAccounts();
+      setAccounts(nextAccounts);
     } catch {
-      // non-fatal — account list stays empty, filter pills just won't show
+      // Non-fatal. Inbox still works without account filters.
     }
   }, []);
 
-  // B2 — Inbox is real-time; poll separately on its own interval.
-  const loadInbox = useCallback(async () => {
+  const loadInbox = useCallback(async (requestedLimit?: number) => {
     try {
-      const inboxData = await getUnifiedInbox();
+      const effectiveLimit = requestedLimit ?? visibleLimitRef.current;
+      const inboxData = await getUnifiedInbox(effectiveLimit);
       setConversations(inboxData.conversations);
+      setSelected((currentSelected) => {
+        if (!currentSelected) return currentSelected;
+
+        const freshConversation = inboxData.conversations.find(
+          (conversation) => conversation.conversationId === currentSelected.conversationId
+        );
+
+        if (!freshConversation) return currentSelected;
+
+        return {
+          ...freshConversation,
+          messages: currentSelected.messages.length > 0
+            ? currentSelected.messages
+            : getFallbackMessages(freshConversation),
+        };
+      });
       setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load inbox');
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Failed to load inbox');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getFallbackMessages]);
 
   useEffect(() => {
-    void loadAccounts(); // once on mount
+    void loadAccounts();
   }, [loadAccounts]);
 
   useEffect(() => {
     void loadInbox();
-    
-    // Set up WebSocket listeners for real-time updates
-    const unsubscribeInboxUpdate = wsClient.on('inbox:updated', (data: InboxUpdatedPayload) => {
-      console.log('[Inbox] Real-time update received:', data);
-      if (data.conversations) {
-        setConversations(data.conversations);
-      } else {
-        // Refresh if update doesn't include full data
-        void loadInbox();
-      }
+  }, [loadInbox]);
+
+  const handleSelect = useCallback(async (conversation: Conversation) => {
+    setSelected({
+      ...conversation,
+      messages: getFallbackMessages(conversation),
+    });
+
+    try {
+      const thread = await getConversationThread(conversation.accountId, conversation.conversationId);
+      const hasThreadMessages = Array.isArray(thread.messages) && thread.messages.length > 0;
+      setSelected({
+        ...conversation,
+        messages: hasThreadMessages ? thread.messages : getFallbackMessages(conversation),
+      });
+    } catch {
+      setSelected({
+        ...conversation,
+        messages: getFallbackMessages(conversation),
+      });
+    }
+  }, [getFallbackMessages]);
+
+  useEffect(() => {
+    const unsubscribeInboxUpdate = wsClient.on('inbox:updated', (_data: InboxUpdatedPayload) => {
+      void loadInbox();
     });
 
     const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data: InboxNewMessagePayload) => {
-      console.log('[Inbox] New message received:', data);
-      // Refresh the current thread if it's the one receiving the message
-      if (selected && data.chatId === selected.conversationId) {
-        void handleSelect(selected);
+      const currentSelected = selectedRef.current;
+      if (currentSelected && data.chatId === currentSelected.conversationId) {
+        void handleSelect(currentSelected);
       } else {
-        // Refresh inbox to update last message preview
         void loadInbox();
       }
     });
 
     const unsubscribeStatus = wsClient.on('status:changed', (data: StatusChangedPayload) => {
-      setIsLive(data.status === 'connected');
+      setWsStatus(data.status ?? 'disconnected');
     });
 
-    // Set initial status
-    setIsLive(wsClient.isConnected);
+    setWsStatus(wsClient.isConnected ? 'connected' : 'disconnected');
 
     return () => {
       unsubscribeInboxUpdate();
       unsubscribeNewMessage();
       unsubscribeStatus();
     };
-  }, [loadInbox, selected]);
+  }, [handleSelect, loadInbox]);
 
-  const filtered =
-    filter === 'all'
-      ? conversations
-      : conversations.filter((c) => c.accountId === filter);
+  const filteredConversations = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+
+    return conversations.filter((conversation) => {
+      const matchesFilter = filter === 'all' || conversation.accountId === filter;
+      if (!matchesFilter) return false;
+
+      if (!normalizedSearch) return true;
+
+      const haystack = [
+        conversation.participant.name,
+        conversation.participant.profileUrl,
+        conversation.lastMessage.text,
+        accountLabelById[conversation.accountId] ?? conversation.accountId,
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(normalizedSearch);
+    });
+  }, [accountLabelById, conversations, filter, search]);
+
+  const isLive = wsStatus === 'connected';
+  const canLoadMore = conversations.length >= visibleLimit;
+  const liveTooltip = wsStatus === 'connected'
+    ? 'Live means real-time inbox updates are connected. New messages should appear automatically.'
+    : wsStatus === 'reconnecting'
+      ? 'The real-time connection is retrying. You can reconnect or reload the inbox manually.'
+      : 'Offline means live updates are paused. Reconnect or reload the inbox to refresh conversations.';
 
   useEffect(() => {
     if (!isLive || accounts.length === 0) return;
 
-    const ids = Array.from(new Set(accounts.map((a) => String(a.id || '').trim()).filter(Boolean)));
+    const ids = Array.from(new Set(accounts.map((account) => String(account.id || '').trim()).filter(Boolean)));
     ids.forEach((id) => wsClient.joinAccountRoom(id));
 
     return () => {
@@ -113,28 +210,37 @@ export default function InboxPage() {
     };
   }, [accounts, isLive]);
 
-  async function handleSelect(conv: Conversation) {
-    setSelected(conv); // immediate optimistic UI update
+  const handleLoadMore = useCallback(async () => {
+    const nextLimit = visibleLimitRef.current + 25;
+    setIsLoadingMore(true);
+    setVisibleLimit(nextLimit);
+
     try {
-      const thread = await getConversationThread(conv.accountId, conv.conversationId);
-      const fallbackMessages = Array.isArray(conv.messages) ? conv.messages : [];
-      const hasThreadMessages = Array.isArray(thread.messages) && thread.messages.length > 0;
-      setSelected({
-        ...conv,
-        messages: hasThreadMessages ? thread.messages : fallbackMessages,
-      });
-    } catch {
-      // ignore — thread shows with previous messages or empty
+      await loadInbox(nextLimit);
+    } finally {
+      setIsLoadingMore(false);
     }
-  }
+  }, [loadInbox]);
+
+  const handleReconnect = useCallback(async () => {
+    wsClient.reconnect();
+    await loadInbox();
+  }, [loadInbox]);
 
   if (loading) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-3 h-full">
-        <Spinner size="lg" />
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                    Fetching messages from all accounts...
-        </p>
+      <div className="flex h-full flex-1 overflow-hidden max-[900px]:block">
+        <div
+          className="w-[360px] flex-shrink-0 border-r max-[900px]:w-full max-[900px]:border-r-0"
+          style={{ borderColor: 'var(--border)', backgroundColor: 'var(--bg-secondary, var(--bg-panel))' }}
+        >
+          <ConversationListSkeleton count={8} />
+        </div>
+        <div className="flex flex-1 items-stretch max-[900px]:hidden" style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
+          <div className="w-full p-6">
+            <MessageThreadSkeleton />
+          </div>
+        </div>
       </div>
     );
   }
@@ -144,31 +250,39 @@ export default function InboxPage() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header with live indicator */}
-      <div className="flex items-center justify-between px-6 py-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
-        <div className="flex items-center gap-3">
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b px-6 py-3" style={{ borderColor: 'var(--border)' }}>
+        <div>
           <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
-            Inbox
+            {routeMeta.pageTitle}
           </h1>
+          <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+            {routeMeta.description}
+          </p>
         </div>
+
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div 
-              className="w-2 h-2 rounded-full" 
-              style={{ 
-                backgroundColor: isLive ? '#10b981' : '#6b7280',
+          <div
+            className="flex items-center gap-2"
+            title={liveTooltip}
+            role="status"
+            aria-live="polite"
+            aria-label={`Live updates status: ${isLive ? 'connected' : wsStatus === 'reconnecting' ? 'reconnecting' : 'offline'}`}
+          >
+            <div
+              className="h-2 w-2 rounded-full"
+              style={{
+                backgroundColor: isLive ? '#10b981' : wsStatus === 'reconnecting' ? '#f59e0b' : '#6b7280',
                 boxShadow: isLive ? '0 0 8px rgba(16, 185, 129, 0.6)' : 'none',
               }}
             />
             <span className="text-sm" style={{ color: 'var(--text-muted)' }}>
-              {isLive ? 'Live' : 'Offline'}
+              {isLive ? 'Live' : wsStatus === 'reconnecting' ? 'Reconnecting' : 'Offline'}
             </span>
           </div>
-          
-          {/* Export button */}
-          <ExportButton 
-            type="messages" 
+
+          <ExportButton
+            type="messages"
             accountId={filter !== 'all' ? filter : undefined}
             label="Export"
             size="sm"
@@ -176,27 +290,84 @@ export default function InboxPage() {
         </div>
       </div>
 
-      {/* Main content */}
-      <div className="flex flex-1 overflow-hidden">
-        <ConversationList
-          conversations={filtered}
-          accounts={accounts}
-          selected={selected}
-          filter={filter}
-          onFilterChange={setFilter}
-          onSelect={handleSelect}
-        />
-        <MessageThread
-          conversation={selected}
-          onMessageSent={(updatedConv) => {
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.conversationId === updatedConv.conversationId ? updatedConv : c
-              )
-            );
-            setSelected(updatedConv);
+      {!isLive && (
+        <div
+          className="mx-6 mt-4 flex items-start justify-between gap-4 rounded-2xl border px-4 py-3 shadow-sm"
+          style={{
+            backgroundColor: wsStatus === 'reconnecting' ? '#fff7ed' : '#fef2f2',
+            borderColor: wsStatus === 'reconnecting' ? '#fdba74' : '#fca5a5',
           }}
-        />
+        >
+          <div className="flex items-start gap-3">
+            <WifiOff size={18} style={{ color: wsStatus === 'reconnecting' ? '#c2410c' : '#b91c1c' }} />
+            <div>
+              <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                {wsStatus === 'reconnecting'
+                  ? 'Real-time inbox is reconnecting'
+                  : 'Real-time inbox is offline'}
+              </p>
+              <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                {wsStatus === 'reconnecting'
+                  ? 'New events may be delayed for a moment. You can reconnect or refresh manually.'
+                  : 'Live updates are paused. Reconnect the socket or reload the inbox to catch up.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleReconnect()}
+              className="button-primary rounded-xl px-3 py-2 text-sm font-medium"
+            >
+              Reconnect
+            </button>
+            <button
+              type="button"
+              onClick={() => void loadInbox()}
+              className="button-outline inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium"
+            >
+              <RefreshCw size={14} />
+              Reload inbox
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-1 overflow-hidden max-[900px]:block">
+        <div className={selected ? 'h-full max-[900px]:hidden' : 'h-full'}>
+          <ConversationList
+            conversations={filteredConversations}
+            accounts={accounts}
+            accountLabels={accountLabelById}
+            selected={selected}
+            filter={filter}
+            search={search}
+            canLoadMore={canLoadMore}
+            isLoadingMore={isLoadingMore}
+            onFilterChange={setFilter}
+            onSearchChange={setSearch}
+            onLoadMore={() => void handleLoadMore()}
+            onSelect={handleSelect}
+          />
+        </div>
+        <div className={`flex flex-1 overflow-hidden ${selected ? 'max-[900px]:flex' : 'max-[900px]:hidden'}`}>
+          <MessageThread
+            conversation={selected}
+            accountLabelById={accountLabelById}
+            onBack={selected ? () => setSelected(null) : undefined}
+            onMessageSent={(updatedConversation) => {
+              setConversations((currentConversations) =>
+                currentConversations.map((conversation) =>
+                  conversation.conversationId === updatedConversation.conversationId
+                    ? updatedConversation
+                    : conversation
+                )
+              );
+              setSelected(updatedConversation);
+            }}
+          />
+        </div>
       </div>
     </div>
   );

@@ -6,6 +6,7 @@ const { getQueueName } = require('./queue');
 
 const { verifySession }         = require('./actions/login');
 const { readMessages }          = require('./actions/readMessages');
+const { readConnections }       = require('./actions/readConnections');
 const { readThread }            = require('./actions/readThread');
 const { sendMessage }           = require('./actions/sendMessage');
 const { sendMessageNew }        = require('./actions/sendMessageNew');
@@ -37,12 +38,13 @@ function startWorker() {
         switch (name) {
           case 'verifySession':         return verifySession(data);
           case 'readMessages':          return readMessages(data);
+          case 'readConnections':       return readConnections(data);
           case 'readThread':            return readThread(data);
           case 'sendMessage':           return sendMessage(data);
           case 'sendMessageNew':        return sendMessageNew(data);
           case 'sendConnectionRequest': return sendConnectionRequest(data);
           case 'searchPeople':          return searchPeople(data);
-          case 'messageSync':           return syncAllAccounts(data.proxyUrl);
+          case 'messageSync':           return syncAllAccounts(data.proxyUrl, { source: data.source });
           default:
             throw new Error(`Unknown job type: ${name}`);
         }
@@ -113,7 +115,7 @@ async function scheduleMessageSync() {
     // Add recurring message sync job
     await queue.add(
       'messageSync',
-      { proxyUrl },
+      { proxyUrl, source: 'scheduler' },
       {
         repeat: {
           pattern: `*/${syncIntervalMinutes} * * * *`, // Every N minutes
@@ -127,7 +129,7 @@ async function scheduleMessageSync() {
     // Trigger initial sync after 30 seconds (give system time to start)
     setTimeout(async () => {
       try {
-        await queue.add('messageSync', { proxyUrl }, { jobId: 'messageSync-initial' });
+        await queue.add('messageSync', { proxyUrl, source: 'scheduler' }, { jobId: 'messageSync-initial' });
         console.log('[Worker] Triggered initial message sync');
       } catch (error) {
         console.error('[Worker] Initial message sync skipped:', error.message);

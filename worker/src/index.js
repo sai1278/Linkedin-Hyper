@@ -15,6 +15,7 @@ const {
 } = require('./session');
 const { verifySession } = require('./actions/login');
 const { readMessages } = require('./actions/readMessages');
+const { readConnections } = require('./actions/readConnections');
 const { readThread } = require('./actions/readThread');
 const { sendMessage } = require('./actions/sendMessage');
 const { sendMessageNew } = require('./actions/sendMessageNew');
@@ -246,7 +247,454 @@ function normalizeProfileUrlForCompare(url) {
   }
 }
 
+function normalizeActivityToken(value) {
+  return normalizeWhitespace(value).toLowerCase();
+}
+
+function buildActivityDedupKey(entry) {
+  const profileUrl = normalizeProfileUrlForCompare(entry?.targetProfileUrl || '');
+  const participantName = normalizeParticipantName(entry?.targetName, profileUrl);
+  const targetIdentity = profileUrl || normalizeActivityToken(participantName);
+  const messageIdentity = normalizeActivityToken(entry?.message || entry?.textPreview || '');
+  return [
+    normalizeActivityToken(entry?.type || 'activity'),
+    normalizeActivityToken(entry?.accountId || ''),
+    targetIdentity,
+    messageIdentity,
+  ].join('|');
+}
+
+function dedupeRecentActivity(entries, windowMs = 10 * 60 * 1000) {
+  const sorted = [...(entries || [])].sort(
+    (a, b) => (Number(b?.timestamp) || 0) - (Number(a?.timestamp) || 0)
+  );
+
+  const latestSeenByKey = new Map();
+  const deduped = [];
+
+  for (const entry of sorted) {
+    const timestamp = Number(entry?.timestamp) || 0;
+    const key = buildActivityDedupKey(entry);
+    const previousTs = latestSeenByKey.get(key);
+
+    if (typeof previousTs === 'number' && previousTs - timestamp <= windowMs) {
+      continue;
+    }
+
+    latestSeenByKey.set(key, timestamp);
+    deduped.push(entry);
+  }
+
+  return deduped;
+}
+
+async function getRecentActivityEntries(accountId, limit = 500) {
+  const redis = getRedis();
+
+  try {
+    const rows = await redis.lrange(`activity:log:${accountId}`, 0, limit);
+    return rows
+      .map((raw) => {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function deriveHealthSeverity({ hasSession, sessionIssue, lastSyncStatus, lastSyncedAt, staleThresholdMs }) {
+  if (!hasSession) return 'critical';
+  if (sessionIssue) return 'critical';
+  if (lastSyncStatus === 'failed') return 'critical';
+  if (lastSyncStatus === 'warning') return 'warning';
+  if (lastSyncStatus === 'running') return 'warning';
+  if (lastSyncedAt && Date.now() - lastSyncedAt > staleThresholdMs) return 'warning';
+  return 'healthy';
+}
+
+async function buildHealthSummary() {
+  const syncIntervalMinutes = Math.max(1, parseInt(process.env.SYNC_INTERVAL_MINUTES || '10', 10) || 10);
+  const staleThresholdMs = syncIntervalMinutes * 60_000 * 3;
+  const healthState = getHealthStateSnapshot();
+  const knownIds = Array.from(await getKnownAccountIdsSet()).sort((a, b) => a.localeCompare(b));
+
+  let dbAccounts = [];
+  try {
+    dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+  } catch (err) {
+    if (!isDatabaseUnavailable(err)) {
+      throw err;
+    }
+  }
+
+  const dbAccountsById = new Map(
+    (dbAccounts || []).map((account) => [String(account?.id || '').trim(), account])
+  );
+
+  const accounts = await Promise.all(
+    knownIds.map(async (accountId) => {
+      const meta = await sessionMeta(accountId).catch(() => null);
+      const state = healthState.accounts[accountId] || {};
+      const dbAccount = dbAccountsById.get(accountId);
+      const lastSyncedAt = dbAccount?.lastSyncedAt ? new Date(dbAccount.lastSyncedAt).getTime() : null;
+      const hasSession = Boolean(meta?.savedAt);
+      const severity = deriveHealthSeverity({
+        hasSession,
+        sessionIssue: state.sessionIssue,
+        lastSyncStatus: state.lastSyncStatus,
+        lastSyncedAt,
+        staleThresholdMs,
+      });
+
+      return {
+        accountId,
+        displayName: String(dbAccount?.displayName || accountId),
+        hasSession,
+        lastSessionSavedAt: Number(meta?.savedAt) || null,
+        sessionAgeSeconds: Number(meta?.ageSeconds) || null,
+        lastSyncedAt,
+        lastSyncStatus: state.lastSyncStatus || 'idle',
+        lastSyncSource: state.lastSyncSource || null,
+        lastSyncStartedAt: Number(state.lastSyncStartedAt) || null,
+        lastSyncCompletedAt: Number(state.lastSyncCompletedAt) || null,
+        lastSyncError: state.lastSyncError || null,
+        lastSyncStats: state.lastSyncStats || null,
+        sessionIssue: state.sessionIssue || null,
+        severity,
+      };
+    })
+  );
+
+  const alerts = [];
+  for (const account of accounts) {
+    if (!account.hasSession) {
+      alerts.push({
+        id: `session-missing-${account.accountId}`,
+        severity: 'critical',
+        kind: 'session',
+        accountId: account.accountId,
+        title: `${account.displayName}: session missing`,
+        message: 'Open Accounts and import fresh LinkedIn cookies before sending or syncing.',
+      });
+      continue;
+    }
+
+    if (account.sessionIssue) {
+      alerts.push({
+        id: `session-issue-${account.accountId}`,
+        severity: 'critical',
+        kind: 'session',
+        accountId: account.accountId,
+        title: `${account.displayName}: session needs attention`,
+        message: account.sessionIssue.message,
+      });
+    }
+
+    if (account.lastSyncStatus === 'failed') {
+      alerts.push({
+        id: `sync-failed-${account.accountId}`,
+        severity: 'critical',
+        kind: 'sync',
+        accountId: account.accountId,
+        title: `${account.displayName}: sync failed`,
+        message: account.lastSyncError || 'The latest sync did not complete successfully.',
+      });
+    } else if (
+      account.lastSyncedAt &&
+      Date.now() - account.lastSyncedAt > staleThresholdMs
+    ) {
+      alerts.push({
+        id: `sync-stale-${account.accountId}`,
+        severity: 'warning',
+        kind: 'sync',
+        accountId: account.accountId,
+        title: `${account.displayName}: sync looks stale`,
+        message: `No successful sync recorded in the last ${syncIntervalMinutes * 3} minutes.`,
+      });
+    }
+  }
+
+  const totals = {
+    totalAccounts: accounts.length,
+    accountsWithSession: accounts.filter((account) => account.hasSession).length,
+    accountsNeedingAttention: accounts.filter((account) => account.severity !== 'healthy').length,
+    criticalAlerts: alerts.filter((alert) => alert.severity === 'critical').length,
+    warningAlerts: alerts.filter((alert) => alert.severity === 'warning').length,
+  };
+
+  return {
+    status: totals.criticalAlerts > 0 ? 'critical' : totals.warningAlerts > 0 ? 'warning' : 'healthy',
+    generatedAt: Date.now(),
+    syncIntervalMinutes,
+    totals,
+    alerts,
+    accounts,
+    bulkSync: healthState.bulkSync,
+  };
+}
+
+async function buildStartupValidationReport() {
+  const checks = [];
+  const redis = getRedis();
+
+  try {
+    const result = await withTimeout(redis.ping(), 2000, 'REDIS_TIMEOUT');
+    checks.push({
+      id: 'redis',
+      label: 'Redis connectivity',
+      status: String(result).toUpperCase() === 'PONG' ? 'pass' : 'fail',
+      detail: String(result),
+    });
+  } catch (err) {
+    checks.push({
+      id: 'redis',
+      label: 'Redis connectivity',
+      status: 'fail',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+    checks.push({
+      id: 'database',
+      label: 'Database connectivity',
+      status: 'pass',
+      detail: `${dbAccounts.length} account row(s) readable`,
+    });
+  } catch (err) {
+    checks.push({
+      id: 'database',
+      label: 'Database connectivity',
+      status: 'fail',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  let knownIds = [];
+  try {
+    knownIds = Array.from(await getKnownAccountIdsSet());
+    checks.push({
+      id: 'accounts',
+      label: 'Configured account registry',
+      status: knownIds.length > 0 ? 'pass' : 'warn',
+      detail: knownIds.length > 0 ? `${knownIds.length} account(s) available` : 'No accounts configured yet',
+    });
+  } catch (err) {
+    checks.push({
+      id: 'accounts',
+      label: 'Configured account registry',
+      status: 'fail',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  let sessionCount = 0;
+  for (const accountId of knownIds) {
+    const meta = await sessionMeta(accountId).catch(() => null);
+    if (meta?.savedAt) {
+      sessionCount += 1;
+    }
+  }
+
+  checks.push({
+    id: 'sessions',
+    label: 'Imported LinkedIn sessions',
+    status: sessionCount > 0 ? 'pass' : (knownIds.length > 0 ? 'warn' : 'pass'),
+    detail: knownIds.length > 0
+      ? `${sessionCount}/${knownIds.length} account(s) have saved cookies`
+      : 'No accounts configured yet',
+  });
+
+  checks.push({
+    id: 'scheduler',
+    label: 'Automatic sync scheduler',
+    status: process.env.DISABLE_MESSAGE_SYNC === '1' ? 'warn' : 'pass',
+    detail: process.env.DISABLE_MESSAGE_SYNC === '1'
+      ? 'DISABLE_MESSAGE_SYNC=1'
+      : `Runs every ${Math.max(1, parseInt(process.env.SYNC_INTERVAL_MINUTES || '10', 10) || 10)} minute(s)`,
+  });
+
+  const healthSummary = await buildHealthSummary();
+
+  return {
+    status: checks.some((check) => check.status === 'fail')
+      ? 'fail'
+      : checks.some((check) => check.status === 'warn')
+        ? 'warn'
+        : 'pass',
+    generatedAt: Date.now(),
+    checks,
+    healthSummary: {
+      status: healthSummary.status,
+      criticalAlerts: healthSummary.totals.criticalAlerts,
+      warningAlerts: healthSummary.totals.warningAlerts,
+      accountsNeedingAttention: healthSummary.totals.accountsNeedingAttention,
+    },
+  };
+}
+
 // â”€â”€ Health (no auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function connectionKey(accountId, name, profileUrl) {
+  const normalizedUrl = normalizeProfileUrlForCompare(profileUrl);
+  const normalizedName = normalizeWhitespace(name).toLowerCase();
+  return `${accountId}|${normalizedUrl || normalizedName}`;
+}
+
+function pushLatestConnection(latestByConnection, item) {
+  if (!item?.accountId) return;
+  const key = connectionKey(item.accountId, item.name, item.profileUrl);
+  const previous = latestByConnection.get(key);
+  const currentTs = Number(item.connectedAt) || 0;
+  const previousTs = Number(previous?.connectedAt) || 0;
+  if (!previous || currentTs >= previousTs) {
+    latestByConnection.set(key, item);
+  }
+}
+
+function mapActivityEntryToConnection(accountId, entry) {
+  if (!entry || entry.type !== 'connectionSent') {
+    return null;
+  }
+  const profileUrl = String(entry.targetProfileUrl || '');
+  const name = normalizeParticipantName(entry.targetName, profileUrl);
+  if (!name || name === 'Unknown') return null;
+
+  return {
+    accountId,
+    name,
+    profileUrl,
+    connectedAt: Number(entry.timestamp) || Date.now(),
+    source: entry.type,
+  };
+}
+
+async function buildUnifiedConnections(limit = 300) {
+  const ids = await listKnownAccountIds();
+  const latestByConnection = new Map();
+
+  for (const accountId of ids) {
+    const activityEntries = await getRecentActivityEntries(accountId, 1000);
+    for (const entry of activityEntries) {
+      const mapped = mapActivityEntryToConnection(accountId, entry);
+      if (mapped) {
+        pushLatestConnection(latestByConnection, {
+          ...mapped,
+        });
+      }
+    }
+  }
+
+  const proxyUrl = process.env.PROXY_URL || null;
+  const liveResults = await Promise.allSettled(
+    ids.map(async (accountId) => {
+      try {
+        const result = await runJob(
+          'readConnections',
+          { accountId, proxyUrl, limit: Math.min(limit, 200) },
+          90_000
+        );
+        return { accountId, items: result?.items || [] };
+      } catch (queueErr) {
+        const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+        const isRedisConnectivityError =
+          msg.includes('Connection is closed') ||
+          msg.includes('ECONNREFUSED') ||
+          msg.includes('ENOTFOUND') ||
+          msg.includes('getaddrinfo');
+
+        if (!isRedisConnectivityError) {
+          throw queueErr;
+        }
+
+        const directResult = await readConnections({
+          accountId,
+          proxyUrl,
+          limit: Math.min(limit, 200),
+        });
+        return { accountId, items: directResult?.items || [] };
+      }
+    })
+  );
+
+  for (const result of liveResults) {
+    if (result.status !== 'fulfilled') {
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      console.warn(`[Connections] Live connections scrape failed: ${reason}`);
+      continue;
+    }
+
+    for (const item of result.value.items || []) {
+      const profileUrl = String(item?.profileUrl || '');
+      const name = normalizeParticipantName(item?.name, profileUrl);
+      if (!name || name === 'Unknown') continue;
+
+      pushLatestConnection(latestByConnection, {
+        accountId: result.value.accountId,
+        name,
+        profileUrl,
+        headline: item?.headline || '',
+        connectedAt: Number(item?.connectedAt) || undefined,
+        source: 'linkedin',
+      });
+    }
+  }
+
+    const connections = Array.from(latestByConnection.values())
+      .sort((a, b) => {
+        const tsDiff = (Number(b.connectedAt) || 0) - (Number(a.connectedAt) || 0);
+        if (tsDiff !== 0) return tsDiff;
+        return String(a.name || '').localeCompare(String(b.name || ''));
+      })
+      .slice(0, limit);
+
+    return { connections };
+  }
+
+const UNIFIED_CONNECTIONS_CACHE_TTL_MS = 300_000;
+let unifiedConnectionsCache = {
+  expiresAt: 0,
+  payload: { connections: [] },
+};
+let unifiedConnectionsInFlight = null;
+
+async function getUnifiedConnectionsWithCache(limit = 300, { refresh = false } = {}) {
+  if (refresh) {
+    unifiedConnectionsCache.expiresAt = 0;
+  }
+
+  const now = Date.now();
+  if (!refresh && unifiedConnectionsCache.expiresAt > now) {
+    return { connections: unifiedConnectionsCache.payload.connections.slice(0, limit) };
+  }
+
+  if (!refresh && unifiedConnectionsInFlight) {
+    const payload = await unifiedConnectionsInFlight;
+    return { connections: payload.connections.slice(0, limit) };
+  }
+
+  unifiedConnectionsInFlight = (async () => {
+    const payload = await buildUnifiedConnections(limit);
+    unifiedConnectionsCache = {
+      expiresAt: Date.now() + UNIFIED_CONNECTIONS_CACHE_TTL_MS,
+      payload,
+    };
+    return payload;
+  })();
+
+  try {
+    const payload = await unifiedConnectionsInFlight;
+    return { connections: payload.connections.slice(0, limit) };
+  } finally {
+    unifiedConnectionsInFlight = null;
+  }
+}
 
 async function buildUnifiedInboxFromActivity(limit = 100) {
   const ids = await listKnownAccountIds();
@@ -323,6 +771,7 @@ let unifiedInboxInFlight = null;
 function normalizeConversationFromInboxItem(accountId, item) {
   const participantProfileUrl = String(item?.participants?.[0]?.profileUrl || '');
   const participantName = normalizeParticipantName(item?.participants?.[0]?.name, participantProfileUrl);
+  const participantAvatarUrl = String(item?.participants?.[0]?.avatarUrl || '');
   const rawId = String(item?.id || `unknown-${Date.now()}`);
   const createdAt = item?.lastMessage?.createdAt || item?.createdAt || new Date().toISOString();
   const sentAt = Number(new Date(createdAt).getTime()) || Date.now();
@@ -333,6 +782,7 @@ function normalizeConversationFromInboxItem(accountId, item) {
     participant: {
       name: participantName,
       profileUrl: participantProfileUrl,
+      avatarUrl: participantAvatarUrl || null,
     },
     lastMessage: {
       text: String(item?.lastMessage?.text || ''),
@@ -344,23 +794,204 @@ function normalizeConversationFromInboxItem(accountId, item) {
   };
 }
 
+function getConversationSentAt(conv) {
+  return Number(conv?.lastMessage?.sentAt) || 0;
+}
+
+function getConversationText(conv) {
+  return normalizeWhitespace(conv?.lastMessage?.text || '');
+}
+
+function getConversationProfileUrl(conv) {
+  return normalizeProfileUrlForCompare(conv?.participant?.profileUrl || '');
+}
+
+function getConversationAvatarUrl(conv) {
+  return String(conv?.participant?.avatarUrl || '').trim();
+}
+
+function getConversationNameToken(conv) {
+  return normalizeWhitespace(conv?.participant?.name || '').toLowerCase();
+}
+
+function conversationQualityScore(conv) {
+  const hasProfile = Boolean(getConversationProfileUrl(conv));
+  const hasText = Boolean(getConversationText(conv));
+  const hasMessages = Array.isArray(conv?.messages) && conv.messages.length > 0;
+  const conversationId = String(conv?.conversationId || '');
+  const isFallbackId = conversationId.startsWith('fallback-');
+  const isActivityId = conversationId.startsWith('activity-');
+
+  let score = 0;
+  if (hasProfile) score += 40;
+  if (hasText) score += 20;
+  if (hasMessages) score += 10;
+  if (isActivityId) score += 5;
+  if (isFallbackId) score -= 15;
+  return score;
+}
+
+function isLowSignalFallbackConversation(conv) {
+  const conversationId = String(conv?.conversationId || '');
+  const hasProfile = Boolean(getConversationProfileUrl(conv));
+  const hasText = Boolean(getConversationText(conv));
+  return conversationId.startsWith('fallback-') && !hasProfile && !hasText;
+}
+
+function shouldReplaceConversation(previous, current) {
+  const previousScore = conversationQualityScore(previous);
+  const currentScore = conversationQualityScore(current);
+  if (currentScore !== previousScore) {
+    return currentScore > previousScore;
+  }
+
+  const previousSentAt = getConversationSentAt(previous);
+  const currentSentAt = getConversationSentAt(current);
+  if (currentSentAt !== previousSentAt) {
+    return currentSentAt > previousSentAt;
+  }
+
+  const previousUnread = Number(previous?.unreadCount) || 0;
+  const currentUnread = Number(current?.unreadCount) || 0;
+  return currentUnread > previousUnread;
+}
+
 function dedupeAndSortConversations(conversations) {
+  const profileAliasByName = new Map();
+  const avatarAliasByName = new Map();
+
+  for (const conv of conversations) {
+    if (!conv?.accountId) continue;
+    const profileUrl = getConversationProfileUrl(conv);
+    const avatarUrl = getConversationAvatarUrl(conv);
+    const nameToken = getConversationNameToken(conv);
+    if (!profileUrl || !nameToken) continue;
+
+    const aliasKey = `${conv.accountId}|${nameToken}`;
+    const previous = profileAliasByName.get(aliasKey);
+    if (!previous || getConversationSentAt(conv) >= previous.sentAt) {
+      profileAliasByName.set(aliasKey, {
+        profileUrl,
+        sentAt: getConversationSentAt(conv),
+      });
+    }
+
+    if (avatarUrl) {
+      const previousAvatar = avatarAliasByName.get(aliasKey);
+      if (!previousAvatar || getConversationSentAt(conv) >= previousAvatar.sentAt) {
+        avatarAliasByName.set(aliasKey, {
+          avatarUrl,
+          sentAt: getConversationSentAt(conv),
+        });
+      }
+    }
+  }
+
   const latestByConversation = new Map();
 
   for (const conv of conversations) {
     if (!conv?.accountId) continue;
-    const key = `${conv.accountId}|${conv.participant?.name || ''}|${conv.participant?.profileUrl || ''}`;
+
+    const nameToken = getConversationNameToken(conv);
+    const directProfileUrl = getConversationProfileUrl(conv);
+    const directAvatarUrl = getConversationAvatarUrl(conv);
+    const aliasProfileUrl = nameToken
+      ? profileAliasByName.get(`${conv.accountId}|${nameToken}`)?.profileUrl || ''
+      : '';
+    const aliasAvatarUrl = nameToken
+      ? avatarAliasByName.get(`${conv.accountId}|${nameToken}`)?.avatarUrl || ''
+      : '';
+    const resolvedProfileUrl = directProfileUrl || aliasProfileUrl;
+    const resolvedAvatarUrl = directAvatarUrl || aliasAvatarUrl;
+    const key = resolvedProfileUrl
+      ? `${conv.accountId}|profile|${resolvedProfileUrl}`
+      : `${conv.accountId}|name|${nameToken || String(conv?.conversationId || '').toLowerCase()}`;
+
+    const enrichedConversation = {
+      ...conv,
+      participant: {
+        ...conv.participant,
+        profileUrl: resolvedProfileUrl || conv?.participant?.profileUrl || '',
+        avatarUrl: resolvedAvatarUrl || conv?.participant?.avatarUrl || null,
+      },
+    };
+
     const previous = latestByConversation.get(key);
-    const currentSentAt = Number(conv?.lastMessage?.sentAt) || 0;
-    const previousSentAt = Number(previous?.lastMessage?.sentAt) || 0;
-    if (!previous || currentSentAt >= previousSentAt) {
-      latestByConversation.set(key, conv);
+    if (!previous || shouldReplaceConversation(previous, enrichedConversation)) {
+      latestByConversation.set(key, enrichedConversation);
     }
   }
 
-  return Array.from(latestByConversation.values()).sort(
+  const sorted = Array.from(latestByConversation.values()).sort(
     (a, b) => (Number(b?.lastMessage?.sentAt) || 0) - (Number(a?.lastMessage?.sentAt) || 0)
   );
+
+  const hasHighSignalRows = sorted.some(
+    (conv) => Boolean(getConversationProfileUrl(conv)) || Boolean(getConversationText(conv))
+  );
+
+  if (!hasHighSignalRows) {
+    return sorted;
+  }
+
+  const cleaned = sorted.filter((conv) => !isLowSignalFallbackConversation(conv));
+  return cleaned.length > 0 ? cleaned : sorted;
+}
+
+async function persistOptimisticSendNewResult({ accountId, profileUrl, text, result }) {
+  let messageRepo;
+  try {
+    messageRepo = require('./db/repositories/MessageRepository');
+  } catch {
+    return;
+  }
+
+  const participantProfileUrl = String(profileUrl || '');
+  const participantName = normalizeParticipantName('', participantProfileUrl);
+  const rawChatId = String(result?.chatId || '').trim();
+  const fallbackKey = `${accountId}|${participantName}|${participantProfileUrl}`;
+  const conversationId =
+    rawChatId && rawChatId !== 'new'
+      ? normalizeThreadId(accountId, rawChatId)
+      : `activity-${Buffer.from(fallbackKey).toString('base64url')}`;
+
+  const parsedCreatedAt = new Date(result?.createdAt || Date.now());
+  const createdAt = Number.isNaN(parsedCreatedAt.getTime()) ? new Date() : parsedCreatedAt;
+  const messageId = String(result?.id || `optimistic-${Date.now()}`);
+
+  try {
+    await withTimeout(
+      messageRepo.upsertConversation({
+        id: conversationId,
+        accountId,
+        participantName,
+        participantProfileUrl,
+        participantAvatarUrl: null,
+        lastMessageAt: createdAt,
+        lastMessageText: text,
+        lastMessageSentByMe: true,
+      }),
+      4000
+    );
+
+    await withTimeout(
+      messageRepo.upsertMessage({
+        conversationId,
+        accountId,
+        senderId: '__self__',
+        senderName: accountId,
+        text,
+        sentAt: createdAt.toISOString(),
+        isSentByMe: true,
+        linkedinMessageId: messageId,
+      }),
+      4000
+    );
+  } catch (err) {
+    if (!isDatabaseUnavailable(err)) {
+      console.warn('[send-new] Optimistic DB persistence failed:', err?.message || String(err));
+    }
+  }
 }
 
 async function buildUnifiedInboxFromLive(limit = 100) {
@@ -377,12 +1008,17 @@ async function buildUnifiedInboxFromLive(limit = 100) {
         30_000,
         'READ_INBOX_TIMEOUT'
       );
+      clearSessionIssue(accountId);
       for (const item of inbox?.items || []) {
         conversations.push(normalizeConversationFromInboxItem(accountId, item));
       }
     } catch (err) {
       const code = err?.code;
       if (code === 'NO_SESSION' || code === 'SESSION_EXPIRED') {
+        markSessionIssue(accountId, {
+          code,
+          message: err?.message || 'LinkedIn session expired. Refresh cookies.',
+        });
         sessionFailures.push({ accountId, code });
       } else if (code !== 'READ_INBOX_TIMEOUT') {
         console.warn(`[Inbox] Live read failed for ${accountId}:`, err?.message || String(err));
@@ -464,21 +1100,135 @@ const { cleanupContext } = require('./browser');
 const accountRepo = require('./db/repositories/AccountRepository');
 const exportRoutes = require('./routes/export');
 const { syncAccount, syncAllAccounts } = require('./services/messageSyncService');
+const {
+  clearSessionIssue,
+  getHealthStateSnapshot,
+  markBulkSyncStarted,
+  markSessionIssue,
+  markSyncStarted,
+} = require('./healthState');
+
+async function getKnownAccountIdsSet() {
+  const ids = new Set(
+    (await listKnownAccountIds())
+      .map((id) => String(id || '').trim())
+      .filter(Boolean)
+  );
+
+  try {
+    const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+    for (const account of dbAccounts || []) {
+      const id = String(account?.id || '').trim();
+      if (id) ids.add(id);
+    }
+  } catch (err) {
+    if (!isDatabaseUnavailable(err)) {
+      throw err;
+    }
+    if (ids.size === 0) {
+      const lookupErr = new Error('Account registry is unavailable. Retry after database connectivity is restored.');
+      lookupErr.status = 503;
+      lookupErr.code = 'ACCOUNT_LOOKUP_UNAVAILABLE';
+      throw lookupErr;
+    }
+  }
+
+  return ids;
+}
+
+async function assertKnownAccountId(accountId) {
+  const normalizedAccountId = validateId(accountId, { field: 'accountId' });
+  const knownIds = await getKnownAccountIdsSet();
+  if (knownIds.has(normalizedAccountId)) {
+    return normalizedAccountId;
+  }
+
+  const err = new Error(`Unknown accountId: ${normalizedAccountId}`);
+  err.status = 404;
+  err.code = 'UNKNOWN_ACCOUNT';
+  throw err;
+}
+
+async function assertConversationBelongsToAccount(accountId, conversationId) {
+  const rawChatId = validateId(conversationId, { field: 'chatId' });
+  const normalizedChatId = normalizeThreadId(accountId, rawChatId);
+
+  if (normalizedChatId.startsWith('activity-') || normalizedChatId === 'new') {
+    return normalizedChatId;
+  }
+
+  const messageRepo = require('./db/repositories/MessageRepository');
+  let conversation = null;
+
+  try {
+    conversation = await withTimeout(messageRepo.getConversationById(rawChatId), 4000);
+    if (!conversation && normalizedChatId !== rawChatId) {
+      conversation = await withTimeout(messageRepo.getConversationById(normalizedChatId), 4000);
+    }
+  } catch (err) {
+    if (!isDatabaseUnavailable(err)) {
+      throw err;
+    }
+    const lookupErr = new Error('Conversation lookup unavailable. Retry after database connectivity is restored.');
+    lookupErr.status = 503;
+    lookupErr.code = 'CONVERSATION_LOOKUP_UNAVAILABLE';
+    throw lookupErr;
+  }
+
+  if (!conversation) {
+    const err = new Error(`Unknown chatId for account ${accountId}`);
+    err.status = 404;
+    err.code = 'UNKNOWN_CHAT';
+    throw err;
+  }
+
+  if (String(conversation.accountId || '') !== String(accountId)) {
+    const err = new Error(`chatId does not belong to account ${accountId}`);
+    err.status = 403;
+    err.code = 'CHAT_ACCOUNT_MISMATCH';
+    throw err;
+  }
+
+  return normalizedChatId;
+}
 
 // Mount export routes
 app.use('/export', exportRoutes);
 
+app.get('/health/summary', async (_req, res) => {
+  try {
+    const summary = await buildHealthSummary();
+    res.json(summary);
+  } catch (err) {
+    console.error('[API] Health summary failed:', err);
+    res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
+  }
+});
+
+app.get('/health/startup-validation', async (_req, res) => {
+  try {
+    const report = await buildStartupValidationReport();
+    res.json(report);
+  } catch (err) {
+    console.error('[API] Startup validation failed:', err);
+    res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
+  }
+});
+
 // POST /sync/messages - Manual message sync trigger
 app.post('/sync/messages', async (req, res) => {
   try {
-    const { accountId } = req.body;
+    const accountId = req.body?.accountId
+      ? await assertKnownAccountId(req.body.accountId)
+      : '';
     const proxyUrl = process.env.PROXY_URL || null;
 
     console.log('[API] Manual sync triggered', accountId ? `for account ${accountId}` : 'for all accounts');
 
     // Trigger sync in background (don't wait for completion)
     if (accountId) {
-      syncAccount(accountId, proxyUrl)
+      markSyncStarted(accountId, 'manual');
+      syncAccount(accountId, proxyUrl, { source: 'manual' })
         .then(stats => console.log('[API] Manual sync completed:', stats))
         .catch(err => console.error('[API] Manual sync failed:', err));
       
@@ -488,7 +1238,9 @@ app.post('/sync/messages', async (req, res) => {
         accountId,
       });
     } else {
-      syncAllAccounts(proxyUrl)
+      const configuredIds = (process.env.ACCOUNT_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+      markBulkSyncStarted(configuredIds, 'manual');
+      syncAllAccounts(proxyUrl, { source: 'manual' })
         .then(stats => console.log('[API] Manual sync completed:', stats))
         .catch(err => console.error('[API] Manual sync failed:', err));
       
@@ -498,7 +1250,7 @@ app.post('/sync/messages', async (req, res) => {
       });
     }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 
@@ -552,6 +1304,7 @@ app.post('/accounts/:accountId/session', async (req, res) => {
       });
     }
     await saveCookies(accountId, cookies, { requireAuthCookies: true, source: 'api-import' });
+    clearSessionIssue(accountId);
     try {
       await withTimeout(accountRepo.upsertAccount(accountId, accountId), 4000);
     } catch (dbErr) {
@@ -593,7 +1346,7 @@ app.delete('/accounts/:accountId/session', async (req, res) => {
 // GET /accounts/:accountId/limits
 app.get('/accounts/:accountId/limits', async (req, res) => {
   try {
-    const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    const accountId = await assertKnownAccountId(req.params.accountId);
     const limits = await getLimits(accountId);
     res.json(limits);
   } catch (err) {
@@ -613,6 +1366,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
   const queue       = getQueue(accountId);
   const queueEvents = getQueueEvents(accountId);
   const nonIdempotentJobs = new Set(['sendMessage', 'sendMessageNew', 'sendConnectionRequest']);
+  const dedupeWindowJobs = new Set(['messageSync']);
 
   const toQueueUnavailableError = (originalErr) => {
     const msg = originalErr instanceof Error ? originalErr.message : String(originalErr);
@@ -633,9 +1387,11 @@ async function runJob(name, data, timeoutMs = 120_000) {
     );
   };
   
-  // Deterministic jobId deduplicates the same job within a 30-second window.
-  // BullMQ silently drops adds with a jobId that already exists in the queue.
-  const jobId = `${name}:${accountId}:${Math.floor(Date.now() / 30_000)}`;
+  // Only dedupe periodic background jobs.
+  // Verify/send/read jobs must always run fresh so cookie or UI state changes are honored immediately.
+  const jobId = dedupeWindowJobs.has(name)
+    ? `${name}:${accountId}:${Math.floor(Date.now() / 30_000)}`
+    : undefined;
 
   let job;
   try {
@@ -648,7 +1404,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
         };
 
     job = await queue.add(name, data, {
-      jobId,
+      ...(jobId ? { jobId } : {}),
       // Bounded job retention so Redis doesn't accumulate gigabytes of job history.
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
@@ -738,6 +1494,8 @@ async function runDirectJob(name, data) {
       return verifySession(data);
     case 'readMessages':
       return readMessages(data);
+    case 'readConnections':
+      return readConnections(data);
     case 'readThread':
       return readThread(data);
     case 'sendMessage':
@@ -749,7 +1507,7 @@ async function runDirectJob(name, data) {
     case 'searchPeople':
       return searchPeople(data);
     case 'messageSync':
-      return syncAllAccounts(data.proxyUrl);
+      return syncAllAccounts(data.proxyUrl, { source: data.source });
     default:
       throw new Error(`Unknown job type: ${name}`);
   }
@@ -759,7 +1517,7 @@ async function runDirectJob(name, data) {
 
 app.post('/accounts/:accountId/verify', async (req, res) => {
   try {
-    const accountId = req.params.accountId;
+    const accountId = await assertKnownAccountId(req.params.accountId);
     const proxyUrl = process.env.PROXY_URL || null;
 
     // Local dev mode: bypass BullMQ queue so verification can run without Redis.
@@ -785,8 +1543,15 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
       }
     }
 
+    clearSessionIssue(accountId);
     res.json(result);
   } catch (err) {
+    if (['NO_SESSION', 'SESSION_EXPIRED', 'AUTHENTICATED_STATE_NOT_REACHED', 'COOKIES_MISSING'].includes(err?.code)) {
+      markSessionIssue(req.params.accountId, {
+        code: err.code,
+        message: toPublicOperationError(err),
+      });
+    }
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
       error: toPublicOperationError(err),
@@ -797,7 +1562,7 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
 
 app.get('/messages/inbox', async (req, res) => {
   try {
-    const accountId = validateId(req.query.accountId, { field: 'accountId' });
+    const accountId = await assertKnownAccountId(req.query.accountId);
     const limit     = parseLimit(req.query.limit, 20);
     const result    = await runJob('readMessages', {
       accountId, limit, proxyUrl: process.env.PROXY_URL || null,
@@ -816,9 +1581,9 @@ app.get('/messages/inbox', async (req, res) => {
 app.get('/messages/thread', async (req, res) => {
   try {
     const messageRepo = require('./db/repositories/MessageRepository');
-    const accountId = validateId(req.query.accountId, { field: 'accountId' });
-    const chatId    = validateId(req.query.chatId,    { field: 'chatId' });
-    const normalizedChatId = normalizeThreadId(accountId, chatId);
+    const accountId = await assertKnownAccountId(req.query.accountId);
+    const chatId    = validateId(req.query.chatId, { field: 'chatId' });
+    const normalizedChatId = await assertConversationBelongsToAccount(accountId, chatId);
     const limit     = parseLimit(req.query.limit, 100);
     const offset    = parseInt(req.query.offset) || 0;
     const proxyUrl  = process.env.PROXY_URL || null;
@@ -972,6 +1737,51 @@ app.get('/messages/thread', async (req, res) => {
       }
     }
 
+    if (liveItems.length === 0) {
+      try {
+        let conversation = await withTimeout(
+          messageRepo.getConversationById(chatId),
+          4000
+        );
+
+        if (!conversation && normalizedChatId !== chatId) {
+          conversation = await withTimeout(
+            messageRepo.getConversationById(normalizedChatId),
+            4000
+          );
+        }
+
+        const previewText = normalizeWhitespace(conversation?.lastMessageText || '');
+        if (previewText) {
+          const previewCreatedAt = new Date(conversation?.lastMessageAt || Date.now()).toISOString();
+          const previewSentByMe = Boolean(conversation?.lastMessageSentByMe);
+          return res.json({
+            items: [{
+              id: `preview-${normalizedChatId}`,
+              chatId: normalizedChatId,
+              senderId: previewSentByMe ? '__self__' : 'other',
+              text: previewText,
+              createdAt: previewCreatedAt,
+              sentAt: previewCreatedAt,
+              isSentByMe: previewSentByMe,
+              senderName: previewSentByMe
+                ? accountId
+                : normalizeParticipantName(
+                    conversation?.participantName,
+                    conversation?.participantProfileUrl || ''
+                  ),
+            }],
+            cursor: null,
+            hasMore: false,
+          });
+        }
+      } catch (previewErr) {
+        if (!isDatabaseUnavailable(previewErr)) {
+          console.warn('[Thread] Preview fallback failed:', previewErr.message || String(previewErr));
+        }
+      }
+    }
+
     return res.json({
       items: liveItems,
       cursor: liveThread?.cursor || null,
@@ -988,9 +1798,8 @@ app.get('/messages/thread', async (req, res) => {
 
 app.post('/messages/send', async (req, res) => {
   try {
-    const accountId = validateId(req.body?.accountId, { field: 'accountId' });
-    const chatId    = validateId(req.body?.chatId,    { field: 'chatId' });
-    const normalizedChatId = normalizeThreadId(accountId, chatId);
+    const accountId = await assertKnownAccountId(req.body?.accountId);
+    const normalizedChatId = await assertConversationBelongsToAccount(accountId, req.body?.chatId);
     const text      = sanitizeText(req.body?.text, { maxLength: 3000 });
     if (!text) return res.status(400).json({ error: 'text is required' });
     if (normalizedChatId.startsWith('activity-')) {
@@ -1018,7 +1827,7 @@ app.post('/messages/send', async (req, res) => {
 
 app.post('/messages/send-new', async (req, res) => {
   try {
-    const accountId  = validateId(req.body?.accountId, { field: 'accountId' });
+    const accountId  = await assertKnownAccountId(req.body?.accountId);
     const profileUrl = validateProfileUrl(req.body?.profileUrl);
     const text       = sanitizeText(req.body?.text, { maxLength: 3000 });
     if (!text) return res.status(400).json({ error: 'text is required' });
@@ -1069,6 +1878,13 @@ app.post('/messages/send-new', async (req, res) => {
       });
     }
 
+    await persistOptimisticSendNewResult({
+      accountId,
+      profileUrl,
+      text,
+      result,
+    });
+
     if (!res.headersSent) {
       res.json(result);
     }
@@ -1084,7 +1900,7 @@ app.post('/messages/send-new', async (req, res) => {
 
 app.post('/connections/send', async (req, res) => {
   try {
-    const accountId  = validateId(req.body?.accountId, { field: 'accountId' });
+    const accountId  = await assertKnownAccountId(req.body?.accountId);
     const profileUrl = validateProfileUrl(req.body?.profileUrl);
     const note       = req.body?.note == null ? '' : sanitizeNote(req.body.note);
 
@@ -1102,6 +1918,25 @@ app.post('/connections/send', async (req, res) => {
 });
 
 // GET /inbox/unified â€” Query conversations from database (all accounts)
+app.get('/connections/unified', async (req, res) => {
+  try {
+    const limit = parseLimit(req.query.limit, 300, 1000);
+    const refresh = String(req.query.refresh || '') === '1';
+    const payload = await getUnifiedConnectionsWithCache(limit, { refresh });
+    res.json(payload);
+  } catch (err) {
+    if (err?.status) {
+      return res.status(err.status).json({
+        error: toPublicOperationError(err),
+        code: err.code,
+      });
+    }
+
+    console.error('[API] Error fetching unified connections:', err);
+    res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
+  }
+});
+
 app.get('/inbox/unified', async (req, res) => {
   try {
     const messageRepo = require('./db/repositories/MessageRepository');
@@ -1122,6 +1957,7 @@ app.get('/inbox/unified', async (req, res) => {
         participant: {
           name: conv.participantName,
           profileUrl: conv.participantProfileUrl || '',
+          avatarUrl: conv.participantAvatarUrl || null,
         },
         lastMessage: {
           text: conv.lastMessageText,
@@ -1133,12 +1969,20 @@ app.get('/inbox/unified', async (req, res) => {
       })),
     };
 
-    if (payload.conversations.length === 0) {
+    // Merge DB-backed conversations with recent activity so newly sent messages
+    // show in the UI even before full thread sync catches up.
+    const activityPayload = await buildUnifiedInboxFromActivity(limit);
+    const mergedConversations = dedupeAndSortConversations([
+      ...payload.conversations,
+      ...(activityPayload?.conversations || []),
+    ]).slice(0, limit);
+
+    if (mergedConversations.length === 0) {
       const livePayload = await buildUnifiedInboxWithFallback(limit);
       return res.json(livePayload);
     }
 
-    res.json(payload);
+    res.json({ conversations: mergedConversations });
   } catch (err) {
     if (isDatabaseUnavailable(err)) {
       try {
@@ -1180,6 +2024,7 @@ app.get('/stats/all/summary', async (_req, res) => {
 
     let totalMessages    = 0;
     let totalConnections = 0;
+    const recentActivityEntries = [];
 
     const accountStats = await Promise.all(
       ids.map(async (id) => {
@@ -1191,14 +2036,38 @@ app.get('/stats/all/summary', async (_req, res) => {
         const parsedConns = parseInt(conns || '0', 10);
         totalMessages    += parsedMsgs;
         totalConnections += parsedConns;
+
+        const activityEntries = await getRecentActivityEntries(id, 50);
+        for (const entry of activityEntries) {
+          if (!['messageSent', 'connectionSent', 'profileViewed'].includes(entry?.type)) {
+            continue;
+          }
+
+          const profileUrl = String(entry.targetProfileUrl || '');
+          recentActivityEntries.push({
+            ...entry,
+            targetName: normalizeParticipantName(entry.targetName, profileUrl),
+            message:
+              typeof entry.message === 'string' && entry.message.trim()
+                ? entry.message
+                : (typeof entry.textPreview === 'string' ? entry.textPreview : undefined),
+          });
+        }
+
         return { id, totalActivity: parsedMsgs + parsedConns };
       })
     );
+
+    const recentActivity = dedupeRecentActivity(recentActivityEntries)
+      .sort((a, b) => (Number(b?.timestamp) || 0) - (Number(a?.timestamp) || 0))
+      .slice(0, 10);
 
     res.json({
       accounts: Object.fromEntries(accountStats.map(a => [a.id, a])),
       totalMessages,
       totalConnections,
+      totalActivity: totalMessages + totalConnections,
+      recentActivity,
     });
   } catch (err) {
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
@@ -1207,7 +2076,7 @@ app.get('/stats/all/summary', async (_req, res) => {
 
 app.get('/stats/:accountId/summary', async (req, res) => {
   try {
-    const { accountId } = req.params;
+    const accountId = await assertKnownAccountId(req.params.accountId);
     const redis = getRedis();
     const key   = `activity:log:${accountId}`;
     const total = await redis.llen(key).catch(() => 0);
@@ -1219,7 +2088,7 @@ app.get('/stats/:accountId/summary', async (req, res) => {
 
 app.get('/stats/:accountId/activity', async (req, res) => {
   try {
-    const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    const accountId = await assertKnownAccountId(req.params.accountId);
     const page  = parseInt(req.query.page  ?? '0',  10);
     const limit = Math.min(parseInt(req.query.limit ?? '50', 10), 200);
     const redis = getRedis();
@@ -1236,10 +2105,16 @@ app.get('/stats/:accountId/activity', async (req, res) => {
       return {
         ...entry,
         targetName: normalizeParticipantName(entry.targetName, profileUrl),
+        message:
+          typeof entry.message === 'string' && entry.message.trim()
+            ? entry.message
+            : (typeof entry.textPreview === 'string' ? entry.textPreview : undefined),
       };
     });
 
-    res.json({ entries, total });
+    const optimizedEntries = dedupeRecentActivity(entries).slice(0, limit);
+
+    res.json({ entries: optimizedEntries, total });
   } catch (err) {
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
   }
@@ -1247,7 +2122,7 @@ app.get('/stats/:accountId/activity', async (req, res) => {
 
 app.get('/people/search', async (req, res) => {
   try {
-    const accountId = validateId(req.query.accountId, { field: 'accountId' });
+    const accountId = await assertKnownAccountId(req.query.accountId);
     const { limit } = req.query;
     const q = sanitizeText(req.query.q, { maxLength: 200 });
     if (!q) return res.status(400).json({ error: 'q is required' });

@@ -12,6 +12,8 @@ export interface JWTPayload {
   authenticated: boolean;
   userId?: string;
   role?: string;
+  name?: string;
+  email?: string;
   iat: number;
   exp: number;
   jti?: string; // JWT ID for blacklist tracking

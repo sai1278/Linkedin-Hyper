@@ -3,8 +3,14 @@ import { signToken } from '@/lib/auth/jwt';
 import { createUser, getUserByEmail } from '@/lib/models/user';
 import bcrypt from 'bcrypt';
 import { shouldUseSecureCookie } from '@/lib/auth/cookie';
+import { enforceMutationProtection } from '@/lib/server/backend-api';
 
 export async function POST(req: NextRequest) {
+  const csrfError = enforceMutationProtection(req);
+  if (csrfError) {
+    return csrfError;
+  }
+
   try {
     const body = await req.json();
     const { name, email, password } = body;
@@ -43,7 +49,12 @@ export async function POST(req: NextRequest) {
     });
     
     // Generate JWT specific to the user
-    const token = await signToken({ userId: user.id, role: user.role });
+    const token = await signToken({
+      userId: user.id,
+      role: user.role,
+      name: user.name,
+      email: user.email,
+    });
     
     const response = NextResponse.json({ 
       ok: true, 
