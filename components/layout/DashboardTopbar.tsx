@@ -12,13 +12,13 @@ export function DashboardTopbar() {
 
   return (
     <div
-      className="flex items-center justify-between px-6 py-3"
+      className="flex flex-col gap-2 px-6 py-3 md:flex-row md:items-center md:justify-between"
       style={{
         borderBottom: '1px solid var(--border)',
         background: 'var(--bg-panel)',
       }}
     >
-      <div className="flex items-center gap-3 min-w-0">
+      <div className="min-w-0">
         {!isDashboardHome && (
           <Link
             href="/"
@@ -30,8 +30,15 @@ export function DashboardTopbar() {
           </Link>
         )}
 
-        <div className="flex items-center gap-2 text-sm min-w-0" style={{ color: 'var(--text-muted)' }}>
-          <Link href="/" className="inline-flex items-center gap-1 transition-colors" style={{ color: 'var(--text-link)' }}>
+        <div
+          className={`flex flex-wrap items-center gap-2 text-sm ${isDashboardHome ? '' : 'mt-1'}`}
+          style={{ color: 'var(--text-muted)' }}
+        >
+          <Link
+            href="/"
+            className="inline-flex items-center gap-1 transition-colors"
+            style={{ color: 'var(--text-link)' }}
+          >
             <Home size={14} />
             Dashboard
           </Link>
@@ -50,7 +57,7 @@ export function DashboardTopbar() {
       </div>
 
       {!isDashboardHome && (
-        <span className="hidden md:block text-xs" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-xs md:max-w-md md:text-right" style={{ color: 'var(--text-muted)' }}>
           {routeMeta.description}
         </span>
       )}

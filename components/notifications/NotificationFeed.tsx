@@ -5,6 +5,7 @@ import { Search } from 'lucide-react';
 import type { ActivityEntry, Account, ActivityTab } from '@/types/dashboard';
 import { NotificationRow } from './NotificationItem';
 import { AccountBadge } from '@/components/ui/AccountBadge';
+import { getAccountLabel } from '@/lib/account-label';
 
 const TABS: { id: ActivityTab; label: string }[] = [
   { id: 'all',            label: 'All'           },
@@ -84,7 +85,7 @@ export function NotificationFeed({
         </div>
         <div className="flex items-center gap-2">
           {accounts.map((a) => (
-            <AccountBadge key={a.id} name={a.id} />
+            <AccountBadge key={a.id} name={getAccountLabel(a)} />
           ))}
         </div>
       </div>

@@ -39,7 +39,7 @@ export interface Conversation {
 }
 
 export interface ActivityEntry {
-  type: 'messageSent' | 'connectionSent' | 'profileViewed';
+  type: 'messageSent' | 'connectionSent' | 'profileViewed' | 'sync';
   accountId: string;
   targetName: string;
   targetProfileUrl: string;

@@ -49,7 +49,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const url = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001';
+    const url =
+      process.env.NEXT_PUBLIC_WS_URL ||
+      (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
     wsClient.connect(url);
 
     const unsubscribeStatus = wsClient.on('status:changed', (data: StatusChangedPayload) => {

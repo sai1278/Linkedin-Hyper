@@ -111,6 +111,7 @@ async function readConnectionsInternal({
       const looksGeneric = (value) => {
         const normalized = normalizeText(value).toLowerCase();
         if (!normalized) return true;
+        if (normalized.includes('profile picture')) return true;
         return [
           'unknown',
           'linkedin member',
@@ -159,7 +160,7 @@ async function readConnectionsInternal({
           .map(normalizeText)
           .filter((candidate) => candidate && !looksGeneric(candidate));
 
-        const name = nameCandidates[0] || 'Unknown';
+        const name = nameCandidates[0] || deriveNameFromUrl(profileUrl) || 'Unknown';
         if (name === 'Unknown') continue;
 
         seen.add(profileUrl);

@@ -1,14 +1,15 @@
-﻿'use client';
+'use client';
 
 import type { ActivityEntry } from '@/types/dashboard';
 import { Avatar } from '@/components/ui/Avatar';
 import { AccountBadge } from '@/components/ui/AccountBadge';
 import { timeAgo } from '@/lib/utils';
 import { deriveDisplayName } from '@/lib/display-name';
-import { Eye, MessageSquare, UserPlus } from 'lucide-react';
+import { Eye, MessageSquare, RefreshCw, UserPlus } from 'lucide-react';
+import { formatAccountLabel } from '@/lib/account-label';
 
 const TYPE_META: Record<
-  ActivityEntry['type'],
+  string,
   {
     icon: React.ComponentType<{ size: number; color: string }>;
     label: string;
@@ -18,15 +19,34 @@ const TYPE_META: Record<
   messageSent: { icon: MessageSquare, label: 'Message sent', color: '#8b7cf8' },
   connectionSent: { icon: UserPlus, label: 'Connection sent', color: '#22c55e' },
   profileViewed: { icon: Eye, label: 'Profile viewed', color: '#f59e0b' },
+  sync: { icon: RefreshCw, label: 'Sync completed', color: '#166fe5' },
 };
 
+function formatActivityLabel(type: string): string {
+  const normalized = String(type || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+
+  if (!normalized) return 'Activity';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
 export function NotificationRow({ entry }: { entry: ActivityEntry }) {
-  const meta = TYPE_META[entry.type];
+  const meta = TYPE_META[entry.type] || {
+    icon: RefreshCw,
+    label: formatActivityLabel(entry.type),
+    color: '#6b7280',
+  };
   const Icon = meta.icon;
-  const displayName = deriveDisplayName(entry.targetName, entry.targetProfileUrl || '');
+  const displayName = entry.targetName
+    ? deriveDisplayName(entry.targetName, entry.targetProfileUrl || '')
+    : formatAccountLabel(entry.accountId);
   const messagePreview = entry.message
     ? ` - ${entry.message.slice(0, 80)}${entry.message.length > 80 ? '...' : ''}`
-    : '';
+    : entry.type === 'sync'
+      ? ' - Background sync recorded for this account.'
+      : '';
 
   return (
     <div
@@ -48,7 +68,7 @@ export function NotificationRow({ entry }: { entry: ActivityEntry }) {
           <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
             {displayName}
           </span>
-          <AccountBadge name={entry.accountId} />
+          <AccountBadge name={formatAccountLabel(entry.accountId)} />
         </div>
         <p className="mt-0.5 text-xs" style={{ color: 'var(--text-muted)' }}>
           <span style={{ color: meta.color }}>{meta.label}</span>
@@ -64,6 +84,7 @@ export function NotificationRow({ entry }: { entry: ActivityEntry }) {
           >
             {entry.targetProfileUrl
               .replace('https://linkedin.com/in/', '')
+              .replace('https://www.linkedin.com/in/', '')
               .replace(/\/$/, '')}
           </a>
         )}
