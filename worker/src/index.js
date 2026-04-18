@@ -1519,6 +1519,9 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
   try {
     const accountId = await assertKnownAccountId(req.params.accountId);
     const proxyUrl = process.env.PROXY_URL || null;
+    res.setTimeout(230_000, () => {
+      if (!res.headersSent) res.status(504).json({ error: 'Request timed out' });
+    });
 
     // Local dev mode: bypass BullMQ queue so verification can run without Redis.
     const useDirectVerify = process.env.DIRECT_VERIFY === '1' || process.env.DISABLE_MESSAGE_SYNC === '1';
@@ -1527,7 +1530,7 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
       result = await verifySession({ accountId, proxyUrl });
     } else {
       try {
-        result = await runJob('verifySession', { accountId, proxyUrl });
+        result = await runJob('verifySession', { accountId, proxyUrl }, 220_000);
       } catch (queueErr) {
         const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
         const isRedisConnectivityError =
@@ -1831,12 +1834,15 @@ app.post('/messages/send-new', async (req, res) => {
     const profileUrl = validateProfileUrl(req.body?.profileUrl);
     const text       = sanitizeText(req.body?.text, { maxLength: 3000 });
     if (!text) return res.status(400).json({ error: 'text is required' });
+    res.setTimeout(230_000, () => {
+      if (!res.headersSent) res.status(504).json({ error: 'Request timed out' });
+    });
 
     let result;
     try {
       result = await runJob('sendMessageNew', {
         accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
-      });
+      }, 220_000);
     } catch (sendNewErr) {
       // Always try thread fallback before failing send-new.
       // This helps when profile composer flow is flaky but an existing thread works.
@@ -1852,7 +1858,7 @@ app.post('/messages/send-new', async (req, res) => {
           accountId,
           limit: 100,
           proxyUrl: process.env.PROXY_URL || null,
-        });
+        }, 90_000);
       } catch (fallbackErr) {
         const fallbackReason = String(fallbackErr?.message || fallbackErr || '');
         console.warn(`[API] thread fallback inbox read failed for ${accountId}: ${fallbackReason}`);
