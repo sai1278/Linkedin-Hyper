@@ -25,8 +25,100 @@ function isRecoverableBrowserError(err) {
     msg.includes('net::err_aborted') ||
     msg.includes('protocol error (page.addscripttoevaluateonnewdocument)') ||
     msg.includes('protocol error (page.createisolatedworld)') ||
-    msg.includes('operation failed')
+    msg.includes('operation failed') ||
+    msg.includes('execution context was destroyed')
   );
+}
+
+async function evaluateConnections(page, limit) {
+  const runEvaluation = () => page.evaluate((maxItems) => {
+    const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const toAbsoluteLinkedInUrl = (href) => {
+      if (!href) return null;
+      try {
+        return new URL(href, 'https://www.linkedin.com').toString();
+      } catch {
+        return null;
+      }
+    };
+    const looksGeneric = (value) => {
+      const normalized = normalizeText(value).toLowerCase();
+      if (!normalized) return true;
+      if (normalized.includes('profile picture')) return true;
+      return [
+        'unknown',
+        'linkedin member',
+        'member',
+        'view profile',
+        'message',
+        'connect',
+      ].includes(normalized);
+    };
+    const deriveNameFromUrl = (href) => {
+      const match = String(href || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
+      if (!match?.[1]) return '';
+      return normalizeText(
+        decodeURIComponent(match[1])
+          .replace(/[-_]+/g, ' ')
+          .replace(/\b\d+\b/g, '')
+      );
+    };
+
+    const seen = new Set();
+    const results = [];
+    const containers = Array.from(
+      document.querySelectorAll('.mn-connection-card, .artdeco-list__item, li, main section > div')
+    ).filter((node) => node.querySelector('a[href*="/in/"]'));
+
+    for (const container of containers) {
+      if (results.length >= maxItems) break;
+
+      const profileLinkEl = container.querySelector('a[href*="/in/"]');
+      const profileUrl = toAbsoluteLinkedInUrl(profileLinkEl?.getAttribute('href') || '');
+      if (!profileUrl || seen.has(profileUrl)) continue;
+
+      const headlineEl = container.querySelector(
+        '.mn-connection-card__occupation, .mn-person-info__occupation, .t-black--light, .t-14'
+      );
+      const avatarEl = container.querySelector('img');
+      const nameCandidates = [
+        container.querySelector('[data-anonymize="person-name"]')?.textContent,
+        container.querySelector('.mn-connection-card__name')?.textContent,
+        container.querySelector('.mn-person-info__name')?.textContent,
+        container.querySelector('span[aria-hidden="true"]')?.textContent,
+        profileLinkEl?.textContent,
+        avatarEl?.getAttribute('alt'),
+        deriveNameFromUrl(profileUrl),
+      ]
+        .map(normalizeText)
+        .filter((candidate) => candidate && !looksGeneric(candidate));
+
+      const name = nameCandidates[0] || deriveNameFromUrl(profileUrl) || 'Unknown';
+      if (name === 'Unknown') continue;
+
+      seen.add(profileUrl);
+      results.push({
+        accountId: '',
+        name,
+        profileUrl,
+        headline: normalizeText(headlineEl?.textContent || ''),
+        connectedAt: null,
+      });
+    }
+
+    return results;
+  }, limit);
+
+  try {
+    return await runEvaluation();
+  } catch (err) {
+    if (!isRecoverableBrowserError(err)) {
+      throw err;
+    }
+    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => null);
+    await delay(400, 800);
+    return runEvaluation();
+  }
 }
 
 async function readConnectionsInternal({
@@ -99,83 +191,7 @@ async function readConnectionsInternal({
       await humanScroll(page, 1100);
     }
 
-    const items = await page.evaluate((maxItems) => {
-      const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-      const toAbsoluteLinkedInUrl = (href) => {
-        if (!href) return null;
-        try {
-          return new URL(href, 'https://www.linkedin.com').toString();
-        } catch {
-          return null;
-        }
-      };
-      const looksGeneric = (value) => {
-        const normalized = normalizeText(value).toLowerCase();
-        if (!normalized) return true;
-        if (normalized.includes('profile picture')) return true;
-        return [
-          'unknown',
-          'linkedin member',
-          'member',
-          'view profile',
-          'message',
-          'connect',
-        ].includes(normalized);
-      };
-      const deriveNameFromUrl = (href) => {
-        const match = String(href || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
-        if (!match?.[1]) return '';
-        return normalizeText(
-          decodeURIComponent(match[1])
-            .replace(/[-_]+/g, ' ')
-            .replace(/\b\d+\b/g, '')
-        );
-      };
-
-      const seen = new Set();
-      const results = [];
-      const containers = Array.from(
-        document.querySelectorAll('.mn-connection-card, .artdeco-list__item, li, main section > div')
-      ).filter((node) => node.querySelector('a[href*="/in/"]'));
-
-      for (const container of containers) {
-        if (results.length >= maxItems) break;
-
-        const profileLinkEl = container.querySelector('a[href*="/in/"]');
-        const profileUrl = toAbsoluteLinkedInUrl(profileLinkEl?.getAttribute('href') || '');
-        if (!profileUrl || seen.has(profileUrl)) continue;
-
-        const headlineEl = container.querySelector(
-          '.mn-connection-card__occupation, .mn-person-info__occupation, .t-black--light, .t-14'
-        );
-        const avatarEl = container.querySelector('img');
-        const nameCandidates = [
-          container.querySelector('[data-anonymize="person-name"]')?.textContent,
-          container.querySelector('.mn-connection-card__name')?.textContent,
-          container.querySelector('.mn-person-info__name')?.textContent,
-          container.querySelector('span[aria-hidden="true"]')?.textContent,
-          profileLinkEl?.textContent,
-          avatarEl?.getAttribute('alt'),
-          deriveNameFromUrl(profileUrl),
-        ]
-          .map(normalizeText)
-          .filter((candidate) => candidate && !looksGeneric(candidate));
-
-        const name = nameCandidates[0] || deriveNameFromUrl(profileUrl) || 'Unknown';
-        if (name === 'Unknown') continue;
-
-        seen.add(profileUrl);
-        results.push({
-          accountId: '',
-          name,
-          profileUrl,
-          headline: normalizeText(headlineEl?.textContent || ''),
-          connectedAt: null,
-        });
-      }
-
-      return results;
-    }, limit);
+    const items = await evaluateConnections(page, limit);
 
     items.forEach((item) => {
       item.accountId = accountId;

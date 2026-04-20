@@ -252,6 +252,24 @@ function normaliseCookies(cookies) {
   return deduped;
 }
 
+function cookieIdentity(cookie) {
+  return `${String(cookie?.name || '')}|${String(cookie?.domain || '')}|${String(cookie?.path || '')}`;
+}
+
+function mergeCookiesPreferNew(existingCookies, freshCookies) {
+  const merged = new Map();
+
+  for (const cookie of Array.isArray(existingCookies) ? existingCookies : []) {
+    merged.set(cookieIdentity(cookie), cookie);
+  }
+
+  for (const cookie of Array.isArray(freshCookies) ? freshCookies : []) {
+    merged.set(cookieIdentity(cookie), cookie);
+  }
+
+  return Array.from(merged.values());
+}
+
 function getLinkedInCookieFlags(cookies) {
   const list = Array.isArray(cookies) ? cookies : [];
   const linkedIn = list.filter((c) => String(c?.domain || '').includes('linkedin.com'));
@@ -290,7 +308,13 @@ async function saveCookies(accountId, cookies, options = {}) {
     return false;
   }
 
-  const normalised = normaliseCookies(cookies);
+  let normalised = normaliseCookies(cookies);
+  if (skipIfMissingAuthCookies) {
+    const existingCookies = await loadCookies(accountId).catch(() => null);
+    if (existingCookies?.length) {
+      normalised = normaliseCookies(mergeCookiesPreferNew(existingCookies, normalised));
+    }
+  }
   const now        = Date.now();
   knownAccountIds.add(accountId);
   saveSessionToDisk(accountId, normalised, now);
