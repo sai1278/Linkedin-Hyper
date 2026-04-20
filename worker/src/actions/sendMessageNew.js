@@ -131,6 +131,21 @@ function normalizeProfileUrlForCompare(url) {
   }
 }
 
+function isAuthwallUrl(url) {
+  const value = String(url || '').toLowerCase();
+  return (
+    value.includes('/login') ||
+    value.includes('/checkpoint') ||
+    value.includes('/authwall') ||
+    value.includes('/challenge')
+  );
+}
+
+function isMessagingSurfaceUrl(url) {
+  const value = String(url || '').toLowerCase();
+  return value.includes('linkedin.com') && value.includes('/messaging');
+}
+
 function logSendStep(accountId, message) {
   console.log(`[sendMessageNew:${accountId}] ${message}`);
 }
@@ -274,6 +289,55 @@ async function captureFailureScreenshot(page, accountId, label) {
 async function waitForComposerOpen(page, timeoutMs = 7000) {
   const composer = await page.waitForSelector(COMPOSER_SELECTORS, { timeout: timeoutMs }).catch(() => null);
   return Boolean(composer);
+}
+
+async function gotoMessagingHomeLenient(page, accountId, timeoutMs = 30000) {
+  try {
+    await page.goto('https://www.linkedin.com/messaging/', {
+      waitUntil: 'commit',
+      timeout: Math.min(timeoutMs, 20000),
+    });
+  } catch (err) {
+    const currentUrl = String(page.url() || '');
+    if (!isAuthwallUrl(currentUrl) && isMessagingSurfaceUrl(currentUrl)) {
+      logSendStep(
+        accountId,
+        `messaging navigation reported an early error but page is already on messaging: ${truncateForLog(currentUrl, 140)}`
+      );
+    } else {
+      try {
+        await page.goto('https://www.linkedin.com/messaging/', {
+          waitUntil: 'domcontentloaded',
+          timeout: timeoutMs,
+        });
+      } catch (retryErr) {
+        const retryUrl = String(page.url() || '');
+        if (!isAuthwallUrl(retryUrl) && isMessagingSurfaceUrl(retryUrl)) {
+          logSendStep(
+            accountId,
+            `messaging navigation timed out but usable messaging URL is present: ${truncateForLog(retryUrl, 140)}`
+          );
+        } else {
+          throw retryErr;
+        }
+      }
+    }
+  }
+
+  await page.waitForSelector(
+    'main, body, .msg-conversations-container, .msg-overlay-list-bubble, .msg-conversation-listitem',
+    { timeout: 12000 }
+  ).catch(() => null);
+
+  const landingUrl = String(page.url() || '').toLowerCase();
+  if (isAuthwallUrl(landingUrl)) {
+    const err = new Error(`Messaging home redirected to auth flow: ${page.url()}`);
+    err.code = 'SESSION_EXPIRED';
+    err.status = 401;
+    throw err;
+  }
+
+  return page.url();
 }
 
 async function clickVisibleSelector(page, selector, timeoutMs = 2000) {
@@ -715,20 +779,11 @@ async function openComposerFromMessagingHome(page, { accountId, profileUrl, part
 
   logSendStep(accountId, `opening messaging home for compose fallback: ${searchQuery}`);
   try {
-    await page.goto('https://www.linkedin.com/messaging/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
+    await gotoMessagingHomeLenient(page, accountId, 30000);
   } catch (err) {
     return { opened: false, reason: `Messaging home navigation failed: ${String(err?.message || err)}` };
   }
 
-  const landingUrl = String(page.url() || '').toLowerCase();
-  if (landingUrl.includes('/login') || landingUrl.includes('/checkpoint') || landingUrl.includes('/authwall')) {
-    return { opened: false, reason: `Messaging home redirected to auth flow: ${page.url()}` };
-  }
-
-  await page.waitForSelector('main, body', { timeout: 12000 }).catch(() => null);
   await delay(800, 1400);
 
   const triggerResult = await clickMessagingComposeTrigger(page);
@@ -1232,15 +1287,12 @@ function scoreConversationRowText(rowText, { slugNeedle, nameNeedle, textNeedle,
   return score;
 }
 
-async function resolveThreadIdFromMessagingHome(page, { profileUrl, participantName, messageText }, waitMs = 15000) {
+async function resolveThreadIdFromMessagingHome(page, { accountId = 'unknown', profileUrl, participantName, messageText }, waitMs = 15000) {
   const { slugNeedle, nameNeedle, textNeedle, tokenNeedles } =
     buildConversationNeedles(profileUrl, participantName, messageText);
 
   try {
-    await page.goto('https://www.linkedin.com/messaging/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
+    await gotoMessagingHomeLenient(page, accountId, 30000);
   } catch (_) {
     return '';
   }
@@ -1356,10 +1408,7 @@ async function resolveThreadIdByClickingConversationCandidates(
 
   while (Date.now() < deadline) {
     try {
-      await page.goto('https://www.linkedin.com/messaging/', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
+      await gotoMessagingHomeLenient(page, accountId, 30000);
     } catch (_) {
       return '';
     }
@@ -1645,7 +1694,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       try {
         const existingThreadId = await resolveThreadIdFromMessagingHome(
           page,
-          { profileUrl, participantName, messageText: '' },
+          { accountId, profileUrl, participantName, messageText: '' },
           12000
         );
         if (isValidThreadId(existingThreadId)) {
@@ -1813,7 +1862,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       logSendStep(accountId, 'thread id unresolved after preview match; scanning messaging home');
       chatId = await resolveThreadIdFromMessagingHome(
         page,
-        { profileUrl, participantName, messageText: text },
+        { accountId, profileUrl, participantName, messageText: text },
         20000
       );
     }
