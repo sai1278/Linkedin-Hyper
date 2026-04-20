@@ -267,6 +267,7 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true }) {
     const maxVerifyAttempts = 3;
 
     for (let attempt = 1; attempt <= maxVerifyAttempts; attempt += 1) {
+      console.log(`[verifySession:${accountId}] attempt ${attempt}/${maxVerifyAttempts} starting`);
       // Always verify from a fresh browser context to avoid false positives from
       // previously authenticated in-memory contexts and to recover from stale CDP sessions.
       await cleanupContext(accountId).catch(() => {});
@@ -333,6 +334,13 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true }) {
             source: 'verifySession',
           });
         }
+        console.log(
+          `[verifySession:${accountId}] success via=${
+            messagingAuthenticated
+              ? (feedAuthenticated ? 'feed+messaging' : 'messaging-only')
+              : 'feed-only'
+          } feedUrl=${feedUrl} messagingUrl=${messagingUrl} cookies=${cookieFlags.total}`
+        );
         return {
           ok: true,
           url: messagingAuthenticated ? messagingUrl : feedUrl,
@@ -370,6 +378,11 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true }) {
       err.status = 401;
       err.details = details;
       lastVerifyError = err;
+      console.warn(
+        `[verifySession:${accountId}] attempt ${attempt}/${maxVerifyAttempts} failed code=${failure.code} ` +
+        `feedUrl=${feedUrl} messagingUrl=${messagingUrl} feedOk=${feedAuthenticated} messagingOk=${messagingAuthenticated} ` +
+        `cookies(li_at=${cookieFlags.hasLiAt},JSESSIONID=${cookieFlags.hasJsession},count=${cookieFlags.total})`
+      );
 
       // Retry once for this flaky LinkedIn state before failing.
       if (failure.code === 'AUTHENTICATED_STATE_NOT_REACHED' && attempt < maxVerifyAttempts) {

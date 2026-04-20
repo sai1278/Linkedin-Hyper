@@ -60,6 +60,35 @@ function isAuthenticatedLinkedInPage(state) {
   );
 }
 
+function isMessagingSurfaceUrl(url) {
+  const value = String(url || '').toLowerCase();
+  if (!value.includes('linkedin.com') || isBlockedAuthPage(value)) return false;
+  try {
+    const parsed = new URL(value);
+    const pathname = String(parsed.pathname || '/').toLowerCase();
+    return pathname.startsWith('/messaging');
+  } catch {
+    return false;
+  }
+}
+
+function isMessagingReadyState(state) {
+  return Boolean(
+    state &&
+    !state.blockedAuthPage &&
+    state.hasLiAt &&
+    state.hasJsession &&
+    state.liAtFresh &&
+    (
+      Boolean(state.hasMessagingShell) ||
+      (
+        Boolean(state.hasSignedInNav) &&
+        isMessagingSurfaceUrl(state.url)
+      )
+    )
+  );
+}
+
 function classifyCaptureFailureCode(state) {
   if (state?.blockedAuthPage) {
     const u = String(state?.url || '').toLowerCase();
@@ -184,6 +213,65 @@ async function waitForStableAuthenticatedState({
 
   const code = lastState?.failureCode || 'AUTHENTICATED_STATE_NOT_REACHED';
   const reason = lastState?.failureReason || 'Stable authenticated LinkedIn session was not reached before timeout.';
+  const screenshot = captureScreenshot ? await captureScreenshot(code).catch(() => null) : null;
+  throw new Error(`[${code}] ${reason}${screenshot ? ` Screenshot: ${screenshot}` : ''}`);
+}
+
+async function waitForStableMessagingState({
+  sourceLabel,
+  timeoutMs,
+  stableMs = CAPTURE_STABLE_MS,
+  pollMs = CAPTURE_POLL_MS,
+  getState,
+  captureScreenshot,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let stableSince = 0;
+  let lastSig = '';
+  let lastState = null;
+  let lastLogAt = 0;
+
+  while (Date.now() < deadline) {
+    const state = await getState();
+    state.blockedAuthPage = isBlockedAuthPage(state.url);
+    state.authenticated = isAuthenticatedLinkedInPage(state);
+    state.failureCode = classifyCaptureFailureCode(state);
+    state.failureReason = isMessagingReadyState(state)
+      ? 'none'
+      : (
+        state.blockedAuthPage
+          ? explainCaptureRejection(state)
+          : `LinkedIn messaging was not ready yet at ${state.url || 'unknown URL'}.`
+      );
+    lastState = state;
+
+    if (isMessagingReadyState(state)) {
+      if (!stableSince) stableSince = Date.now();
+      const stableFor = Date.now() - stableSince;
+      const sig = `${state.url}|${state.title}|${state.hasLiAt}|${state.hasJsession}|${state.hasMessagingShell}|stable:${Math.floor(stableFor / 1000)}`;
+      if (sig !== lastSig || (Date.now() - lastLogAt) >= 10000) {
+        logCaptureState(sourceLabel, state, stableFor);
+        lastSig = sig;
+        lastLogAt = Date.now();
+      }
+      if (stableFor >= stableMs) {
+        return state;
+      }
+    } else {
+      stableSince = 0;
+      const sig = `${state.url}|${state.title}|${state.hasLiAt}|${state.hasJsession}|${state.hasMessagingShell}|${state.failureReason}`;
+      if (sig !== lastSig || (Date.now() - lastLogAt) >= 10000) {
+        logCaptureState(sourceLabel, state, 0);
+        lastSig = sig;
+        lastLogAt = Date.now();
+      }
+    }
+
+    await delay(pollMs);
+  }
+
+  const code = lastState?.failureCode || 'AUTHENTICATED_STATE_NOT_REACHED';
+  const reason = lastState?.failureReason || 'LinkedIn messaging was not ready before timeout.';
   const screenshot = captureScreenshot ? await captureScreenshot(code).catch(() => null) : null;
   throw new Error(`[${code}] ${reason}${screenshot ? ` Screenshot: ${screenshot}` : ''}`);
 }
@@ -644,7 +732,76 @@ async function captureLinkedInCookiesViaPlaywrightFallback({
       },
       captureScreenshot: async (code) => screenshotViaPlaywright(page, `capture-rejected-${String(code || 'unknown').toLowerCase()}`),
     });
-    return stableState.cookies.map(mapCookie);
+    let finalState = stableState;
+    if (!isMessagingReadyState(finalState)) {
+      await page.goto('https://www.linkedin.com/messaging/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      }).catch(() => {});
+      finalState = await waitForStableMessagingState({
+        sourceLabel: 'playwright',
+        timeoutMs: Math.max(5000, deadline - Date.now()),
+        getState: async () => {
+          const linkedinPages = context.pages().filter((p) => String(p.url() || '').includes('linkedin.com'));
+          const activePage = linkedinPages[linkedinPages.length - 1] || page;
+          page = activePage;
+
+          const dom = await activePage.evaluate(() => {
+            const txt = (document.body?.innerText || '').toLowerCase();
+            const navLinkSelectors = [
+              'a[href*="/feed"]',
+              'a[href*="/mynetwork"]',
+              'a[href*="/messaging"]',
+              'a[href*="/notifications"]'
+            ].join(', ');
+            const navLinks = Array.from(document.querySelectorAll(navLinkSelectors))
+              .filter((el) => {
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+              });
+            const hasPrimaryNavLinks = navLinks.length >= 2;
+            return {
+              url: location.href,
+              title: document.title || '',
+              hasLoginForm: Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]')),
+              hasAuthwallMarkers:
+                txt.includes('join linkedin') ||
+                txt.includes('sign in') ||
+                txt.includes('new to linkedin') ||
+                txt.includes('continue to linkedin') ||
+                txt.includes('unlock your profile') ||
+                txt.includes('challenge'),
+              hasSignedInNav:
+                hasPrimaryNavLinks ||
+                Boolean(
+                  document.querySelector(
+                    '.global-nav__me, .global-nav__me-photo, #global-nav-search, .search-global-typeahead, header.global-nav, .global-nav'
+                  )
+                ),
+              hasMessagingShell: Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list')),
+              hasGuestCta: Boolean(
+                document.querySelector(
+                  'a[data-tracking-control-name*="guest_homepage"], .nav__button-secondary, main section a[href*="/signup"]'
+                )
+              ),
+            };
+          }).catch(() => ({ url: activePage.url(), title: '' }));
+
+          const allCookies = await context.cookies();
+          const linkedIn = extractLinkedInCookies(allCookies);
+          const flags = computeCookieFlags(linkedIn);
+
+          return {
+            ...dom,
+            ...flags,
+            cookies: linkedIn,
+            linkedInCookieCount: linkedIn.length,
+          };
+        },
+        captureScreenshot: async (code) => screenshotViaPlaywright(page, `capture-messaging-rejected-${String(code || 'unknown').toLowerCase()}`),
+      });
+    }
+    return finalState.cookies.map(mapCookie);
   } finally {
     await context.close().catch(() => {});
   }
@@ -736,11 +893,12 @@ async function captureLinkedInCookies(port, wsUrl, timeoutSec) {
   await cdp.send('Network.enable');
   await cdp.send('Runtime.enable').catch(() => {});
   await cdp.send('Page.enable').catch(() => {});
+  const deadline = Date.now() + timeoutSec * 1000;
 
   try {
     const stableState = await waitForStableAuthenticatedState({
       sourceLabel: 'cdp',
-      timeoutMs: timeoutSec * 1000,
+      timeoutMs: Math.max(5000, deadline - Date.now()),
       getState: async () => {
         let result;
         try {
@@ -775,7 +933,48 @@ async function captureLinkedInCookies(port, wsUrl, timeoutSec) {
       },
       captureScreenshot: async (code) => screenshotViaCdp(cdp, `capture-rejected-${String(code || 'unknown').toLowerCase()}`),
     });
-    return stableState.cookies.map(mapCookie);
+    let finalState = stableState;
+    if (!isMessagingReadyState(finalState)) {
+      await cdp.send('Page.navigate', { url: 'https://www.linkedin.com/messaging/' }, 15000).catch(() => {});
+      finalState = await waitForStableMessagingState({
+        sourceLabel: 'cdp',
+        timeoutMs: Math.max(5000, deadline - Date.now()),
+        getState: async () => {
+          let result;
+          try {
+            result = await cdp.send('Network.getAllCookies', {}, 20_000);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              url: '',
+              title: '',
+              hasLoginForm: false,
+              hasAuthwallMarkers: false,
+              hasSignedInNav: false,
+              hasMessagingShell: false,
+              hasGuestCta: false,
+              hasLiAt: false,
+              hasJsession: false,
+              liAtFresh: false,
+              cookies: [],
+              linkedInCookieCount: 0,
+              failureReason: `Cookie poll warning: ${message}`,
+            };
+          }
+
+          const linkedIn = extractLinkedInCookies(result.cookies);
+          const flags = computeCookieFlags(linkedIn);
+          const dom = await inspectLinkedInDomStateViaCdp(cdp).catch(async () => ({
+            url: await getLinkedInPageUrl(port).catch(() => ''),
+            title: '',
+          }));
+
+          return { ...dom, ...flags, cookies: linkedIn, linkedInCookieCount: linkedIn.length };
+        },
+        captureScreenshot: async (code) => screenshotViaCdp(cdp, `capture-messaging-rejected-${String(code || 'unknown').toLowerCase()}`),
+      });
+    }
+    return finalState.cookies.map(mapCookie);
   } finally {
     cdp.close();
   }
