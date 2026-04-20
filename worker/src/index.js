@@ -1366,6 +1366,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
   const queue       = getQueue(accountId);
   const queueEvents = getQueueEvents(accountId);
   const nonIdempotentJobs = new Set(['sendMessage', 'sendMessageNew', 'sendConnectionRequest']);
+  const selfRetryingJobs = new Set(['verifySession', 'readConnections', 'readMessages', 'readThread', 'searchPeople']);
   const dedupeWindowJobs = new Set(['messageSync']);
 
   const toQueueUnavailableError = (originalErr) => {
@@ -1395,7 +1396,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
 
   let job;
   try {
-    const retryOptions = nonIdempotentJobs.has(name)
+    const retryOptions = (nonIdempotentJobs.has(name) || selfRetryingJobs.has(name))
       ? { attempts: 1 }
       : {
           // Retry once with exponential backoff (5 s, then 10 s).
@@ -1523,28 +1524,9 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
       if (!res.headersSent) res.status(504).json({ error: 'Request timed out' });
     });
 
-    // Local dev mode: bypass BullMQ queue so verification can run without Redis.
-    const useDirectVerify = process.env.DIRECT_VERIFY === '1' || process.env.DISABLE_MESSAGE_SYNC === '1';
-    let result;
-    if (useDirectVerify) {
-      result = await verifySession({ accountId, proxyUrl });
-    } else {
-      try {
-        result = await runJob('verifySession', { accountId, proxyUrl }, 220_000);
-      } catch (queueErr) {
-        const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
-        const isRedisConnectivityError =
-          msg.includes('Connection is closed') ||
-          msg.includes('ECONNREFUSED') ||
-          msg.includes('ENOTFOUND') ||
-          msg.includes('getaddrinfo');
-
-        if (!isRedisConnectivityError) throw queueErr;
-
-        console.warn('[Verify] Queue unavailable, falling back to direct verification:', msg);
-        result = await verifySession({ accountId, proxyUrl });
-      }
-    }
+    // Verification is operator-triggered and already does its own retry/cleanup loop.
+    // Running it directly avoids queue backoff stacking on top of browser retries.
+    const result = await verifySession({ accountId, proxyUrl });
 
     clearSessionIssue(accountId);
     res.json(result);
