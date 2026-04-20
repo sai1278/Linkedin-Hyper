@@ -36,6 +36,7 @@ async function readConnectionsInternal({
   __attempt = 1,
   forceCookieReload = false,
 }) {
+  const maxAttempts = 3;
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
 
@@ -71,9 +72,9 @@ async function readConnectionsInternal({
 
     const landingUrl = page.url();
     if (isAuthLandingUrl(landingUrl)) {
-      if (__attempt < 2 && cookiesLoaded && !forceCookieReload) {
+      if (__attempt < maxAttempts) {
         await cleanupContext(accountId).catch(() => {});
-        await delay(250, 500);
+        await delay(400, 800);
         return readConnectionsInternal({
           accountId,
           proxyUrl,
@@ -189,9 +190,9 @@ async function readConnectionsInternal({
 
     return { items, cursor: null, hasMore: false };
   } catch (err) {
-    if (__attempt < 2 && isRecoverableBrowserError(err)) {
+    if (__attempt < maxAttempts && isRecoverableBrowserError(err)) {
       await cleanupContext(accountId).catch(() => {});
-      await delay(250, 500);
+      await delay(400, 800);
       return readConnectionsInternal({
         accountId,
         proxyUrl,

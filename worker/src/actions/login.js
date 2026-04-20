@@ -135,7 +135,13 @@ function isStrongMemberUrl(url) {
   try {
     const parsed = new URL(value);
     const path = String(parsed.pathname || '/').toLowerCase();
-    return path === '/feed/' || path.startsWith('/feed') || path.startsWith('/messaging');
+    return (
+      path === '/feed/' ||
+      path.startsWith('/feed') ||
+      path.startsWith('/messaging') ||
+      path.startsWith('/mynetwork') ||
+      path.startsWith('/me')
+    );
   } catch {
     return false;
   }
@@ -306,15 +312,15 @@ async function verifySession({ accountId, proxyUrl }) {
       }
 
       // LinkedIn UI markers can be flaky; accept strong member URL signal when required cookies exist.
+      // LinkedIn can report navigation errors while still landing on an authenticated page.
+      // Trust strong URL/UI member signals when required cookies are present.
       const feedAuthenticated = (
-        feedResult.ok &&
         !isBlockedAuthPage(feedUrl) &&
         hasRequiredAuthCookies(cookieFlags) &&
         (isAuthenticatedLinkedInPage(feedState) || isStrongMemberUrl(feedUrl))
       );
 
       const messagingAuthenticated = (
-        messagingResult.ok &&
         !isBlockedAuthPage(messagingUrl) &&
         hasRequiredAuthCookies(cookieFlags) &&
         (isAuthenticatedLinkedInPage(messagingState) || isStrongMemberUrl(messagingUrl))
