@@ -1894,7 +1894,19 @@ app.post('/messages/send-new', async (req, res) => {
         accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
       }, 220_000);
     } catch (sendNewErr) {
-      if (sendNewErr?.code === 'SEND_NOT_CONFIRMED') {
+      const sendNewReason = String(sendNewErr?.message || sendNewErr || '').toLowerCase();
+      const skipThreadFallback =
+        sendNewErr?.code === 'SEND_NOT_CONFIRMED' ||
+        sendNewErr?.status === 504 ||
+        sendNewReason.includes('timed out after') ||
+        sendNewReason.includes('err_too_many_redirects') ||
+        sendNewReason.includes('session expired for account') ||
+        sendNewReason.includes('authenticated linkedin member state was not reached') ||
+        sendNewReason.includes('checkpoint/challenge is still pending') ||
+        sendNewReason.includes('login is not fully completed') ||
+        sendNewReason.includes('cookies missing');
+
+      if (skipThreadFallback) {
         throw sendNewErr;
       }
 
