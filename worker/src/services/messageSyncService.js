@@ -5,6 +5,7 @@
 
 const { readMessages } = require('../actions/readMessages');
 const { readThread } = require('../actions/readThread');
+const { verifySession } = require('../actions/login');
 const accountRepo = require('../db/repositories/AccountRepository');
 const messageRepo = require('../db/repositories/MessageRepository');
 const { emitInboxUpdate, emitNewMessage } = require('../utils/websocket');
@@ -35,6 +36,19 @@ function isDatabaseUnavailable(err) {
     message.includes('does not exist in the current database') ||
     message.includes('timeout expired') ||
     message.includes('Connection terminated unexpectedly')
+  );
+}
+
+function isSessionRecoveryCandidate(err) {
+  const code = String(err?.code || '');
+  const message = String(err?.message || err || '');
+  return (
+    code === 'NO_SESSION' ||
+    code === 'SESSION_EXPIRED' ||
+    code === 'AUTHENTICATED_STATE_NOT_REACHED' ||
+    code === 'COOKIES_MISSING' ||
+    message.includes('Session expired for account') ||
+    message.includes('Authenticated LinkedIn member state was not reached')
   );
 }
 
@@ -97,7 +111,18 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
 
     // Fetch conversations from LinkedIn
     console.log(`[MessageSync] Fetching conversations for ${accountId}...`);
-    const inboxData = await readMessages({ accountId, proxyUrl, limit: 50 });
+    let inboxData;
+    try {
+      inboxData = await readMessages({ accountId, proxyUrl, limit: 50 });
+    } catch (inboxErr) {
+      if (!isSessionRecoveryCandidate(inboxErr)) {
+        throw inboxErr;
+      }
+
+      console.warn(`[MessageSync] Inbox read needs recovery for ${accountId}: ${inboxErr.message}`);
+      await verifySession({ accountId, proxyUrl });
+      inboxData = await readMessages({ accountId, proxyUrl, limit: 50 });
+    }
     clearSessionIssue(accountId);
     
     if (!inboxData || !inboxData.items || inboxData.items.length === 0) {
@@ -137,7 +162,18 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
 
         // Fetch thread messages
         console.log(`[MessageSync] Fetching messages for conversation ${conversationId}...`);
-        const threadData = await readThread({ accountId, chatId: conversationId, proxyUrl, limit: 100 });
+        let threadData;
+        try {
+          threadData = await readThread({ accountId, chatId: conversationId, proxyUrl, limit: 100 });
+        } catch (threadErr) {
+          if (!isSessionRecoveryCandidate(threadErr)) {
+            throw threadErr;
+          }
+
+          console.warn(`[MessageSync] Thread read needs recovery for ${accountId}/${conversationId}: ${threadErr.message}`);
+          await verifySession({ accountId, proxyUrl });
+          threadData = await readThread({ accountId, chatId: conversationId, proxyUrl, limit: 100 });
+        }
 
         // Enrich missing participant metadata from thread page.
         const threadParticipantName = threadData?.participant?.name;
