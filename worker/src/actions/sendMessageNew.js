@@ -786,6 +786,27 @@ async function openComposerFromMessagingHome(page, { accountId, profileUrl, part
 
   await delay(800, 1400);
 
+  const currentThreadMatch = await resolveThreadIdFromCurrentMessagingView(page, {
+    profileUrl,
+    participantName: searchQuery,
+    messageText: '',
+  });
+  if (currentThreadMatch.threadId) {
+    const composerReady = await waitForComposerOpen(page, 12000);
+    if (composerReady) {
+      logSendStep(
+        accountId,
+        `reusing already-open messaging thread (${currentThreadMatch.reason || 'matched-current-thread'})`
+      );
+      return {
+        opened: true,
+        strategy: 'existing-thread',
+        matched: currentThreadMatch.reason || searchQuery,
+        threadId: currentThreadMatch.threadId,
+      };
+    }
+  }
+
   const triggerResult = await clickMessagingComposeTrigger(page);
   if (!triggerResult.clicked) {
     return { opened: false, reason: triggerResult.reason || 'Messaging compose trigger not available.' };
@@ -1267,6 +1288,190 @@ function buildConversationNeedles(profileUrl, participantName, messageText) {
   };
 }
 
+async function resolveThreadIdFromCurrentMessagingView(
+  page,
+  { profileUrl, participantName, messageText }
+) {
+  const { slugNeedle, nameNeedle, textNeedle, tokenNeedles } =
+    buildConversationNeedles(profileUrl, participantName, messageText);
+  const normalizedProfileUrl = normalizeProfileUrlForCompare(profileUrl);
+
+  try {
+    const result = await page.evaluate(
+      (slugNeedleInput, nameNeedleInput, textNeedleInput, tokenNeedlesInput, targetProfileUrl) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const normalizeUrl = (value) => {
+          try {
+            const parsed = new URL(String(value || '').trim());
+            parsed.hash = '';
+            parsed.search = '';
+            parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+            return parsed.toString().replace(/\/$/, '');
+          } catch {
+            return String(value || '').trim().replace(/\/+$/, '');
+          }
+        };
+        const extractThreadId = (rawValue) => {
+          const raw = String(rawValue || '');
+          if (!raw) return '';
+
+          const fromThread = raw.match(/\/messaging\/thread\/([^/?#]+)/i)?.[1] || '';
+          if (fromThread && fromThread.toLowerCase() !== 'new') return fromThread.trim();
+
+          const fromQuery = raw.match(/[?&](?:conversationId|threadId)=([^&#"\s]+)/i)?.[1] || '';
+          if (fromQuery && fromQuery.toLowerCase() !== 'new') {
+            try {
+              const decoded = decodeURIComponent(fromQuery);
+              if (decoded && decoded.toLowerCase() !== 'new') return decoded.trim();
+            } catch {}
+            return fromQuery.trim();
+          }
+
+          const fromConversationUrn = raw.match(/[?&]conversationUrn=([^&#"\s]+)/i)?.[1] || '';
+          if (fromConversationUrn) {
+            try {
+              const decoded = decodeURIComponent(fromConversationUrn);
+              const urn = decoded.match(/fs(?:d)?_conversation:([^,"\s)]+)/i)?.[1] || '';
+              if (urn && urn.toLowerCase() !== 'new') return urn.trim();
+            } catch {}
+          }
+
+          const urn = raw.match(/fs(?:d)?_conversation:([^,"\s)]+)/i)?.[1] || '';
+          if (urn && urn.toLowerCase() !== 'new') return urn.trim();
+
+          return '';
+        };
+        const isValidThreadId = (value) => {
+          const id = String(value || '').trim();
+          if (!id) return false;
+          if (id.toLowerCase() === 'new') return false;
+          return true;
+        };
+        const pushText = (bucket, value) => {
+          const normalized = normalize(value);
+          if (normalized) bucket.push(normalized);
+        };
+
+        const currentThreadId = extractThreadId(window.location.href);
+        if (!isValidThreadId(currentThreadId)) {
+          return { threadId: '', score: 0, reason: 'no-thread-in-url' };
+        }
+
+        const roots = [];
+        const selectedConversation = document.querySelector(
+          [
+            '.msg-conversation-listitem--selected',
+            '.msg-conversation-listitem--active',
+            '.msg-conversation-card--active',
+            '.msg-conversation-listitem[aria-current="true"]',
+            '[aria-current="page"]',
+          ].join(', ')
+        );
+        if (selectedConversation) roots.push(selectedConversation);
+
+        const threadHeader = document.querySelector(
+          [
+            '.msg-thread',
+            '.msg-thread__container',
+            '.msg-overlay-conversation-bubble',
+            '[data-view-name*="thread"]',
+            '[data-view-name*="messaging-detail"]',
+          ].join(', ')
+        );
+        if (threadHeader) roots.push(threadHeader);
+        if (roots.length === 0) roots.push(document.body);
+
+        const profileLinks = [];
+        const collectedTexts = [];
+
+        for (const root of roots) {
+          if (!root) continue;
+
+          for (const anchor of Array.from(root.querySelectorAll('a[href*="/in/"]'))) {
+            const href = normalizeUrl(anchor.href || anchor.getAttribute?.('href') || '');
+            if (href) profileLinks.push(href);
+            pushText(collectedTexts, anchor.getAttribute?.('aria-label') || anchor.textContent || '');
+          }
+
+          const textSelectors = [
+            'h1',
+            'h2',
+            'h3',
+            '.msg-thread__subject',
+            '.msg-thread__link-to-profile',
+            '.msg-thread__link-to-profile-name',
+            '.msg-conversation-listitem__participant-names',
+            '.msg-conversation-card__participant-names',
+            '[data-view-name*="conversation"]',
+          ];
+          for (const selector of textSelectors) {
+            for (const node of Array.from(root.querySelectorAll(selector))) {
+              pushText(collectedTexts, node.textContent || '');
+            }
+          }
+          pushText(collectedTexts, root.textContent || '');
+        }
+
+        const haystack = collectedTexts.join(' ').toLowerCase();
+        let score = 0;
+        const reasons = [];
+
+        if (targetProfileUrl && profileLinks.some((href) => href === targetProfileUrl)) {
+          score += 10;
+          reasons.push('profile-link');
+        }
+        if (textNeedleInput && haystack.includes(textNeedleInput)) {
+          score += 5;
+          reasons.push('message-text');
+        }
+        if (nameNeedleInput && haystack.includes(nameNeedleInput)) {
+          score += 4;
+          reasons.push('name');
+        }
+        if (slugNeedleInput && haystack.includes(slugNeedleInput)) {
+          score += 3;
+          reasons.push('slug');
+        }
+        if (Array.isArray(tokenNeedlesInput)) {
+          let tokenHits = 0;
+          for (const token of tokenNeedlesInput) {
+            if (token && haystack.includes(String(token).toLowerCase())) {
+              tokenHits += 1;
+            }
+          }
+          if (tokenHits > 0) {
+            score += Math.min(4, tokenHits);
+            reasons.push(`tokens:${tokenHits}`);
+          }
+        }
+
+        if (score < 2) {
+          return { threadId: '', score, reason: reasons.join(',') || 'no-match' };
+        }
+
+        return {
+          threadId: currentThreadId,
+          score,
+          reason: reasons.join(',') || 'matched-current-thread',
+        };
+      },
+      slugNeedle,
+      nameNeedle,
+      textNeedle,
+      tokenNeedles,
+      normalizedProfileUrl
+    );
+
+    return {
+      threadId: isValidThreadId(result?.threadId) ? result.threadId : '',
+      score: Number(result?.score || 0),
+      reason: String(result?.reason || ''),
+    };
+  } catch {
+    return { threadId: '', score: 0, reason: 'current-thread-inspection-failed' };
+  }
+}
+
 function scoreConversationRowText(rowText, { slugNeedle, nameNeedle, textNeedle, tokenNeedles }) {
   const hay = normalizeText(rowText).toLowerCase();
   if (!hay) return 0;
@@ -1300,6 +1505,19 @@ async function resolveThreadIdFromMessagingHome(page, { accountId = 'unknown', p
   await page.waitForSelector('a[href*="/messaging/thread/"], .msg-conversation-listitem', {
     timeout: 12000,
   }).catch(() => null);
+
+  const currentThreadMatch = await resolveThreadIdFromCurrentMessagingView(page, {
+    profileUrl,
+    participantName,
+    messageText,
+  });
+  if (currentThreadMatch.threadId) {
+    logSendStep(
+      accountId,
+      `thread id resolved from current messaging view (${currentThreadMatch.reason || 'matched-current-thread'})`
+    );
+    return currentThreadMatch.threadId;
+  }
 
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
@@ -1723,6 +1941,9 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
         });
         if (messagingComposerResult.opened) {
           usedDirectUrl = true;
+          if (messagingComposerResult.threadId) {
+            preResolvedChatId = messagingComposerResult.threadId;
+          }
           logSendStep(accountId, `composer opened via messaging home fallback (${messagingComposerResult.matched})`);
         } else {
           logSendStep(accountId, `messaging-home fallback unavailable: ${messagingComposerResult.reason}`);
