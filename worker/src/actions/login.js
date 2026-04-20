@@ -249,7 +249,7 @@ async function tryNavigate(page, url) {
   }
 }
 
-async function verifySession({ accountId, proxyUrl }) {
+async function verifySession({ accountId, proxyUrl, persistCookies = true }) {
   return withAccountLock(accountId, async () => {
   let page;
   let context;
@@ -327,7 +327,7 @@ async function verifySession({ accountId, proxyUrl }) {
       );
 
       if (messagingAuthenticated || feedAuthenticated) {
-        if (process.env.REFRESH_SESSION_COOKIES === '1') {
+        if (persistCookies) {
           await saveCookies(accountId, await context.cookies(), {
             skipIfMissingAuthCookies: true,
             source: 'verifySession',

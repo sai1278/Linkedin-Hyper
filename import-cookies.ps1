@@ -379,6 +379,12 @@ function Invoke-ImportAndVerify {
   $verify | ConvertTo-Json -Depth 6 | Write-Host
 
   Write-Host ""
+  Write-Host "Re-verifying persisted session..."
+  Start-Sleep -Seconds 5
+  $verifyPersisted = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify" -Headers $headers
+  $verifyPersisted | ConvertTo-Json -Depth 6 | Write-Host
+
+  Write-Host ""
   Write-Host "Done."
 }
 
@@ -393,7 +399,7 @@ function Should-RetryWithLiveProfile {
   if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Message) {
     $text += "`n" + [string]$ErrorRecord.Exception.Message
   }
-  return ($text -match 'SESSION_EXPIRED|Session expired')
+  return ($text -match 'SESSION_EXPIRED|Session expired|AUTHENTICATED_STATE_NOT_REACHED|LOGIN_NOT_FINISHED|COOKIES_MISSING')
 }
 
 try {
