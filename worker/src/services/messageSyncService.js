@@ -6,12 +6,14 @@
 const { readMessages } = require('../actions/readMessages');
 const { readThread } = require('../actions/readThread');
 const { verifySession } = require('../actions/login');
+const { sessionMeta } = require('../session');
 const accountRepo = require('../db/repositories/AccountRepository');
 const messageRepo = require('../db/repositories/MessageRepository');
 const { emitInboxUpdate, emitNewMessage } = require('../utils/websocket');
 const { getRedis } = require('../redisClient');
 const {
   clearSessionIssue,
+  getHealthStateSnapshot,
   markBulkSyncCompleted,
   markBulkSyncFailed,
   markBulkSyncStarted,
@@ -20,6 +22,11 @@ const {
   markSyncFailed,
   markSyncStarted,
 } = require('../healthState');
+
+const SCHEDULER_SESSION_PROTECTION_MS = Math.max(
+  0,
+  parseInt(process.env.SCHEDULER_SESSION_PROTECTION_MS || String(2 * 60 * 60_000), 10) || (2 * 60 * 60_000)
+);
 
 function isDatabaseUnavailable(err) {
   if (!err) return false;
@@ -78,6 +85,49 @@ async function withTimeout(promise, timeoutMs, code = 'DB_TIMEOUT') {
 async function syncAccount(accountId, proxyUrl = null, meta = {}) {
   console.log(`[MessageSync] Starting sync for account: ${accountId}`);
   const source = meta?.source || 'scheduler';
+  if (source === 'scheduler') {
+    const healthState = getHealthStateSnapshot();
+    const accountState = healthState.accounts?.[accountId] || {};
+    if (accountState.sessionIssue) {
+      console.log(
+        `[MessageSync] Skipping scheduled sync for ${accountId}; session issue is active (${accountState.sessionIssue.code || 'unknown'}).`
+      );
+      return {
+        accountId,
+        conversationsProcessed: 0,
+        newMessages: 0,
+        updatedConversations: 0,
+        errors: [],
+        skipped: true,
+        skipReason: 'session_issue_active',
+        startedAt: new Date(),
+        completedAt: new Date(),
+      };
+    }
+
+    const metaSnapshot = await sessionMeta(accountId).catch(() => null);
+    const ageMs = Number(metaSnapshot?.ageSeconds) > 0 ? Number(metaSnapshot.ageSeconds) * 1000 : 0;
+    if (
+      SCHEDULER_SESSION_PROTECTION_MS > 0 &&
+      ageMs > 0 &&
+      ageMs < SCHEDULER_SESSION_PROTECTION_MS
+    ) {
+      console.log(
+        `[MessageSync] Skipping scheduled sync for ${accountId}; session refreshed ${Math.round(ageMs / 1000)}s ago.`
+      );
+      return {
+        accountId,
+        conversationsProcessed: 0,
+        newMessages: 0,
+        updatedConversations: 0,
+        errors: [],
+        skipped: true,
+        skipReason: 'recent_session_refresh',
+        startedAt: new Date(),
+        completedAt: new Date(),
+      };
+    }
+  }
   markSyncStarted(accountId, source);
   
   const stats = {
@@ -111,9 +161,15 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
 
     // Fetch conversations from LinkedIn
     console.log(`[MessageSync] Fetching conversations for ${accountId}...`);
+    const allowSessionCookieRefresh = source !== 'scheduler';
     let inboxData;
     try {
-      inboxData = await readMessages({ accountId, proxyUrl, limit: 50 });
+      inboxData = await readMessages({
+        accountId,
+        proxyUrl,
+        limit: 50,
+        refreshSessionCookies: allowSessionCookieRefresh,
+      });
     } catch (inboxErr) {
       if (!isSessionRecoveryCandidate(inboxErr)) {
         throw inboxErr;
@@ -121,7 +177,12 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
 
       console.warn(`[MessageSync] Inbox read needs recovery for ${accountId}: ${inboxErr.message}`);
       await verifySession({ accountId, proxyUrl });
-      inboxData = await readMessages({ accountId, proxyUrl, limit: 50 });
+      inboxData = await readMessages({
+        accountId,
+        proxyUrl,
+        limit: 50,
+        refreshSessionCookies: allowSessionCookieRefresh,
+      });
     }
     clearSessionIssue(accountId);
     
@@ -164,7 +225,13 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
         console.log(`[MessageSync] Fetching messages for conversation ${conversationId}...`);
         let threadData;
         try {
-          threadData = await readThread({ accountId, chatId: conversationId, proxyUrl, limit: 100 });
+          threadData = await readThread({
+            accountId,
+            chatId: conversationId,
+            proxyUrl,
+            limit: 100,
+            refreshSessionCookies: allowSessionCookieRefresh,
+          });
         } catch (threadErr) {
           if (!isSessionRecoveryCandidate(threadErr)) {
             throw threadErr;
@@ -172,7 +239,13 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
 
           console.warn(`[MessageSync] Thread read needs recovery for ${accountId}/${conversationId}: ${threadErr.message}`);
           await verifySession({ accountId, proxyUrl });
-          threadData = await readThread({ accountId, chatId: conversationId, proxyUrl, limit: 100 });
+          threadData = await readThread({
+            accountId,
+            chatId: conversationId,
+            proxyUrl,
+            limit: 100,
+            refreshSessionCookies: allowSessionCookieRefresh,
+          });
         }
 
         // Enrich missing participant metadata from thread page.

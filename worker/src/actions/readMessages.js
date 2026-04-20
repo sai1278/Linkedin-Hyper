@@ -34,6 +34,7 @@ async function readMessagesInternal({
   accountId,
   proxyUrl,
   limit,
+  refreshSessionCookies = true,
   __attempt = 1,
   forceCookieReload = false,
 }) {
@@ -254,7 +255,7 @@ async function readMessagesInternal({
       chat.accountId = accountId;
     });
 
-    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+    if (refreshSessionCookies && process.env.REFRESH_SESSION_COOKIES === '1') {
       await saveCookies(accountId, await context.cookies(), {
         skipIfMissingAuthCookies: true,
         source: 'readMessages',
@@ -266,13 +267,14 @@ async function readMessagesInternal({
     if (__attempt < 2 && isRecoverableBrowserError(err)) {
       await cleanupContext(accountId).catch(() => {});
       await delay(250, 500);
-      return readMessagesInternal({
-        accountId,
-        proxyUrl,
-        limit,
-        __attempt: __attempt + 1,
-        forceCookieReload: true,
-      });
+        return readMessagesInternal({
+          accountId,
+          proxyUrl,
+          limit,
+          refreshSessionCookies,
+          __attempt: __attempt + 1,
+          forceCookieReload: true,
+        });
     }
     throw err;
   } finally {
@@ -280,10 +282,17 @@ async function readMessagesInternal({
   }
 }
 
-async function readMessages({ accountId, proxyUrl, limit = 20 }) {
+async function readMessages({ accountId, proxyUrl, limit = 20, refreshSessionCookies = true }) {
   return withAccountLock(accountId, async () => {
     await checkAndIncrement(accountId, 'inboxReads');
-    return readMessagesInternal({ accountId, proxyUrl, limit, __attempt: 1, forceCookieReload: false });
+    return readMessagesInternal({
+      accountId,
+      proxyUrl,
+      limit,
+      refreshSessionCookies,
+      __attempt: 1,
+      forceCookieReload: false,
+    });
   });
 }
 

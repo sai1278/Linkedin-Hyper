@@ -34,6 +34,7 @@ async function readThreadInternal({
   chatId,
   proxyUrl,
   limit = 50,
+  refreshSessionCookies = true,
   __attempt = 1,
   forceCookieReload = false,
 }) {
@@ -80,6 +81,7 @@ async function readThreadInternal({
           chatId,
           proxyUrl,
           limit,
+          refreshSessionCookies,
           __attempt: __attempt + 1,
           forceCookieReload: true,
         });
@@ -183,7 +185,7 @@ async function readThreadInternal({
       }
     }
 
-    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+    if (refreshSessionCookies && process.env.REFRESH_SESSION_COOKIES === '1') {
       await saveCookies(accountId, await context.cookies(), {
         skipIfMissingAuthCookies: true,
         source: 'readThread',
@@ -200,6 +202,7 @@ async function readThreadInternal({
         chatId,
         proxyUrl,
         limit,
+        refreshSessionCookies,
         __attempt: __attempt + 1,
         forceCookieReload: true,
       });
@@ -210,13 +213,14 @@ async function readThreadInternal({
   }
 }
 
-async function readThread({ accountId, chatId, proxyUrl, limit = 50 }) {
+async function readThread({ accountId, chatId, proxyUrl, limit = 50, refreshSessionCookies = true }) {
   return withAccountLock(accountId, async () =>
     readThreadInternal({
       accountId,
       chatId,
       proxyUrl,
       limit,
+      refreshSessionCookies,
       __attempt: 1,
       forceCookieReload: false,
     })
