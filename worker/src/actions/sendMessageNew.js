@@ -98,6 +98,18 @@ function normalizeParticipantName(candidate, profileUrl) {
   return deriveNameFromProfileUrl(profileUrl);
 }
 
+function normalizeProfileUrlForCompare(url) {
+  try {
+    const parsed = new URL(String(url || '').trim());
+    parsed.hash = '';
+    parsed.search = '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return String(url || '').trim().replace(/\/+$/, '');
+  }
+}
+
 function logSendStep(accountId, message) {
   console.log(`[sendMessageNew:${accountId}] ${message}`);
 }
@@ -411,6 +423,113 @@ async function clickMessageTriggerOnProfile(page, { accountId, profileUrl, maxAt
   return {
     opened: false,
     reason: `${reason} ${lastReason}`.trim(),
+    screenshotPath,
+  };
+}
+
+async function openComposerFromPeopleSearch(page, { accountId, profileUrl, participantName }) {
+  const searchQuery = normalizeText(participantName) || deriveNameFromProfileUrl(profileUrl);
+  if (!searchQuery || searchQuery === 'Unknown') {
+    return { opened: false, reason: 'No usable person name available for LinkedIn people search.' };
+  }
+
+  const normalizedProfileUrl = normalizeProfileUrlForCompare(profileUrl);
+  const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(searchQuery)}&origin=GLOBAL_SEARCH_HEADER`;
+  logSendStep(accountId, `opening people search for composer fallback: ${searchQuery}`);
+
+  try {
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (err) {
+    return { opened: false, reason: `People search navigation failed: ${String(err?.message || err)}` };
+  }
+
+  await page.waitForSelector('.reusable-search__result-container, .search-results-container, main', {
+    timeout: 15000,
+  }).catch(() => null);
+  await delay(1000, 1800);
+
+  const clickResult = await page.evaluate((targetProfileUrl) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const normalizeUrl = (value) => {
+      try {
+        const parsed = new URL(String(value || '').trim());
+        parsed.hash = '';
+        parsed.search = '';
+        parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+        return parsed.toString().replace(/\/$/, '');
+      } catch {
+        return String(value || '').trim().replace(/\/+$/, '');
+      }
+    };
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      const hidden =
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.opacity === '0' ||
+        el.getAttribute('aria-hidden') === 'true';
+      return !hidden && rect.width > 0 && rect.height > 0;
+    };
+
+    const cards = Array.from(document.querySelectorAll('.reusable-search__result-container, .entity-result, li'))
+      .filter((card) => card.querySelector('a[href*="/in/"]'));
+
+    const match = cards.find((card) => {
+      const href = card.querySelector('a[href*="/in/"]')?.href || '';
+      return href && normalizeUrl(href) === targetProfileUrl;
+    });
+
+    if (!match) {
+      return { clicked: false, disabled: false, reason: 'Matching search result not found.' };
+    }
+
+    const candidates = Array.from(match.querySelectorAll(
+      [
+        'button[aria-label*="Message"]',
+        'a[aria-label*="Message"]',
+        'button[data-control-name*="message"]',
+        'a[data-control-name*="message"]',
+        'button[data-test-id*="message"]',
+        'a[data-test-id*="message"]',
+      ].join(', ')
+    ));
+
+    const target = candidates.find((el) => isVisible(el));
+    if (!target) {
+      return { clicked: false, disabled: false, reason: 'Search result has no visible Message button.' };
+    }
+
+    const disabled =
+      target.getAttribute('disabled') !== null ||
+      target.getAttribute('aria-disabled') === 'true';
+    const label = normalize(target.getAttribute('aria-label') || target.textContent || '');
+    if (disabled) {
+      return { clicked: false, disabled: true, reason: `Message button is disabled (${label || 'Message'}).` };
+    }
+
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return { clicked: true, disabled: false, reason: label || 'Message' };
+  }, normalizedProfileUrl).catch((err) => ({
+    clicked: false,
+    disabled: false,
+    reason: String(err?.message || err),
+  }));
+
+  if (!clickResult.clicked) {
+    return { opened: false, reason: clickResult.reason || 'People search could not open the composer.' };
+  }
+
+  if (await waitForComposerOpen(page, 12000)) {
+    logSendStep(accountId, `composer opened from people search (${clickResult.reason})`);
+    return { opened: true, strategy: 'people-search', matched: clickResult.reason || searchQuery };
+  }
+
+  const screenshotPath = await captureFailureScreenshot(page, accountId, 'composer-not-open-search-results');
+  return {
+    opened: false,
+    reason: `People search Message action clicked but composer did not open.${screenshotPath ? ` Screenshot: ${screenshotPath}` : ''}`,
     screenshotPath,
   };
 }
@@ -1324,6 +1443,22 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
             usedDirectUrl = true;
             preResolvedChatId = existingThreadId;
           }
+        }
+      } catch (_) {}
+    }
+
+    if (!usedDirectUrl) {
+      // Fallback 2: open from LinkedIn people search before touching the profile page.
+      try {
+        const searchComposerResult = await openComposerFromPeopleSearch(page, {
+          accountId,
+          profileUrl,
+          participantName,
+        });
+        if (searchComposerResult.opened) {
+          usedDirectUrl = true;
+        } else {
+          logSendStep(accountId, `people-search fallback unavailable: ${searchComposerResult.reason}`);
         }
       } catch (_) {}
     }
