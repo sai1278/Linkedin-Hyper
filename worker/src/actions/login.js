@@ -381,7 +381,8 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true }) {
       console.warn(
         `[verifySession:${accountId}] attempt ${attempt}/${maxVerifyAttempts} failed code=${failure.code} ` +
         `feedUrl=${feedUrl} messagingUrl=${messagingUrl} feedOk=${feedAuthenticated} messagingOk=${messagingAuthenticated} ` +
-        `cookies(li_at=${cookieFlags.hasLiAt},JSESSIONID=${cookieFlags.hasJsession},count=${cookieFlags.total})`
+        `cookies(li_at=${cookieFlags.hasLiAt},JSESSIONID=${cookieFlags.hasJsession},count=${cookieFlags.total}) ` +
+        `feedError=${feedResult.error || 'none'} messagingError=${messagingResult.error || 'none'}`
       );
 
       // Retry once for this flaky LinkedIn state before failing.

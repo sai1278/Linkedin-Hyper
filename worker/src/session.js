@@ -198,10 +198,26 @@ function decrypt(payload) {
 }
 
 /** Normalise sameSite values to what Playwright accepts */
+function normalizeCookieDomain(domain) {
+  const raw = String(domain || '').trim();
+  if (!raw) return raw;
+
+  const lower = raw.toLowerCase();
+  if (lower === '.www.linkedin.com') {
+    return 'www.linkedin.com';
+  }
+  if (lower === 'linkedin.com') {
+    return '.linkedin.com';
+  }
+
+  return raw;
+}
+
 function normaliseCookies(cookies) {
   const normalizedList = cookies.map((c) => {
     const normalized = {
       ...c,
+      domain: normalizeCookieDomain(c.domain),
       sameSite: (() => {
         const v = (c.sameSite || '').toLowerCase();
         if (v === 'strict') return 'Strict';
@@ -239,13 +255,13 @@ function normaliseCookies(cookies) {
   for (const cookie of normalizedList) {
     const name = String(cookie?.name || '');
     if (name !== 'li_at' && name !== 'JSESSIONID') continue;
-    const domain = String(cookie?.domain || '').toLowerCase();
+    const domain = normalizeCookieDomain(cookie?.domain).toLowerCase();
     if (!domain.includes('linkedin.com')) continue;
 
     if (domain.includes('www.linkedin.com')) {
       addUnique({ ...cookie, domain: '.linkedin.com' });
     } else if (domain === '.linkedin.com' || domain === 'linkedin.com') {
-      addUnique({ ...cookie, domain: '.www.linkedin.com' });
+      addUnique({ ...cookie, domain: 'www.linkedin.com' });
     }
   }
 
