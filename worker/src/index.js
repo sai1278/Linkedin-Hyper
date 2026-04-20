@@ -1894,6 +1894,10 @@ app.post('/messages/send-new', async (req, res) => {
         accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
       }, 220_000);
     } catch (sendNewErr) {
+      if (sendNewErr?.code === 'SEND_NOT_CONFIRMED') {
+        throw sendNewErr;
+      }
+
       // Always try thread fallback before failing send-new.
       // This helps when profile composer flow is flaky but an existing thread works.
       const reason = String(sendNewErr?.message || sendNewErr || '');

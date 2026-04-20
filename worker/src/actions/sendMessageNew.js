@@ -1386,42 +1386,11 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     }
     page = await context.newPage();
 
-    // W3 — Try the direct messaging URL first to avoid loading the heavy profile page.
+    // W3 — Avoid slug-based direct thread/new URLs here. Public profile slugs are not
+    // a reliable recipient identifier, and this path can clear the composer without
+    // ever creating a real thread.
     let participantName = normalizeParticipantName('', profileUrl);
-    const memberIdMatch = profileUrl.match(/\/in\/([^/?#]+)/);
-    const directUrl = memberIdMatch
-      ? `https://www.linkedin.com/messaging/thread/new/?recipient=${memberIdMatch[1]}`
-      : null;
-
     let usedDirectUrl = false;
-    if (directUrl) {
-      try {
-        await page.goto(directUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-        const directUrlLanding = page.url();
-        if (!directUrlLanding.includes('/login') && !directUrlLanding.includes('/checkpoint') && !directUrlLanding.includes('/authwall')) {
-          const composeBox = await page
-            .waitForSelector(COMPOSER_SELECTORS, { timeout: 20000 })
-            .catch(() => null);
-          usedDirectUrl = !!composeBox;
-
-          if (usedDirectUrl) {
-            try {
-              const nameFromComposer = await page.evaluate(() => {
-                const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-                const nameEl = document.querySelector(
-                  '.msg-thread__name, .msg-entity-lockup__entity-title, [data-anonymize="person-name"], h1, h2'
-                );
-                return normalize(nameEl?.textContent);
-              });
-              participantName = normalizeParticipantName(nameFromComposer, profileUrl);
-            } catch (_) {}
-          }
-        }
-      } catch (_) {
-        // Fall back to profile-page flow below.
-        usedDirectUrl = false;
-      }
-    }
 
     if (!usedDirectUrl) {
       // Fallback 1: if conversation already exists, open from messaging home directly.
@@ -1457,6 +1426,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
         });
         if (searchComposerResult.opened) {
           usedDirectUrl = true;
+          logSendStep(accountId, 'composer opened via people-search fallback');
         } else {
           logSendStep(accountId, `people-search fallback unavailable: ${searchComposerResult.reason}`);
         }
