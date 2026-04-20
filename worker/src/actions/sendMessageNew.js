@@ -1565,7 +1565,6 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     }
 
     // W2 — Burn quota only after the send click succeeds.
-    let provisionalSendAccepted = false;
     let chatId = preResolvedChatId || (await resolveThreadIdAfterSend(page, 12000));
     if (!chatId) {
       logSendStep(accountId, 'thread id unresolved after URL probe; waiting on network probe');
@@ -1595,41 +1594,17 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
       const messageStillVisible = await confirmMessageVisibleInCurrentView(page, text, 15000);
       const composerCleared = await isComposerDraftCleared(page);
       const hasSendErrorBanner = await detectSendErrorBanner(page);
-      if (!hasSendErrorBanner && (messageStillVisible || composerCleared)) {
-        logSendStep(
-          accountId,
-          `thread id unresolved, but send appears accepted (visible=${messageStillVisible}, composerCleared=${composerCleared}); returning provisional chatId=new`
-        );
-        chatId = 'new';
-        provisionalSendAccepted = true;
-      } else {
-        const unresolvedShot = await captureFailureScreenshot(page, accountId, 'thread-id-unresolved');
-        const err = new Error(
-          `Send clicked but LinkedIn thread ID was not resolved. Message may not be delivered.` +
-            (unresolvedShot ? ` Screenshot: ${unresolvedShot}` : '')
-        );
-        err.code = 'SEND_NOT_CONFIRMED';
-        err.status = 502;
-        throw err;
-      }
+      const unresolvedShot = await captureFailureScreenshot(page, accountId, 'thread-id-unresolved');
+      const err = new Error(
+        `Send clicked but LinkedIn thread ID was not resolved. Delivery could not be confirmed (visible=${messageStillVisible}, composerCleared=${composerCleared}, errorBanner=${hasSendErrorBanner}).` +
+          (unresolvedShot ? ` Screenshot: ${unresolvedShot}` : '')
+      );
+      err.code = 'SEND_NOT_CONFIRMED';
+      err.status = 502;
+      throw err;
     }
 
-    let persisted =
-      chatId === 'new'
-        ? await confirmMessageVisibleInCurrentView(page, text, 15000)
-        : await confirmMessagePersistedInThread(page, chatId, text, 30000);
-
-    if (!persisted && chatId === 'new' && provisionalSendAccepted) {
-      const composerClearedAfterSend = await isComposerDraftCleared(page);
-      const hasSendErrorBannerAfterSend = await detectSendErrorBanner(page);
-      if (!hasSendErrorBannerAfterSend && composerClearedAfterSend) {
-        logSendStep(
-          accountId,
-          'message not visible yet for provisional chatId=new, but composer remains clear with no send-error banner; accepting provisional delivery'
-        );
-        persisted = true;
-      }
-    }
+    const persisted = await confirmMessagePersistedInThread(page, chatId, text, 30000);
 
     if (!persisted) {
       const persistedShot = await captureFailureScreenshot(page, accountId, 'message-not-found-after-send');
