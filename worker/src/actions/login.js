@@ -25,6 +25,21 @@ function isCheckpointLike(url) {
   return value.includes('/checkpoint') || value.includes('challenge');
 }
 
+function isRecoverableBrowserError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  if (!msg) return false;
+
+  return (
+    msg.includes('session closed') ||
+    msg.includes('target page, context or browser has been closed') ||
+    msg.includes('frame was detached') ||
+    msg.includes('net::err_aborted') ||
+    msg.includes('protocol error (page.addscripttoevaluateonnewdocument)') ||
+    msg.includes('protocol error (page.createisolatedworld)') ||
+    msg.includes('operation failed')
+  );
+}
+
 async function inspectAuthState(page) {
   try {
     return await page.evaluate(() => {
@@ -230,11 +245,8 @@ async function tryNavigate(page, url) {
 
 async function verifySession({ accountId, proxyUrl }) {
   return withAccountLock(accountId, async () => {
-  // Always verify from a fresh browser context to avoid false positives from
-  // previously authenticated in-memory contexts.
-  await cleanupContext(accountId).catch(() => {});
-  const { context } = await getAccountContext(accountId, proxyUrl);
   let page;
+  let context;
 
   try {
     const cookies = await loadCookies(accountId);
@@ -245,11 +257,15 @@ async function verifySession({ accountId, proxyUrl }) {
       throw err;
     }
 
-    await context.addCookies(cookies);
     let lastVerifyError = null;
-    const maxVerifyAttempts = 2;
+    const maxVerifyAttempts = 3;
 
     for (let attempt = 1; attempt <= maxVerifyAttempts; attempt += 1) {
+      // Always verify from a fresh browser context to avoid false positives from
+      // previously authenticated in-memory contexts and to recover from stale CDP sessions.
+      await cleanupContext(accountId).catch(() => {});
+      ({ context } = await getAccountContext(accountId, proxyUrl));
+      await context.addCookies(cookies);
       page = await context.newPage();
 
       // Check feed first for baseline auth signal.
@@ -265,6 +281,29 @@ async function verifySession({ accountId, proxyUrl }) {
       const messagingState = await waitForSettledAuthState(page, 20000);
       const contextCookies = await context.cookies().catch(() => []);
       const cookieFlags = getCookieFlags(contextCookies);
+      const recoverableIssue = [
+        feedResult.error,
+        messagingResult.error,
+        feedState?.error,
+        messagingState?.error,
+      ].find((value) => isRecoverableBrowserError(value));
+
+      if (recoverableIssue) {
+        const recoverableErr = new Error(`Recoverable browser error during verify for ${accountId}: ${recoverableIssue}`);
+        recoverableErr.code = 'BROWSER_CONTEXT_CLOSED';
+        recoverableErr.status = 503;
+        lastVerifyError = recoverableErr;
+
+        if (attempt < maxVerifyAttempts) {
+          await page.close().catch(() => {});
+          page = null;
+          await cleanupContext(accountId).catch(() => {});
+          await delay(1200, 1800);
+          continue;
+        }
+
+        throw recoverableErr;
+      }
 
       // LinkedIn UI markers can be flaky; accept strong member URL signal when required cookies exist.
       const feedAuthenticated = (
@@ -330,6 +369,7 @@ async function verifySession({ accountId, proxyUrl }) {
       if (failure.code === 'AUTHENTICATED_STATE_NOT_REACHED' && attempt < maxVerifyAttempts) {
         await page.close().catch(() => {});
         page = null;
+        await cleanupContext(accountId).catch(() => {});
         await delay(1200, 1800);
         continue;
       }
