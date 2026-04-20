@@ -215,7 +215,7 @@ export default function ConnectionsPage() {
         sort={sort}
         syncing={syncing}
         title={routeMeta.pageTitle}
-        subtitle="Live LinkedIn connections plus recent tool activity across your managed accounts"
+        subtitle="Last synced LinkedIn network plus recent tool activity across your managed accounts"
         onSearchChange={setSearch}
         onFilterChange={setFilter}
         onSortChange={setSort}

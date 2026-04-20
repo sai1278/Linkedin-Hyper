@@ -547,6 +547,14 @@ function connectionKey(accountId, name, profileUrl) {
   return `${accountId}|${normalizedUrl || normalizedName}`;
 }
 
+const CONNECTION_LIVE_SCRAPE_SESSION_COOLDOWN_MS = Math.max(
+  0,
+  parseInt(
+    process.env.CONNECTION_LIVE_SCRAPE_SESSION_COOLDOWN_MS || String(15 * 60_000),
+    10
+  ) || 15 * 60_000
+);
+
 function pushLatestConnection(latestByConnection, item) {
   if (!item?.accountId) return;
   const key = connectionKey(item.accountId, item.name, item.profileUrl);
@@ -575,7 +583,34 @@ function mapActivityEntryToConnection(accountId, entry) {
   };
 }
 
-async function buildUnifiedConnections(limit = 300) {
+function finalizeUnifiedConnections(latestByConnection, limit = 300) {
+  return Array.from(latestByConnection.values())
+    .sort((a, b) => {
+      const tsDiff = (Number(b.connectedAt) || 0) - (Number(a.connectedAt) || 0);
+      if (tsDiff !== 0) return tsDiff;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    })
+    .slice(0, limit);
+}
+
+function mergeConnectionList(latestByConnection, items = []) {
+  for (const item of items || []) {
+    const profileUrl = String(item?.profileUrl || '');
+    const name = normalizeParticipantName(item?.name, profileUrl);
+    if (!name || name === 'Unknown') continue;
+
+    pushLatestConnection(latestByConnection, {
+      accountId: item.accountId,
+      name,
+      profileUrl,
+      headline: item?.headline || '',
+      connectedAt: Number(item?.connectedAt) || undefined,
+      source: item?.source || 'linkedin',
+    });
+  }
+}
+
+async function seedUnifiedConnectionsFromActivity() {
   const ids = await listKnownAccountIds();
   const latestByConnection = new Map();
 
@@ -591,9 +626,56 @@ async function buildUnifiedConnections(limit = 300) {
     }
   }
 
+  return { ids, latestByConnection };
+}
+
+async function getLiveScrapeEligibleAccountIds(accountIds = []) {
+  const healthState = getHealthStateSnapshot();
+  const eligible = [];
+
+  for (const accountId of accountIds) {
+    const state = healthState.accounts[accountId] || {};
+    if (state.sessionIssue) {
+      console.warn(
+        `[Connections] Skipping live scrape for ${accountId}; session issue is active (${state.sessionIssue.code || 'unknown'}).`
+      );
+      continue;
+    }
+
+    const meta = await sessionMeta(accountId).catch(() => null);
+    const ageMs = Number(meta?.ageSeconds) > 0 ? Number(meta.ageSeconds) * 1000 : 0;
+    if (
+      CONNECTION_LIVE_SCRAPE_SESSION_COOLDOWN_MS > 0 &&
+      ageMs > 0 &&
+      ageMs < CONNECTION_LIVE_SCRAPE_SESSION_COOLDOWN_MS
+    ) {
+      console.warn(
+        `[Connections] Skipping live scrape for ${accountId}; session was refreshed ${Math.round(ageMs / 1000)}s ago.`
+      );
+      continue;
+    }
+
+    eligible.push(accountId);
+  }
+
+  return eligible;
+}
+
+async function buildUnifiedConnections(limit = 300, { includeLive = true } = {}) {
+  const { ids, latestByConnection } = await seedUnifiedConnectionsFromActivity();
+
+  if (!includeLive) {
+    return { connections: finalizeUnifiedConnections(latestByConnection, limit) };
+  }
+
+  const eligibleIds = await getLiveScrapeEligibleAccountIds(ids);
+  if (eligibleIds.length === 0) {
+    return { connections: finalizeUnifiedConnections(latestByConnection, limit) };
+  }
+
   const proxyUrl = process.env.PROXY_URL || null;
   const liveResults = await Promise.allSettled(
-    ids.map(async (accountId) => {
+    eligibleIds.map(async (accountId) => {
       try {
         const result = await runJob(
           'readConnections',
@@ -630,32 +712,18 @@ async function buildUnifiedConnections(limit = 300) {
       continue;
     }
 
-    for (const item of result.value.items || []) {
-      const profileUrl = String(item?.profileUrl || '');
-      const name = normalizeParticipantName(item?.name, profileUrl);
-      if (!name || name === 'Unknown') continue;
-
-      pushLatestConnection(latestByConnection, {
+    mergeConnectionList(
+      latestByConnection,
+      (result.value.items || []).map((item) => ({
+        ...item,
         accountId: result.value.accountId,
-        name,
-        profileUrl,
-        headline: item?.headline || '',
-        connectedAt: Number(item?.connectedAt) || undefined,
         source: 'linkedin',
-      });
-    }
+      }))
+    );
   }
 
-    const connections = Array.from(latestByConnection.values())
-      .sort((a, b) => {
-        const tsDiff = (Number(b.connectedAt) || 0) - (Number(a.connectedAt) || 0);
-        if (tsDiff !== 0) return tsDiff;
-        return String(a.name || '').localeCompare(String(b.name || ''));
-      })
-      .slice(0, limit);
-
-    return { connections };
-  }
+  return { connections: finalizeUnifiedConnections(latestByConnection, limit) };
+}
 
 const UNIFIED_CONNECTIONS_CACHE_TTL_MS = 300_000;
 let unifiedConnectionsCache = {
@@ -669,18 +737,18 @@ async function getUnifiedConnectionsWithCache(limit = 300, { refresh = false } =
     unifiedConnectionsCache.expiresAt = 0;
   }
 
-  const now = Date.now();
-  if (!refresh && unifiedConnectionsCache.expiresAt > now) {
-    return { connections: unifiedConnectionsCache.payload.connections.slice(0, limit) };
-  }
+  if (!refresh) {
+    const latestByConnection = new Map();
+    mergeConnectionList(latestByConnection, unifiedConnectionsCache.payload.connections || []);
 
-  if (!refresh && unifiedConnectionsInFlight) {
-    const payload = await unifiedConnectionsInFlight;
-    return { connections: payload.connections.slice(0, limit) };
+    const activityPayload = await buildUnifiedConnections(limit, { includeLive: false });
+    mergeConnectionList(latestByConnection, activityPayload.connections || []);
+
+    return { connections: finalizeUnifiedConnections(latestByConnection, limit) };
   }
 
   unifiedConnectionsInFlight = (async () => {
-    const payload = await buildUnifiedConnections(limit);
+    const payload = await buildUnifiedConnections(limit, { includeLive: true });
     unifiedConnectionsCache = {
       expiresAt: Date.now() + UNIFIED_CONNECTIONS_CACHE_TTL_MS,
       payload,

@@ -123,7 +123,7 @@ export function ConnectionGrid({
           }}
         >
           <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
-          {syncing ? 'Syncing network...' : 'Sync LinkedIn network'}
+          {syncing ? 'Refreshing network...' : 'Refresh LinkedIn network'}
         </button>
       </div>
 
@@ -199,9 +199,9 @@ export function ConnectionGrid({
               No LinkedIn network data yet
             </p>
             <p className="mt-2 max-w-xl text-sm" style={{ color: 'var(--text-muted)' }}>
-              This page fills from live LinkedIn connection sync plus recent connection activity. Click
+              This page shows the last synced LinkedIn network plus recent connection activity. Click
               {' '}
-              <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Sync LinkedIn network</span>
+              <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Refresh LinkedIn network</span>
               {' '}
               to pull the current network into the dashboard.
             </p>
