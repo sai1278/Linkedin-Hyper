@@ -6,6 +6,7 @@ const MAX_ATTEMPTS = Math.max(1, parseInt(process.env.LOGIN_RATE_LIMIT_MAX_ATTEM
 const KEY_PREFIX = 'auth:login:attempts:';
 
 let redis: Redis | null = null;
+let redisConnectPromise: Promise<boolean> | null = null;
 let redisUnavailableUntil = 0;
 const memoryFallback = new Map<string, { count: number; resetAt: number }>();
 
@@ -40,7 +41,40 @@ function createRedisClient(): Redis {
   return client;
 }
 
-function getRedis(): Redis | null {
+function resetRedisClient(client?: Redis | null): void {
+  redisConnectPromise = null;
+  if (client) {
+    try {
+      client.disconnect();
+    } catch {}
+  }
+  if (!client || redis === client) {
+    redis = null;
+  }
+}
+
+async function ensureRedisConnected(client: Redis): Promise<boolean> {
+  if (client.status === 'ready') {
+    return true;
+  }
+
+  if (!redisConnectPromise) {
+    redisConnectPromise = client.connect()
+      .then(() => true)
+      .catch(() => {
+        redisUnavailableUntil = Date.now() + 60_000;
+        resetRedisClient(client);
+        return false;
+      })
+      .finally(() => {
+        redisConnectPromise = null;
+      });
+  }
+
+  return redisConnectPromise;
+}
+
+async function getRedis(): Promise<Redis | null> {
   if (isRedisDisabled() || Date.now() < redisUnavailableUntil) {
     return null;
   }
@@ -49,7 +83,8 @@ function getRedis(): Redis | null {
     redis = createRedisClient();
   }
 
-  return redis;
+  const connected = await ensureRedisConnected(redis);
+  return connected ? redis : null;
 }
 
 function getClientIp(req: NextRequest): string {
@@ -93,7 +128,7 @@ async function consumeMemoryAttempt(key: string): Promise<{ allowed: boolean; re
 
 export async function consumeLoginAttempt(req: NextRequest): Promise<{ allowed: boolean; retryAfterSec: number }> {
   const key = getKey(req);
-  const redisClient = getRedis();
+  const redisClient = await getRedis();
 
   if (!redisClient) {
     return consumeMemoryAttempt(key);
@@ -122,8 +157,7 @@ export async function consumeLoginAttempt(req: NextRequest): Promise<{ allowed: 
     };
   } catch {
     redisUnavailableUntil = Date.now() + 60_000;
-    redis?.disconnect();
-    redis = null;
+    resetRedisClient(redisClient);
     return consumeMemoryAttempt(key);
   }
 }
@@ -132,14 +166,13 @@ export async function clearLoginAttempts(req: NextRequest): Promise<void> {
   const key = getKey(req);
   memoryFallback.delete(key);
 
-  const redisClient = getRedis();
+  const redisClient = await getRedis();
   if (!redisClient) return;
 
   try {
     await redisClient.del(key);
   } catch {
     redisUnavailableUntil = Date.now() + 60_000;
-    redis?.disconnect();
-    redis = null;
+    resetRedisClient(redisClient);
   }
 }
