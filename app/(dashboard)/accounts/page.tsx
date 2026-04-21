@@ -21,6 +21,7 @@ import { ExportButton } from '@/components/ui/ExportButton';
 import { DASHBOARD_ROUTE_META } from '@/lib/dashboard-route-meta';
 import { deriveAccountHealth, formatRelativeDate, type AccountHealthKey, type DerivedAccountHealth } from '@/lib/account-health';
 import { getAccountLabel } from '@/lib/account-label';
+import { ErrorState } from '@/components/ui/ErrorState';
 
 type AccountSort = 'name' | 'health' | 'lastSynced' | 'messagesSent';
 
@@ -72,12 +73,14 @@ export default function AccountsPage() {
   const [isBulkSyncing, setIsBulkSyncing] = useState(false);
   const [verifyingIds, setVerifyingIds] = useState<string[]>([]);
   const [deletingIds, setDeletingIds] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchAccounts = useCallback(async () => {
     setIsLoading(true);
     try {
       const { accounts: nextAccounts } = await getAccounts();
       setAccounts(nextAccounts || []);
+      setError(null);
 
       const detailsEntries = await Promise.all(
         (nextAccounts || []).map(async (account) => {
@@ -123,7 +126,9 @@ export default function AccountsPage() {
       setAccountDetails(Object.fromEntries(detailsEntries));
     } catch (err) {
       console.error('Failed to fetch accounts:', err);
-      toast.error('Failed to load account health data');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to load account health data';
+      setError(errorMessage);
+      toast.error(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -405,7 +410,11 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {!isLoading && accountViewModels.length === 0 && (
+      {!isLoading && error && (
+        <ErrorState message={error} onRetry={() => void fetchAccounts()} />
+      )}
+
+      {!isLoading && !error && accountViewModels.length === 0 && (
         <div
           className="rounded-xl border py-16 text-center"
           style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}
@@ -432,7 +441,7 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {!isLoading && accountViewModels.length > 0 && filteredAccounts.length === 0 && (
+      {!isLoading && !error && accountViewModels.length > 0 && filteredAccounts.length === 0 && (
         <div
           className="rounded-xl border py-12 text-center"
           style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}
@@ -446,7 +455,7 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {!isLoading && filteredAccounts.length > 0 && (
+      {!isLoading && !error && filteredAccounts.length > 0 && (
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
           {filteredAccounts.map((viewModel) => (
             <AccountCard

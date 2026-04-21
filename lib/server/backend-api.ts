@@ -3,6 +3,8 @@ import { getSession } from '@/lib/auth/session';
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001';
 const API_SECRET = process.env.API_SECRET ?? '';
+const BACKEND_NETWORK_RETRY_COUNT = 1;
+const BACKEND_NETWORK_RETRY_DELAY_MS = 250;
 
 function applyPrivateNoStore(headers: Headers): void {
   headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
@@ -141,16 +143,18 @@ export async function forwardToBackend(opts: ForwardOptions): Promise<NextRespon
     ? parsedTimeoutMs
     : 120_000;
 
+  const requestInit: RequestInit = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Api-Key': API_SECRET,
+    },
+    body: body != null ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(effectiveTimeoutMs),
+  };
+
   try {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key': API_SECRET,
-      },
-      body: body != null ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(effectiveTimeoutMs),
-    });
+    const res = await fetchBackendWithRetry(url, requestInit);
 
     const data = await res.text();
     const isNoContentStatus = res.status === 204 || res.status === 205 || res.status === 304;
@@ -168,11 +172,32 @@ export async function forwardToBackend(opts: ForwardOptions): Promise<NextRespon
     // 204/205/304 must not include a response body.
     return new NextResponse(null, { status: res.status, headers });
   } catch (err) {
-    const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+    const isTimeout = isTimeoutError(err);
     return NextResponse.json(
       { error: isTimeout ? 'Backend request timed out' : 'Backend unreachable' },
       { status: 502 }
     );
+  }
+}
+
+function isTimeoutError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'TimeoutError';
+}
+
+async function fetchBackendWithRetry(
+  url: string,
+  init: RequestInit,
+  retriesLeft: number = BACKEND_NETWORK_RETRY_COUNT
+): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    if (isTimeoutError(err) || retriesLeft <= 0) {
+      throw err;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, BACKEND_NETWORK_RETRY_DELAY_MS));
+    return fetchBackendWithRetry(url, init, retriesLeft - 1);
   }
 }
 
