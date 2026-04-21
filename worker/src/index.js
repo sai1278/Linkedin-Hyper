@@ -130,6 +130,9 @@ function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
     'AUTHENTICATED_STATE_NOT_REACHED',
     'NOT_MESSAGEABLE',
     'SEND_NOT_CONFIRMED',
+    'NAVIGATION_REDIRECT_LOOP',
+    'PROFILE_NAVIGATION_TIMEOUT',
+    'PROFILE_NAVIGATION_FAILED',
     'RATE_LIMIT_EXCEEDED',
     'QUEUE_UNAVAILABLE',
     'READ_INBOX_TIMEOUT',
@@ -1899,7 +1902,6 @@ app.post('/messages/send-new', async (req, res) => {
         sendNewErr?.code === 'SEND_NOT_CONFIRMED' ||
         sendNewErr?.status === 504 ||
         sendNewReason.includes('timed out after') ||
-        sendNewReason.includes('err_too_many_redirects') ||
         sendNewReason.includes('session expired for account') ||
         sendNewReason.includes('authenticated linkedin member state was not reached') ||
         sendNewReason.includes('checkpoint/challenge is still pending') ||

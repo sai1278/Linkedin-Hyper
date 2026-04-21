@@ -786,11 +786,23 @@ async function openComposerFromMessagingHome(page, { accountId, profileUrl, part
 
   await delay(800, 1400);
 
-  const currentThreadMatch = await resolveThreadIdFromCurrentMessagingView(page, {
+  let currentThreadMatch = await resolveThreadIdFromCurrentMessagingView(page, {
     profileUrl,
     participantName: searchQuery,
     messageText: '',
   });
+  if (!currentThreadMatch.threadId) {
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline && !currentThreadMatch.threadId) {
+      await delay(500, 800);
+      currentThreadMatch = await resolveThreadIdFromCurrentMessagingView(page, {
+        profileUrl,
+        participantName: searchQuery,
+        messageText: '',
+      });
+    }
+  }
+
   if (currentThreadMatch.threadId) {
     const composerReady = await waitForComposerOpen(page, 12000);
     if (composerReady) {
@@ -804,6 +816,44 @@ async function openComposerFromMessagingHome(page, { accountId, profileUrl, part
         matched: currentThreadMatch.reason || searchQuery,
         threadId: currentThreadMatch.threadId,
       };
+    }
+  }
+
+  const currentUrlThreadId = extractThreadIdFromText(page.url());
+  if (isValidThreadId(currentUrlThreadId)) {
+    const normalizedTargetProfileUrl = normalizeProfileUrlForCompare(profileUrl);
+    const hasTargetProfileLink = await page.evaluate((targetProfileUrl) => {
+      const normalizeUrl = (value) => {
+        try {
+          const parsed = new URL(String(value || '').trim());
+          parsed.hash = '';
+          parsed.search = '';
+          parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+          return parsed.toString().replace(/\/$/, '');
+        } catch {
+          return String(value || '').trim().replace(/\/+$/, '');
+        }
+      };
+
+      if (!targetProfileUrl) return false;
+      const anchors = Array.from(document.querySelectorAll('a[href*="/in/"]'));
+      return anchors.some((anchor) => {
+        const href = anchor.href || anchor.getAttribute?.('href') || '';
+        return normalizeUrl(href) === targetProfileUrl;
+      });
+    }, normalizedTargetProfileUrl).catch(() => false);
+
+    if (hasTargetProfileLink) {
+      const composerReady = await waitForComposerOpen(page, 12000);
+      if (composerReady) {
+        logSendStep(accountId, 'reusing current messaging thread via URL/profile-link fallback');
+        return {
+          opened: true,
+          strategy: 'existing-thread-url',
+          matched: 'profile-link-in-current-thread',
+          threadId: currentUrlThreadId,
+        };
+      }
     }
   }
 
@@ -1952,6 +2002,37 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     }
 
     if (!usedDirectUrl) {
+      // Fallback 2b: resolve and open an existing thread from the messaging conversation list.
+      try {
+        const conversationThreadId = await resolveThreadIdByClickingConversationCandidates(
+          page,
+          { accountId, profileUrl, participantName, messageText: '' },
+          15000
+        );
+        if (isValidThreadId(conversationThreadId)) {
+          await page.goto(`https://www.linkedin.com/messaging/thread/${conversationThreadId}/`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000,
+          });
+          const threadComposer = await page
+            .waitForSelector(COMPOSER_SELECTORS, { timeout: 15000 })
+            .catch(() => null);
+          if (threadComposer) {
+            usedDirectUrl = true;
+            preResolvedChatId = conversationThreadId;
+            logSendStep(accountId, `composer opened via conversation-list fallback (thread=${conversationThreadId})`);
+          } else {
+            logSendStep(accountId, 'conversation-list fallback found thread but composer was unavailable');
+          }
+        } else {
+          logSendStep(accountId, 'conversation-list fallback did not resolve a target thread');
+        }
+      } catch (err) {
+        logSendStep(accountId, `conversation-list fallback unavailable: ${String(err?.message || err)}`);
+      }
+    }
+
+    if (!usedDirectUrl) {
       // Fallback 3: open from LinkedIn people search before touching the profile page.
       try {
         const searchComposerResult = await openComposerFromPeopleSearch(page, {
@@ -1971,7 +2052,22 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     if (!usedDirectUrl) {
       // Fallback 4: navigate to recipient's profile page and click "Message"
       logSendStep(accountId, `opening profile URL: ${profileUrl}`);
-      await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      try {
+        await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch (navErr) {
+        const navMsg = String(navErr?.message || navErr);
+        const wrappedErr = new Error(`Profile navigation failed while opening message composer: ${navMsg}`);
+        const navMsgLower = navMsg.toLowerCase();
+        if (navMsgLower.includes('err_too_many_redirects')) {
+          wrappedErr.code = 'NAVIGATION_REDIRECT_LOOP';
+        } else if (navMsgLower.includes('timeout')) {
+          wrappedErr.code = 'PROFILE_NAVIGATION_TIMEOUT';
+        } else {
+          wrappedErr.code = 'PROFILE_NAVIGATION_FAILED';
+        }
+        wrappedErr.status = 502;
+        throw wrappedErr;
+      }
       await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
       await page.waitForSelector('main, body', { timeout: 15000 }).catch(() => null);
       logSendStep(accountId, `profile page load successful: ${page.url()}`);
