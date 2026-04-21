@@ -176,7 +176,12 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
       }
 
       console.warn(`[MessageSync] Inbox read needs recovery for ${accountId}: ${inboxErr.message}`);
-      await verifySession({ accountId, proxyUrl, persistCookies: allowSessionCookieRefresh });
+      await verifySession({
+        accountId,
+        proxyUrl,
+        persistCookies: allowSessionCookieRefresh,
+        allowCachedSuccess: false,
+      });
       inboxData = await readMessages({
         accountId,
         proxyUrl,
@@ -238,7 +243,12 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
           }
 
           console.warn(`[MessageSync] Thread read needs recovery for ${accountId}/${conversationId}: ${threadErr.message}`);
-          await verifySession({ accountId, proxyUrl, persistCookies: allowSessionCookieRefresh });
+          await verifySession({
+            accountId,
+            proxyUrl,
+            persistCookies: allowSessionCookieRefresh,
+            allowCachedSuccess: false,
+          });
           threadData = await readThread({
             accountId,
             chatId: conversationId,

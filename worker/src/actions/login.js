@@ -1,7 +1,7 @@
 'use strict';
 
 const { getAccountContext, cleanupContext, withAccountLock } = require('../browser');
-const { loadCookies, saveCookies } = require('../session');
+const { loadCookies, saveCookies, rememberRecentVerify, getRecentVerify } = require('../session');
 const { delay }                    = require('../humanBehavior');
 const fs = require('fs');
 const path = require('path');
@@ -249,12 +249,27 @@ async function tryNavigate(page, url) {
   }
 }
 
-async function verifySession({ accountId, proxyUrl, persistCookies = true }) {
+async function verifySession({ accountId, proxyUrl, persistCookies = true, allowCachedSuccess = true }) {
   return withAccountLock(accountId, async () => {
   let page;
   let context;
 
   try {
+    if (allowCachedSuccess) {
+      const cached = await getRecentVerify(accountId).catch(() => null);
+      if (cached?.ok) {
+        console.log(
+          `[verifySession:${accountId}] returning cached success url=${cached.url || 'n/a'} via=${cached.via || 'cached'}`
+        );
+        return {
+          ok: true,
+          url: cached.url || 'https://www.linkedin.com/messaging/',
+          via: cached.via || 'cached',
+          cached: true,
+        };
+      }
+    }
+
     const cookies = await loadCookies(accountId);
     if (!cookies || cookies.length === 0) {
       const err = new Error(`No session for account ${accountId}. Import cookies first via POST /accounts/${accountId}/session`);
@@ -328,26 +343,29 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true }) {
       );
 
       if (messagingAuthenticated || feedAuthenticated) {
-        if (persistCookies) {
-          await saveCookies(accountId, await context.cookies(), {
-            skipIfMissingAuthCookies: true,
-            source: 'verifySession',
-          });
-        }
-        console.log(
-          `[verifySession:${accountId}] success via=${
-            messagingAuthenticated
-              ? (feedAuthenticated ? 'feed+messaging' : 'messaging-only')
-              : 'feed-only'
-          } feedUrl=${feedUrl} messagingUrl=${messagingUrl} cookies=${cookieFlags.total}`
-        );
-        return {
+        const result = {
           ok: true,
           url: messagingAuthenticated ? messagingUrl : feedUrl,
           via: messagingAuthenticated
             ? (feedAuthenticated ? 'feed+messaging' : 'messaging-only')
             : 'feed-only',
         };
+        if (persistCookies) {
+          await saveCookies(accountId, await context.cookies(), {
+            requireAuthCookies: true,
+            mergeExisting: false,
+            source: 'verifySession',
+          });
+        }
+        if (allowCachedSuccess) {
+          await rememberRecentVerify(accountId, result).catch(() => {});
+        }
+        console.log(
+          `[verifySession:${accountId}] success via=${
+            result.via
+          } feedUrl=${feedUrl} messagingUrl=${messagingUrl} cookies=${cookieFlags.total}`
+        );
+        return result;
       }
 
       const details = {
