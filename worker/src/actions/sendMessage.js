@@ -1,6 +1,6 @@
 'use strict';
 
-const { getAccountContext, withAccountLock } = require('../browser');
+const { getAccountContext, cleanupContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanClick, humanType } = require('../humanBehavior');
 const { checkAndIncrement } = require('../rateLimit');
@@ -51,6 +51,32 @@ function normalizeParticipantName(candidate, profileUrl) {
     return parsed;
   }
   return deriveNameFromProfileUrl(profileUrl);
+}
+
+function isAuthLandingUrl(url) {
+  const value = String(url || '').toLowerCase();
+  return (
+    value.includes('/login') ||
+    value.includes('/checkpoint') ||
+    value.includes('/authwall') ||
+    value.includes('/challenge')
+  );
+}
+
+function isRecoverableBrowserError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  if (!msg) return false;
+
+  return (
+    msg === 'operation failed' ||
+    msg.includes('operation failed') ||
+    msg.includes('session closed') ||
+    msg.includes('frame was detached') ||
+    msg.includes('target page, context or browser has been closed') ||
+    msg.includes('protocol error (page.createisolatedworld)') ||
+    msg.includes('protocol error (page.addscripttoevaluateonnewdocument)') ||
+    msg.includes('net::err_aborted')
+  );
 }
 
 async function getMessageSnapshot(page) {
@@ -177,8 +203,7 @@ async function confirmMessagePersistedInThread(page, chatId, text, timeoutMs = 1
   }
 }
 
-async function sendMessage({ accountId, chatId, text, proxyUrl }) {
-  return withAccountLock(accountId, async () => {
+async function sendMessageInternal({ accountId, chatId, text, proxyUrl, __attempt = 1 }) {
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
 
@@ -197,10 +222,29 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
 
     const normalizedChatId = String(chatId || '').replace(new RegExp(`^${accountId}:`), '');
 
-    await page.goto(`https://www.linkedin.com/messaging/thread/${normalizedChatId}/`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
+    try {
+      await page.goto(`https://www.linkedin.com/messaging/thread/${normalizedChatId}/`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      });
+    } catch (navErr) {
+      const navMsg = String(navErr?.message || navErr);
+      if (navMsg.includes('ERR_TOO_MANY_REDIRECTS')) {
+        const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+        err.code = 'SESSION_EXPIRED';
+        err.status = 401;
+        throw err;
+      }
+      throw navErr;
+    }
+
+    const landingUrl = page.url();
+    if (isAuthLandingUrl(landingUrl)) {
+      const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+      err.code = 'SESSION_EXPIRED';
+      err.status = 401;
+      throw err;
+    }
 
     await delay(2000, 4000);
 
@@ -292,9 +336,46 @@ async function sendMessage({ accountId, chatId, text, proxyUrl }) {
       createdAt: new Date().toISOString(),
       isRead: true,
     };
+  } catch (err) {
+    if (__attempt < 3 && isRecoverableBrowserError(err)) {
+      await cleanupContext(accountId).catch(() => {});
+      await delay(700 + (__attempt * 300), 1300 + (__attempt * 300));
+      return sendMessageInternal({
+        accountId,
+        chatId,
+        text,
+        proxyUrl,
+        __attempt: __attempt + 1,
+      });
+    }
+
+    if (isRecoverableBrowserError(err)) {
+      const wrapped = new Error(
+        'LinkedIn thread send hit a transient UI/browser failure. Retry once with the current session or refresh cookies.'
+      );
+      wrapped.code = 'SEND_NOT_CONFIRMED';
+      wrapped.status = 502;
+      throw wrapped;
+    }
+
+    const msg = String(err?.message || err || '');
+    if (msg.toLowerCase().includes('operation failed')) {
+      const wrapped = new Error(
+        'LinkedIn thread send hit a transient UI/browser failure. Retry once with the current session or refresh cookies.'
+      );
+      wrapped.code = 'SEND_NOT_CONFIRMED';
+      wrapped.status = 502;
+      throw wrapped;
+    }
+    throw err;
   } finally {
     if (page) await page.close().catch(() => {});
   }
+}
+
+async function sendMessage({ accountId, chatId, text, proxyUrl }) {
+  return withAccountLock(accountId, async () => {
+    return sendMessageInternal({ accountId, chatId, text, proxyUrl, __attempt: 1 });
   });
 }
 
