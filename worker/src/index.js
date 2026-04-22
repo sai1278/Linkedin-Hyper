@@ -1730,28 +1730,35 @@ app.get('/messages/thread', async (req, res) => {
     }
 
     // Live fallback: fetch directly from LinkedIn when DB thread is empty.
-    let liveThread;
-    try {
-      liveThread = await runJob('readThread', {
-        accountId,
-        chatId: normalizedChatId,
-        proxyUrl,
-        limit,
-      });
-    } catch (queueErr) {
-      const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
-      const isQueueConnectivityError =
-        msg.includes('Connection is closed') ||
-        msg.includes('ECONNREFUSED') ||
-        msg.includes('ENOTFOUND') ||
-        msg.includes('getaddrinfo');
+    // Synthetic fallback ids are preview-only placeholders, so avoid opening bogus
+    // /messaging/thread/fallback-... URLs that create noisy browser failures.
+    let liveThread = null;
+    let liveItems = [];
+    if (normalizedChatId.startsWith('fallback-')) {
+      console.log(`[Thread] Skipping live thread fetch for unresolved conversation ${normalizedChatId}`);
+    } else {
+      try {
+        liveThread = await runJob('readThread', {
+          accountId,
+          chatId: normalizedChatId,
+          proxyUrl,
+          limit,
+        });
+      } catch (queueErr) {
+        const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+        const isQueueConnectivityError =
+          msg.includes('Connection is closed') ||
+          msg.includes('ECONNREFUSED') ||
+          msg.includes('ENOTFOUND') ||
+          msg.includes('getaddrinfo');
 
-      if (!isQueueConnectivityError) throw queueErr;
-      console.warn('[Thread] Queue unavailable, falling back to direct readThread:', msg);
-      liveThread = await readThread({ accountId, chatId: normalizedChatId, proxyUrl, limit });
+        if (!isQueueConnectivityError) throw queueErr;
+        console.warn('[Thread] Queue unavailable, falling back to direct readThread:', msg);
+        liveThread = await readThread({ accountId, chatId: normalizedChatId, proxyUrl, limit });
+      }
+
+      liveItems = mapLiveMessagesToApiItems(liveThread?.items, normalizedChatId, accountId);
     }
-
-    const liveItems = mapLiveMessagesToApiItems(liveThread?.items, normalizedChatId, accountId);
 
     // Best-effort persistence so next load comes from DB.
     if (liveItems.length > 0) {
@@ -1861,6 +1868,12 @@ app.post('/messages/send', async (req, res) => {
     if (normalizedChatId.startsWith('activity-')) {
       return res.status(400).json({
         error: 'This conversation is activity-only and cannot be replied yet. Run sync and retry.',
+        code: 'THREAD_NOT_REPLYABLE',
+      });
+    }
+    if (normalizedChatId.startsWith('fallback-')) {
+      return res.status(400).json({
+        error: 'This conversation does not have a stable LinkedIn thread yet. Open the real thread or run sync and retry.',
         code: 'THREAD_NOT_REPLYABLE',
       });
     }

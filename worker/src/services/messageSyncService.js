@@ -37,6 +37,10 @@ function getBulkSyncDisabledAccountIds() {
   );
 }
 
+function isSyntheticConversationId(conversationId) {
+  return String(conversationId || '').startsWith('fallback-');
+}
+
 function isDatabaseUnavailable(err) {
   if (!err) return false;
   const code = err.code || err?.meta?.code;
@@ -235,36 +239,42 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
         }), 4000);
         stats.updatedConversations++;
 
-        // Fetch thread messages
-        console.log(`[MessageSync] Fetching messages for conversation ${conversationId}...`);
-        let threadData;
-        try {
-          threadData = await readThread({
-            accountId,
-            chatId: conversationId,
-            proxyUrl,
-            limit: 100,
-            refreshSessionCookies: allowSessionCookieRefresh,
-          });
-        } catch (threadErr) {
-          if (!isSessionRecoveryCandidate(threadErr)) {
-            throw threadErr;
-          }
+        let threadData = { items: [], participant: null, cursor: null, hasMore: false };
+        if (isSyntheticConversationId(conversationId)) {
+          console.log(
+            `[MessageSync] Skipping thread fetch for unresolved conversation ${conversationId}; preview sync only.`
+          );
+        } else {
+          // Fetch thread messages only when we have a real LinkedIn thread id.
+          console.log(`[MessageSync] Fetching messages for conversation ${conversationId}...`);
+          try {
+            threadData = await readThread({
+              accountId,
+              chatId: conversationId,
+              proxyUrl,
+              limit: 100,
+              refreshSessionCookies: allowSessionCookieRefresh,
+            });
+          } catch (threadErr) {
+            if (!isSessionRecoveryCandidate(threadErr)) {
+              throw threadErr;
+            }
 
-          console.warn(`[MessageSync] Thread read needs recovery for ${accountId}/${conversationId}: ${threadErr.message}`);
-          await verifySession({
-            accountId,
-            proxyUrl,
-            persistCookies: allowSessionCookieRefresh,
-            allowCachedSuccess: false,
-          });
-          threadData = await readThread({
-            accountId,
-            chatId: conversationId,
-            proxyUrl,
-            limit: 100,
-            refreshSessionCookies: allowSessionCookieRefresh,
-          });
+            console.warn(`[MessageSync] Thread read needs recovery for ${accountId}/${conversationId}: ${threadErr.message}`);
+            await verifySession({
+              accountId,
+              proxyUrl,
+              persistCookies: allowSessionCookieRefresh,
+              allowCachedSuccess: false,
+            });
+            threadData = await readThread({
+              accountId,
+              chatId: conversationId,
+              proxyUrl,
+              limit: 100,
+              refreshSessionCookies: allowSessionCookieRefresh,
+            });
+          }
         }
 
         // Enrich missing participant metadata from thread page.

@@ -29,6 +29,10 @@ function isRecoverableBrowserError(err) {
   );
 }
 
+function isSyntheticConversationId(chatId) {
+  return String(chatId || '').startsWith('fallback-');
+}
+
 async function readThreadInternal({
   accountId,
   chatId,
@@ -38,6 +42,13 @@ async function readThreadInternal({
   __attempt = 1,
   forceCookieReload = false,
 }) {
+  if (isSyntheticConversationId(chatId)) {
+    const err = new Error(`LinkedIn thread ID is unresolved for conversation ${chatId}.`);
+    err.code = 'THREAD_ID_UNRESOLVED';
+    err.status = 409;
+    throw err;
+  }
+
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
 
