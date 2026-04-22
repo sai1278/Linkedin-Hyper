@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Connection, Account } from '@/types/dashboard';
 import { getAccounts, getUnifiedConnections } from '@/lib/api-client';
 import { getAccountLabel } from '@/lib/account-label';
@@ -8,6 +8,7 @@ import { ConnectionGrid } from '@/components/connections/ConnectionGrid';
 import { Spinner } from '@/components/ui/Spinner';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { DASHBOARD_ROUTE_META } from '@/lib/dashboard-route-meta';
+import { readSessionCache, writeSessionCache } from '@/lib/session-cache';
 
 type ConnectionSort = 'recent' | 'name' | 'account' | 'important';
 type ConnectionAnnotation = { important: boolean; note: string };
@@ -21,6 +22,12 @@ type DecoratedConnection = Connection & {
 };
 
 const NOTES_STORAGE_KEY = 'linkedin-hyper:connection-annotations:v1';
+const CONNECTIONS_PAGE_CACHE_KEY = 'linkedin-hyper:connections-page:v1';
+
+interface ConnectionsPageCachePayload {
+  accounts: Account[];
+  connections: Connection[];
+}
 
 function getConnectionKey(connection: Pick<Connection, 'accountId' | 'profileUrl' | 'name'>): string {
   return `${connection.accountId}::${connection.profileUrl || connection.name}`;
@@ -42,6 +49,7 @@ export default function ConnectionsPage() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const cacheRef = useRef<ConnectionsPageCachePayload | null>(null);
 
   useEffect(() => {
     const id = setTimeout(() => setDebouncedSearch(search), 150);
@@ -66,10 +74,16 @@ export default function ConnectionsPage() {
     window.localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(annotations));
   }, [annotations]);
 
-  const load = useCallback(async (refresh = false) => {
+  const load = useCallback(async (options?: { refresh?: boolean; background?: boolean }) => {
+    const refresh = options?.refresh ?? false;
+    const background = options?.background ?? false;
     try {
       if (refresh) {
         setSyncing(true);
+      }
+
+      if (!refresh && !background) {
+        setLoading(true);
       }
 
       const [{ accounts: nextAccounts }, { connections: unifiedConnections }] = await Promise.all([
@@ -80,15 +94,40 @@ export default function ConnectionsPage() {
       setAccounts(nextAccounts);
       setConnections(unifiedConnections);
       setError(null);
+      const cachePayload = {
+        accounts: nextAccounts,
+        connections: unifiedConnections,
+      } satisfies ConnectionsPageCachePayload;
+      cacheRef.current = cachePayload;
+      writeSessionCache(CONNECTIONS_PAGE_CACHE_KEY, cachePayload);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to load network');
+      const errorMessage = nextError instanceof Error ? nextError.message : 'Failed to load network';
+      if (cacheRef.current) {
+        setAccounts(cacheRef.current.accounts);
+        setConnections(cacheRef.current.connections);
+        setError(null);
+      } else {
+        setError(errorMessage);
+      }
     } finally {
-      setLoading(false);
+      if (!refresh) {
+        setLoading(false);
+      }
       setSyncing(false);
     }
   }, []);
 
   useEffect(() => {
+    const cached = readSessionCache<ConnectionsPageCachePayload>(CONNECTIONS_PAGE_CACHE_KEY);
+    if (cached) {
+      cacheRef.current = cached;
+      setAccounts(cached.accounts);
+      setConnections(cached.connections);
+      setLoading(false);
+      void load({ background: true });
+      return;
+    }
+
     void load();
   }, [load]);
 
@@ -219,7 +258,7 @@ export default function ConnectionsPage() {
         onSearchChange={setSearch}
         onFilterChange={setFilter}
         onSortChange={setSort}
-        onSync={() => void load(true)}
+        onSync={() => void load({ refresh: true })}
         onToggleImportant={handleToggleImportant}
         onNoteChange={handleNoteChange}
       />

@@ -10,6 +10,9 @@ import type {
 import { deriveDisplayName } from '@/lib/display-name';
 
 const BASE = '/api';
+const CLIENT_RETRYABLE_STATUSES = new Set([502, 503, 504]);
+const CLIENT_GET_RETRY_COUNT = 2;
+const CLIENT_GET_RETRY_DELAY_MS = 400;
 
 export interface AccountSessionStatus {
   exists: boolean;
@@ -27,12 +30,14 @@ type ApiFetchOptions = RequestInit & { ttl?: number };
 
 async function apiFetch<T>(path: string, options?: ApiFetchOptions): Promise<T> {
   const { ttl, ...rest } = options ?? {};
-  const res = await fetch(`${BASE}/${path}`, {
-    cache: ttl ? 'force-cache' : 'no-store',
-    ...(ttl ? { next: { revalidate: ttl } } : {}),
+  const method = String(rest.method || 'GET').toUpperCase();
+  const isServer = typeof window === 'undefined';
+  const res = await fetchWithRetry(`${BASE}/${path}`, {
+    cache: isServer && ttl ? 'force-cache' : 'no-store',
+    ...(isServer && ttl ? { next: { revalidate: ttl } } : {}),
     ...rest,
     headers: { 'Content-Type': 'application/json', ...rest.headers },
-  } as RequestInit);
+  } as RequestInit, method);
 
   if (!res.ok) {
     let errorDetail = res.statusText;
@@ -48,6 +53,35 @@ async function apiFetch<T>(path: string, options?: ApiFetchOptions): Promise<T> 
   }
 
   return res.json() as Promise<T>;
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, method: string): Promise<Response> {
+  const maxRetries = method === 'GET' ? CLIENT_GET_RETRY_COUNT : 0;
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const res = await fetch(url, init);
+      if (!CLIENT_RETRYABLE_STATUSES.has(res.status) || attempt >= maxRetries) {
+        return res;
+      }
+
+      await res.body?.cancel();
+    } catch (error) {
+      if (isAbortError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+    }
+
+    await delay(CLIENT_GET_RETRY_DELAY_MS * (attempt + 1));
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function getAccounts(options?: RequestInit): Promise<{ accounts: Account[] }> {

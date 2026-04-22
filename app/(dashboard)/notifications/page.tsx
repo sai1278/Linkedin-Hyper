@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActivityEntry, Account, ActivityTab } from '@/types/dashboard';
 import { getAccounts, getAccountActivity } from '@/lib/api-client';
 import { NotificationFeed } from '@/components/notifications/NotificationFeed';
@@ -8,9 +8,18 @@ import { Spinner } from '@/components/ui/Spinner';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { ExportButton } from '@/components/ui/ExportButton';
 import { DASHBOARD_ROUTE_META } from '@/lib/dashboard-route-meta';
+import { readSessionCache, writeSessionCache } from '@/lib/session-cache';
 
 const FEED_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
 const FEED_PAGE_SIZE = 60;
+const NOTIFICATIONS_PAGE_CACHE_KEY = 'linkedin-hyper:notifications-page:v1';
+
+interface NotificationsPageCachePayload {
+  entries: ActivityEntry[];
+  accounts: Account[];
+  fetchLimit: number;
+  canLoadMore: boolean;
+}
 
 function normalizeToken(value: string | undefined): string {
   return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -52,10 +61,16 @@ export default function NotificationsPage() {
   const [fetchLimit, setFetchLimit] = useState(FEED_PAGE_SIZE);
   const [canLoadMore, setCanLoadMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const cacheRef = useRef<NotificationsPageCachePayload | null>(null);
 
-  const load = useCallback(async (requestedLimit?: number) => {
+  const load = useCallback(async (requestedLimit?: number, options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
     try {
       const effectiveLimit = requestedLimit ?? FEED_PAGE_SIZE;
+      if (!background) {
+        setLoading(true);
+      }
+
       const { accounts: accs } = await getAccounts();
       setAccounts(accs);
 
@@ -79,16 +94,47 @@ export default function NotificationsPage() {
       setFetchLimit(effectiveLimit);
       setCanLoadMore(hasMore);
       setError(null);
+      const cachePayload = {
+        entries: optimized,
+        accounts: accs,
+        fetchLimit: effectiveLimit,
+        canLoadMore: hasMore,
+      } satisfies NotificationsPageCachePayload;
+      cacheRef.current = cachePayload;
+      writeSessionCache(NOTIFICATIONS_PAGE_CACHE_KEY, cachePayload);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to load activity');
+      const errorMessage = nextError instanceof Error ? nextError.message : 'Failed to load activity';
+      if (cacheRef.current) {
+        setEntries(cacheRef.current.entries);
+        setAccounts(cacheRef.current.accounts);
+        setFetchLimit(cacheRef.current.fetchLimit);
+        setCanLoadMore(cacheRef.current.canLoadMore);
+        setError(null);
+      } else {
+        setError(errorMessage);
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void load();
-    const interval = setInterval(() => void load(fetchLimit), 60_000);
+    const cached = readSessionCache<NotificationsPageCachePayload>(NOTIFICATIONS_PAGE_CACHE_KEY);
+    if (cached) {
+      cacheRef.current = cached;
+      setEntries(cached.entries);
+      setAccounts(cached.accounts);
+      setFetchLimit(cached.fetchLimit);
+      setCanLoadMore(cached.canLoadMore);
+      setLoading(false);
+      void load(cached.fetchLimit, { background: true });
+    } else {
+      void load();
+    }
+
+    const interval = setInterval(() => {
+      void load(cacheRef.current?.fetchLimit ?? fetchLimit, { background: true });
+    }, 60_000);
     return () => clearInterval(interval);
   }, [fetchLimit, load]);
 

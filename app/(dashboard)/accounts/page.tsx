@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AccountCard } from '@/components/accounts/AccountCard';
 import { AddAccountModal } from '@/components/accounts/AddAccountModal';
 import { ArrowUpDown, Info, Loader2, Plus, RefreshCw, ShieldCheck } from 'lucide-react';
@@ -19,9 +19,10 @@ import {
 } from '@/lib/api-client';
 import { ExportButton } from '@/components/ui/ExportButton';
 import { DASHBOARD_ROUTE_META } from '@/lib/dashboard-route-meta';
-import { deriveAccountHealth, formatRelativeDate, type AccountHealthKey, type DerivedAccountHealth } from '@/lib/account-health';
+import { deriveAccountHealth, type AccountHealthKey, type DerivedAccountHealth } from '@/lib/account-health';
 import { getAccountLabel } from '@/lib/account-label';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { readSessionCache, writeSessionCache } from '@/lib/session-cache';
 
 type AccountSort = 'name' | 'health' | 'lastSynced' | 'messagesSent';
 
@@ -40,12 +41,18 @@ interface AccountViewModel {
   details: AccountDetails;
 }
 
+interface AccountsPageCachePayload {
+  accounts: Account[];
+  accountDetails: Record<string, AccountDetails>;
+}
+
 const HEALTH_ORDER: Record<AccountHealthKey, number> = {
   degraded: 0,
   expired: 1,
   expiringSoon: 2,
   healthy: 3,
 };
+const ACCOUNTS_PAGE_CACHE_KEY = 'linkedin-hyper:accounts-page:v1';
 
 function getFallbackAccountDetails(account: Account): AccountDetails {
   const health = deriveAccountHealth({ hasSession: Boolean(account.lastSeen) });
@@ -74,9 +81,14 @@ export default function AccountsPage() {
   const [verifyingIds, setVerifyingIds] = useState<string[]>([]);
   const [deletingIds, setDeletingIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const cacheRef = useRef<AccountsPageCachePayload | null>(null);
 
-  const fetchAccounts = useCallback(async () => {
-    setIsLoading(true);
+  const fetchAccounts = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
+    if (!background) {
+      setIsLoading(true);
+    }
+
     try {
       const { accounts: nextAccounts } = await getAccounts();
       setAccounts(nextAccounts || []);
@@ -123,18 +135,44 @@ export default function AccountsPage() {
         })
       );
 
-      setAccountDetails(Object.fromEntries(detailsEntries));
+      const nextAccountDetails = Object.fromEntries(detailsEntries);
+      const cachePayload = {
+        accounts: nextAccounts || [],
+        accountDetails: nextAccountDetails,
+      } satisfies AccountsPageCachePayload;
+
+      cacheRef.current = cachePayload;
+      writeSessionCache(ACCOUNTS_PAGE_CACHE_KEY, cachePayload);
+      setAccountDetails(nextAccountDetails);
     } catch (err) {
       console.error('Failed to fetch accounts:', err);
       const errorMessage = err instanceof Error ? err.message : 'Failed to load account health data';
-      setError(errorMessage);
-      toast.error(errorMessage);
+      if (cacheRef.current) {
+        setAccounts(cacheRef.current.accounts);
+        setAccountDetails(cacheRef.current.accountDetails);
+        setError(null);
+      } else {
+        setError(errorMessage);
+        toast.error(errorMessage);
+      }
     } finally {
-      setIsLoading(false);
+      if (!background) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    const cached = readSessionCache<AccountsPageCachePayload>(ACCOUNTS_PAGE_CACHE_KEY);
+    if (cached) {
+      cacheRef.current = cached;
+      setAccounts(cached.accounts);
+      setAccountDetails(cached.accountDetails);
+      setIsLoading(false);
+      void fetchAccounts({ background: true });
+      return;
+    }
+
     void fetchAccounts();
   }, [fetchAccounts]);
 
