@@ -1353,7 +1353,7 @@ async function resolveThreadIdFromCurrentMessagingView(
 
   try {
     const result = await page.evaluate(
-      (slugNeedleInput, nameNeedleInput, textNeedleInput, tokenNeedlesInput, targetProfileUrl) => {
+      ({ slugNeedleInput, nameNeedleInput, textNeedleInput, tokenNeedlesInput, targetProfileUrl }) => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
         const normalizeUrl = (value) => {
           try {
@@ -1510,11 +1510,13 @@ async function resolveThreadIdFromCurrentMessagingView(
           reason: reasons.join(',') || 'matched-current-thread',
         };
       },
-      slugNeedle,
-      nameNeedle,
-      textNeedle,
-      tokenNeedles,
-      normalizedProfileUrl
+      {
+        slugNeedleInput: slugNeedle,
+        nameNeedleInput: nameNeedle,
+        textNeedleInput: textNeedle,
+        tokenNeedlesInput: tokenNeedles,
+        targetProfileUrl: normalizedProfileUrl,
+      }
     );
 
     return {
