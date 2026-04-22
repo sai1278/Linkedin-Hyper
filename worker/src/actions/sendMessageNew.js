@@ -675,7 +675,7 @@ async function selectRecipientFromMessagingTypeahead(page, { profileUrl, partici
       .filter((token) => token.length >= 3)
   ));
 
-  return page.evaluate((targetProfileUrl, exactName, slugHint, tokens) => {
+  return page.evaluate(({ targetProfileUrl, exactName, slugHint, tokens }) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const normalizeUrl = (value) => {
       try {
@@ -765,7 +765,12 @@ async function selectRecipientFromMessagingTypeahead(page, { profileUrl, partici
       clicked: true,
       reason: best.label || best.href || 'recipient-selected',
     };
-  }, normalizedProfileUrl, nameNeedle, slugNeedle, tokenNeedles).catch((err) => ({
+  }, {
+    targetProfileUrl: normalizedProfileUrl,
+    exactName: nameNeedle,
+    slugHint: slugNeedle,
+    tokens: tokenNeedles,
+  }).catch((err) => ({
     clicked: false,
     reason: String(err?.message || err),
   }));
@@ -1572,7 +1577,7 @@ async function resolveThreadIdFromMessagingHome(page, { accountId = 'unknown', p
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     try {
-      const chatId = await page.evaluate((slugNeedleInput, nameNeedleInput, textNeedleInput, tokenNeedlesInput) => {
+      const chatId = await page.evaluate(({ slugNeedleInput, nameNeedleInput, textNeedleInput, tokenNeedlesInput }) => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
         const extractThreadId = (rawValue) => {
           const raw = String(rawValue || '');
@@ -1653,7 +1658,12 @@ async function resolveThreadIdFromMessagingHome(page, { accountId = 'unknown', p
         }
 
         return bestMatch.score >= 2 ? bestMatch.id : '';
-      }, slugNeedle, nameNeedle, textNeedle, tokenNeedles);
+      }, {
+        slugNeedleInput: slugNeedle,
+        nameNeedleInput: nameNeedle,
+        textNeedleInput: textNeedle,
+        tokenNeedlesInput: tokenNeedles,
+      });
 
       if (isValidThreadId(chatId)) {
         return chatId;

@@ -28,6 +28,15 @@ const SCHEDULER_SESSION_PROTECTION_MS = Math.max(
   parseInt(process.env.SCHEDULER_SESSION_PROTECTION_MS || String(2 * 60 * 60_000), 10) || (2 * 60 * 60_000)
 );
 
+function getBulkSyncDisabledAccountIds() {
+  return new Set(
+    (process.env.MESSAGE_SYNC_DISABLED_ACCOUNT_IDS ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+  );
+}
+
 function isDatabaseUnavailable(err) {
   if (!err) return false;
   const code = err.code || err?.meta?.code;
@@ -452,13 +461,35 @@ async function syncAllAccounts(proxyUrl = null, meta = {}) {
   const source = meta?.source || 'scheduler';
 
   try {
-    const accountIds = (process.env.ACCOUNT_IDS ?? '').split(',').filter(Boolean);
-    
-    if (accountIds.length === 0) {
+    const configuredAccountIds = (process.env.ACCOUNT_IDS ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    if (configuredAccountIds.length === 0) {
       console.warn('[MessageSync] No accounts configured in ACCOUNT_IDS');
       return {
         totalAccounts: 0,
         results: [],
+      };
+    }
+
+    const disabledAccountIds = getBulkSyncDisabledAccountIds();
+    const skippedAccountIds = configuredAccountIds.filter((accountId) => disabledAccountIds.has(accountId));
+    const accountIds = configuredAccountIds.filter((accountId) => !disabledAccountIds.has(accountId));
+
+    if (skippedAccountIds.length > 0) {
+      console.log(
+        `[MessageSync] Bulk sync disabled for account(s): ${skippedAccountIds.join(', ')}`
+      );
+    }
+
+    if (accountIds.length === 0) {
+      console.warn('[MessageSync] All configured accounts are currently excluded from bulk sync');
+      return {
+        totalAccounts: 0,
+        results: [],
+        skippedAccounts: skippedAccountIds,
       };
     }
 
@@ -494,6 +525,7 @@ async function syncAllAccounts(proxyUrl = null, meta = {}) {
       totalConversations: results.reduce((sum, r) => sum + (r.conversationsProcessed || 0), 0),
       totalNewMessages: results.reduce((sum, r) => sum + (r.newMessages || 0), 0),
       totalErrors: results.reduce((sum, r) => sum + (r.errors?.length || 0), 0),
+      skippedAccounts: skippedAccountIds,
       results,
       syncedAt: new Date().toISOString(),
     };
