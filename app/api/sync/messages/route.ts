@@ -5,9 +5,12 @@ export async function POST(req: NextRequest) {
   const authError = await authenticateCaller(req);
   if (authError) return authError;
 
+  const body = await req.json().catch(() => undefined);
+
   return forwardToBackend({
     method: 'POST',
     path: '/sync/messages',
+    body,
     timeoutMs: 120_000,
   });
 }
