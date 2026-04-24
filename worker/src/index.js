@@ -912,22 +912,85 @@ function isLowSignalFallbackConversation(conv) {
   return conversationId.startsWith('fallback-') && !hasProfile && !hasText;
 }
 
-function shouldReplaceConversation(previous, current) {
+function conversationThreadStabilityScore(conv) {
+  const conversationId = String(conv?.conversationId || '');
+  if (!conversationId) return 0;
+  if (conversationId.startsWith('activity-')) return 1;
+  if (conversationId.startsWith('fallback-')) return 0;
+  return 3;
+}
+
+function mergeConversationMessages(previous, current) {
+  const merged = [];
+  const seen = new Set();
+
+  for (const message of [...(previous?.messages || []), ...(current?.messages || [])]) {
+    const key = [
+      String(message?.id || ''),
+      Number(message?.sentAt) || 0,
+      String(message?.text || ''),
+      message?.sentByMe ? '1' : '0',
+    ].join('|');
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    merged.push(message);
+  }
+
+  return merged.sort((left, right) => (Number(left?.sentAt) || 0) - (Number(right?.sentAt) || 0));
+}
+
+function mergeConversations(previous, current) {
+  const previousStability = conversationThreadStabilityScore(previous);
+  const currentStability = conversationThreadStabilityScore(current);
+
+  let canonical = previous;
+  if (
+    currentStability > previousStability ||
+    (
+      currentStability === previousStability &&
+      conversationQualityScore(current) > conversationQualityScore(previous)
+    )
+  ) {
+    canonical = current;
+  }
+
   const previousSentAt = getConversationSentAt(previous);
   const currentSentAt = getConversationSentAt(current);
-  if (currentSentAt !== previousSentAt) {
-    return currentSentAt > previousSentAt;
-  }
+  const latest = currentSentAt >= previousSentAt ? current : previous;
+  const messages = mergeConversationMessages(previous, current);
 
-  const previousScore = conversationQualityScore(previous);
-  const currentScore = conversationQualityScore(current);
-  if (currentScore !== previousScore) {
-    return currentScore > previousScore;
-  }
+  const canonicalParticipant = canonical?.participant || {};
+  const latestParticipant = latest?.participant || {};
+  const fallbackParticipant = previous === canonical ? current?.participant || {} : previous?.participant || {};
 
-  const previousUnread = Number(previous?.unreadCount) || 0;
-  const currentUnread = Number(current?.unreadCount) || 0;
-  return currentUnread > previousUnread;
+  return {
+    ...canonical,
+    participant: {
+      ...canonicalParticipant,
+      name:
+        canonicalParticipant.name ||
+        latestParticipant.name ||
+        fallbackParticipant.name ||
+        'Unknown',
+      profileUrl:
+        canonicalParticipant.profileUrl ||
+        latestParticipant.profileUrl ||
+        fallbackParticipant.profileUrl ||
+        '',
+      avatarUrl:
+        canonicalParticipant.avatarUrl ||
+        latestParticipant.avatarUrl ||
+        fallbackParticipant.avatarUrl ||
+        null,
+    },
+    lastMessage: latest?.lastMessage || canonical?.lastMessage,
+    unreadCount: Math.max(Number(previous?.unreadCount) || 0, Number(current?.unreadCount) || 0),
+    messages,
+  };
 }
 
 function dedupeAndSortConversations(conversations) {
@@ -991,9 +1054,12 @@ function dedupeAndSortConversations(conversations) {
     };
 
     const previous = latestByConversation.get(key);
-    if (!previous || shouldReplaceConversation(previous, enrichedConversation)) {
+    if (!previous) {
       latestByConversation.set(key, enrichedConversation);
+      continue;
     }
+
+    latestByConversation.set(key, mergeConversations(previous, enrichedConversation));
   }
 
   const sorted = Array.from(latestByConversation.values()).sort(
