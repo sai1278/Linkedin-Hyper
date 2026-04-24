@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, WifiOff } from 'lucide-react';
 import type { Account, Conversation, Message } from '@/types/dashboard';
-import { getAccounts, getConversationThread, getUnifiedInbox } from '@/lib/api-client';
+import { getAccounts, getConversationThread, getUnifiedInbox, syncMessages } from '@/lib/api-client';
 import { ConversationList } from '@/components/inbox/ConversationList';
 import { MessageThread } from '@/components/inbox/MessageThread';
 import { ConversationListSkeleton, MessageThreadSkeleton } from '@/components/ui/SkeletonLoader';
@@ -12,6 +12,7 @@ import { wsClient } from '@/lib/websocket-client';
 import { ExportButton } from '@/components/ui/ExportButton';
 import { DASHBOARD_ROUTE_META } from '@/lib/dashboard-route-meta';
 import { getAccountLabel } from '@/lib/account-label';
+import toast from 'react-hot-toast';
 
 type InboxUpdatedPayload = {
   conversations?: Conversation[];
@@ -25,6 +26,10 @@ type StatusChangedPayload = {
   status?: 'connected' | 'disconnected' | 'reconnecting';
 };
 
+function isPreviewConversationId(conversationId: string): boolean {
+  return conversationId.startsWith('activity-') || conversationId.startsWith('fallback-');
+}
+
 export default function InboxPage() {
   const routeMeta = DASHBOARD_ROUTE_META.inbox;
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -36,6 +41,7 @@ export default function InboxPage() {
   const [error, setError] = useState<string | null>(null);
   const [visibleLimit, setVisibleLimit] = useState(25);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isReloadingInbox, setIsReloadingInbox] = useState(false);
   const [wsStatus, setWsStatus] = useState<'connected' | 'disconnected' | 'reconnecting'>(
     wsClient.isConnected ? 'connected' : 'disconnected'
   );
@@ -75,6 +81,39 @@ export default function InboxPage() {
     }];
   }, []);
 
+  const mergePreviewConversationMessages = useCallback((
+    currentSelected: Conversation,
+    freshConversation: Conversation
+  ): Message[] => {
+    const currentMessages = Array.isArray(currentSelected.messages) ? currentSelected.messages : [];
+    const fallbackMessages = getFallbackMessages(freshConversation);
+
+    if (!isPreviewConversationId(freshConversation.conversationId)) {
+      return currentMessages.length > 0 ? currentMessages : fallbackMessages;
+    }
+
+    if (currentMessages.length === 0) {
+      return fallbackMessages;
+    }
+
+    const latestFallback = fallbackMessages[fallbackMessages.length - 1];
+    if (!latestFallback) {
+      return currentMessages;
+    }
+
+    const alreadyPresent = currentMessages.some((message) => (
+      message.sentAt === latestFallback.sentAt &&
+      message.text === latestFallback.text &&
+      message.sentByMe === latestFallback.sentByMe
+    ));
+
+    if (alreadyPresent) {
+      return currentMessages;
+    }
+
+    return [...currentMessages, latestFallback].sort((left, right) => left.sentAt - right.sentAt);
+  }, [getFallbackMessages]);
+
   const loadAccounts = useCallback(async () => {
     try {
       const { accounts: nextAccounts } = await getAccounts();
@@ -100,9 +139,7 @@ export default function InboxPage() {
 
         return {
           ...freshConversation,
-          messages: currentSelected.messages.length > 0
-            ? currentSelected.messages
-            : getFallbackMessages(freshConversation),
+          messages: mergePreviewConversationMessages(currentSelected, freshConversation),
         };
       });
       setError(null);
@@ -227,6 +264,22 @@ export default function InboxPage() {
     await loadInbox();
   }, [loadInbox]);
 
+  const handleReloadInbox = useCallback(async () => {
+    const scopedAccountId = selectedRef.current?.accountId || (filter !== 'all' ? filter : undefined);
+    setIsReloadingInbox(true);
+
+    try {
+      await syncMessages(scopedAccountId);
+      await loadInbox();
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : 'Failed to sync inbox';
+      toast.error(message);
+      await loadInbox();
+    } finally {
+      setIsReloadingInbox(false);
+    }
+  }, [filter, loadInbox]);
+
   if (loading) {
     return (
       <div className="flex h-full flex-1 overflow-hidden max-[900px]:block">
@@ -324,11 +377,12 @@ export default function InboxPage() {
             </button>
             <button
               type="button"
-              onClick={() => void loadInbox()}
+              onClick={() => void handleReloadInbox()}
+              disabled={isReloadingInbox}
               className="button-outline inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium"
             >
-              <RefreshCw size={14} />
-              Reload inbox
+              <RefreshCw size={14} className={isReloadingInbox ? 'animate-spin' : ''} />
+              {isReloadingInbox ? 'Syncing inbox...' : 'Sync & Reload inbox'}
             </button>
           </div>
         </div>

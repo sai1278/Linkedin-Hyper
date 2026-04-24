@@ -119,6 +119,13 @@ export async function syncAllMessages(): Promise<{ success: boolean; message: st
   });
 }
 
+export async function syncMessages(accountId?: string): Promise<{ success: boolean; message: string }> {
+  return apiFetch<{ success: boolean; message: string }>('sync/messages', {
+    method: 'POST',
+    body: accountId ? JSON.stringify({ accountId }) : undefined,
+  });
+}
+
 export async function getUnifiedInbox(limit = 25): Promise<{ conversations: Conversation[] }> {
   const payload = await apiFetch<{ conversations: Conversation[] }>(
     `inbox/unified?limit=${encodeURIComponent(String(limit))}`
@@ -230,5 +237,23 @@ export async function sendMessage(
   return apiFetch<{ success: boolean }>('messages/send', {
     method: 'POST',
     body: JSON.stringify({ accountId, chatId, text }),
+  });
+}
+
+export async function sendMessageNew(
+  accountId: string,
+  profileUrl: string,
+  text: string
+): Promise<{
+  id?: string;
+  chatId?: string;
+  senderId?: string;
+  text: string;
+  createdAt?: string;
+  isRead?: boolean;
+}> {
+  return apiFetch('messages/send-new', {
+    method: 'POST',
+    body: JSON.stringify({ accountId, profileUrl, text }),
   });
 }

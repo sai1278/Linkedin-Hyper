@@ -6,7 +6,7 @@ import { AlertCircle, ArrowLeft, CheckCheck, LoaderCircle, RotateCcw } from 'luc
 import { Avatar } from '@/components/ui/Avatar';
 import { AccountBadge } from '@/components/ui/AccountBadge';
 import { ReplyInput } from '@/components/inbox/ReplyInput';
-import { sendMessage } from '@/lib/api-client';
+import { sendMessage, sendMessageNew } from '@/lib/api-client';
 import { formatRelativeTime, formatTimestamp } from '@/lib/time-utils';
 import { ExportButton } from '@/components/ui/ExportButton';
 import toast from 'react-hot-toast';
@@ -16,6 +16,10 @@ interface MessageThreadProps {
   accountLabelById: Record<string, string>;
   onMessageSent: (updated: Conversation) => void;
   onBack?: () => void;
+}
+
+function isPreviewConversationId(conversationId: string): boolean {
+  return conversationId.startsWith('activity-') || conversationId.startsWith('fallback-');
 }
 
 export function MessageThread({ conversation, accountLabelById, onMessageSent, onBack }: MessageThreadProps) {
@@ -103,7 +107,15 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
     onMessageSent(updatedConversation);
 
     try {
-      await sendMessage(accountId, activeConversation.conversationId, text);
+      if (isPreviewConversationId(activeConversation.conversationId)) {
+        const profileUrl = activeConversation.participant.profileUrl?.trim();
+        if (!profileUrl) {
+          throw new Error('This preview conversation is missing a LinkedIn profile URL. Run sync and retry.');
+        }
+        await sendMessageNew(accountId, profileUrl, text);
+      } else {
+        await sendMessage(accountId, activeConversation.conversationId, text);
+      }
 
       const confirmedAt = Date.now();
       onMessageSent({

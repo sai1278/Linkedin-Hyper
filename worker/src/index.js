@@ -910,16 +910,16 @@ function isLowSignalFallbackConversation(conv) {
 }
 
 function shouldReplaceConversation(previous, current) {
-  const previousScore = conversationQualityScore(previous);
-  const currentScore = conversationQualityScore(current);
-  if (currentScore !== previousScore) {
-    return currentScore > previousScore;
-  }
-
   const previousSentAt = getConversationSentAt(previous);
   const currentSentAt = getConversationSentAt(current);
   if (currentSentAt !== previousSentAt) {
     return currentSentAt > previousSentAt;
+  }
+
+  const previousScore = conversationQualityScore(previous);
+  const currentScore = conversationQualityScore(current);
+  if (currentScore !== previousScore) {
+    return currentScore > previousScore;
   }
 
   const previousUnread = Number(previous?.unreadCount) || 0;
