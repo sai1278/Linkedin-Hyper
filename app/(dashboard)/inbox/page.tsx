@@ -84,6 +84,7 @@ export default function InboxPage() {
   );
   const selectedRef = useRef<Conversation | null>(null);
   const visibleLimitRef = useRef(25);
+  const syncInFlightRef = useRef(false);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -325,6 +326,12 @@ export default function InboxPage() {
 
   const handleReloadInbox = useCallback(async () => {
     const scopedAccountId = selectedRef.current?.accountId || (filter !== 'all' ? filter : undefined);
+    if (!scopedAccountId) {
+      await loadInbox();
+      return;
+    }
+
+    syncInFlightRef.current = true;
     setIsReloadingInbox(true);
 
     try {
@@ -337,9 +344,41 @@ export default function InboxPage() {
       const nextConversations = await loadInbox();
       await refreshSelectedConversation(nextConversations);
     } finally {
+      syncInFlightRef.current = false;
       setIsReloadingInbox(false);
     }
   }, [filter, loadInbox, refreshSelectedConversation]);
+
+  useEffect(() => {
+    const syncWhenVisible = () => {
+      if (typeof document === 'undefined') {
+        return;
+      }
+
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+
+      if (syncInFlightRef.current) {
+        return;
+      }
+
+      const scopedAccountId = selectedRef.current?.accountId || (filter !== 'all' ? filter : undefined);
+      if (!scopedAccountId) {
+        return;
+      }
+
+      void handleReloadInbox();
+    };
+
+    const intervalId = window.setInterval(syncWhenVisible, 60_000);
+    document.addEventListener('visibilitychange', syncWhenVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', syncWhenVisible);
+    };
+  }, [filter, handleReloadInbox]);
 
   if (loading) {
     return (
