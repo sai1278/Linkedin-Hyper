@@ -30,6 +30,43 @@ function isPreviewConversationId(conversationId: string): boolean {
   return conversationId.startsWith('activity-') || conversationId.startsWith('fallback-');
 }
 
+function normalizeConversationValue(value: string | undefined | null): string {
+  return String(value || '').trim().replace(/\/+$/, '').toLowerCase();
+}
+
+function findMatchingConversation(
+  currentSelected: Conversation,
+  nextConversations: Conversation[]
+): Conversation | null {
+  const directMatch = nextConversations.find(
+    (conversation) => conversation.conversationId === currentSelected.conversationId
+  );
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const selectedProfileUrl = normalizeConversationValue(currentSelected.participant.profileUrl);
+  if (selectedProfileUrl) {
+    const profileMatch = nextConversations.find((conversation) => (
+      conversation.accountId === currentSelected.accountId &&
+      normalizeConversationValue(conversation.participant.profileUrl) === selectedProfileUrl
+    ));
+    if (profileMatch) {
+      return profileMatch;
+    }
+  }
+
+  const selectedName = normalizeConversationValue(currentSelected.participant.name);
+  if (!selectedName) {
+    return null;
+  }
+
+  return nextConversations.find((conversation) => (
+    conversation.accountId === currentSelected.accountId &&
+    normalizeConversationValue(conversation.participant.name) === selectedName
+  )) || null;
+}
+
 export default function InboxPage() {
   const routeMeta = DASHBOARD_ROUTE_META.inbox;
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -123,7 +160,7 @@ export default function InboxPage() {
     }
   }, []);
 
-  const loadInbox = useCallback(async (requestedLimit?: number) => {
+  const loadInbox = useCallback(async (requestedLimit?: number): Promise<Conversation[]> => {
     try {
       const effectiveLimit = requestedLimit ?? visibleLimitRef.current;
       const inboxData = await getUnifiedInbox(effectiveLimit);
@@ -143,12 +180,14 @@ export default function InboxPage() {
         };
       });
       setError(null);
+      return inboxData.conversations;
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to load inbox');
+      return [];
     } finally {
       setLoading(false);
     }
-  }, [getFallbackMessages]);
+  }, [mergePreviewConversationMessages]);
 
   useEffect(() => {
     void loadAccounts();
@@ -179,9 +218,26 @@ export default function InboxPage() {
     }
   }, [getFallbackMessages]);
 
+  const refreshSelectedConversation = useCallback(async (nextConversations: Conversation[]) => {
+    const currentSelected = selectedRef.current;
+    if (!currentSelected) {
+      return;
+    }
+
+    const refreshedConversation = findMatchingConversation(currentSelected, nextConversations);
+    if (!refreshedConversation) {
+      return;
+    }
+
+    await handleSelect(refreshedConversation);
+  }, [handleSelect]);
+
   useEffect(() => {
     const unsubscribeInboxUpdate = wsClient.on('inbox:updated', (_data: InboxUpdatedPayload) => {
-      void loadInbox();
+      void (async () => {
+        const nextConversations = await loadInbox();
+        await refreshSelectedConversation(nextConversations);
+      })();
     });
 
     const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data: InboxNewMessagePayload) => {
@@ -189,7 +245,10 @@ export default function InboxPage() {
       if (currentSelected && data.chatId === currentSelected.conversationId) {
         void handleSelect(currentSelected);
       } else {
-        void loadInbox();
+        void (async () => {
+          const nextConversations = await loadInbox();
+          await refreshSelectedConversation(nextConversations);
+        })();
       }
     });
 
@@ -204,7 +263,7 @@ export default function InboxPage() {
       unsubscribeNewMessage();
       unsubscribeStatus();
     };
-  }, [handleSelect, loadInbox]);
+  }, [handleSelect, loadInbox, refreshSelectedConversation]);
 
   const filteredConversations = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -270,15 +329,17 @@ export default function InboxPage() {
 
     try {
       await syncMessages(scopedAccountId);
-      await loadInbox();
+      const nextConversations = await loadInbox();
+      await refreshSelectedConversation(nextConversations);
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : 'Failed to sync inbox';
       toast.error(message);
-      await loadInbox();
+      const nextConversations = await loadInbox();
+      await refreshSelectedConversation(nextConversations);
     } finally {
       setIsReloadingInbox(false);
     }
-  }, [filter, loadInbox]);
+  }, [filter, loadInbox, refreshSelectedConversation]);
 
   if (loading) {
     return (

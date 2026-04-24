@@ -22,6 +22,10 @@ function isPreviewConversationId(conversationId: string): boolean {
   return conversationId.startsWith('activity-') || conversationId.startsWith('fallback-');
 }
 
+function getConversationProfileUrl(conversation: Conversation): string {
+  return conversation.participant.profileUrl?.trim() || '';
+}
+
 export function MessageThread({ conversation, accountLabelById, onMessageSent, onBack }: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -107,12 +111,14 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
     onMessageSent(updatedConversation);
 
     try {
-      if (isPreviewConversationId(activeConversation.conversationId)) {
-        const profileUrl = activeConversation.participant.profileUrl?.trim();
-        if (!profileUrl) {
-          throw new Error('This preview conversation is missing a LinkedIn profile URL. Run sync and retry.');
-        }
+      const profileUrl = getConversationProfileUrl(activeConversation);
+
+      // Prefer the higher-level profile send flow whenever we know who the
+      // participant is. It is much more resilient than thread-id replies.
+      if (profileUrl) {
         await sendMessageNew(accountId, profileUrl, text);
+      } else if (isPreviewConversationId(activeConversation.conversationId)) {
+        throw new Error('This preview conversation is missing a LinkedIn profile URL. Run sync and retry.');
       } else {
         await sendMessage(accountId, activeConversation.conversationId, text);
       }

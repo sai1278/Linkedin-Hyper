@@ -136,6 +136,9 @@ function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
     'RATE_LIMIT_EXCEEDED',
     'QUEUE_UNAVAILABLE',
     'READ_INBOX_TIMEOUT',
+    'THREAD_NOT_REPLYABLE',
+    'UNKNOWN_CHAT',
+    'CHAT_ACCOUNT_MISMATCH',
   ]);
 
   if (err?.code && safeCodes.has(err.code) && err?.message) {
@@ -1957,9 +1960,14 @@ app.post('/messages/send-new', async (req, res) => {
 
       if (!matchedConversation?.id) throw sendNewErr;
 
+      const matchedChatId = normalizeThreadId(accountId, matchedConversation.id);
+      if (!matchedChatId || matchedChatId.startsWith('activity-') || matchedChatId.startsWith('fallback-')) {
+        throw sendNewErr;
+      }
+
       result = await runJob('sendMessage', {
         accountId,
-        chatId: matchedConversation.id,
+        chatId: matchedChatId,
         text,
         proxyUrl: process.env.PROXY_URL || null,
       });
