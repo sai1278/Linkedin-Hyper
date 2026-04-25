@@ -369,6 +369,11 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
             4000
           );
           const actualNew = newCount - existingCount;
+          const duplicatesSkipped = Math.max(0, threadData.items.length - Math.max(0, actualNew));
+
+          console.log(
+            `[MessageSync] Thread persistence summary accountId=${accountId} threadId=${conversationId} fetched=${threadData.items.length} existing=${existingCount} inserted=${Math.max(0, actualNew)} duplicatesSkipped=${duplicatesSkipped} final=${newCount}`
+          );
 
           if (actualNew > 0) {
             console.log(`[MessageSync] Added ${actualNew} new messages to conversation ${conversationId}`);
@@ -379,6 +384,9 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
               participantName,
               newMessagesCount: actualNew,
             });
+            console.log(
+              `[MessageSync] WebSocket event emitted accountId=${accountId} threadId=${conversationId} newMessages=${actualNew}`
+            );
           }
         }
 

@@ -2263,7 +2263,7 @@ app.get('/inbox/unified', async (req, res) => {
 
     // Query all conversations from database
     const conversations = await withTimeout(
-      messageRepo.getAllConversations(limit, offset),
+      messageRepo.getAllConversationsWithMessages(limit, offset),
       4000
     );
 
@@ -2283,7 +2283,13 @@ app.get('/inbox/unified', async (req, res) => {
           sentByMe: conv.lastMessageSentByMe,
         },
         unreadCount: 0, // We don't track unread in database yet
-        messages: [],
+        messages: (conv.messages || []).map((message) => ({
+          id: message.linkedinMessageId || message.id,
+          text: message.text,
+          sentAt: new Date(message.sentAt).getTime(),
+          sentByMe: Boolean(message.isSentByMe),
+          senderName: message.senderName || (message.isSentByMe ? conv.accountId : 'Unknown'),
+        })),
       })),
     };
 
@@ -2299,6 +2305,14 @@ app.get('/inbox/unified', async (req, res) => {
       const livePayload = await buildUnifiedInboxWithFallback(limit);
       return res.json(livePayload);
     }
+
+    const totalReturnedMessages = mergedConversations.reduce(
+      (sum, conversation) => sum + (Array.isArray(conversation.messages) ? conversation.messages.length : 0),
+      0
+    );
+    console.log(
+      `[API] Unified inbox returned conversations=${mergedConversations.length} messages=${totalReturnedMessages} limit=${limit} offset=${offset}`
+    );
 
     res.json({ conversations: mergedConversations });
   } catch (err) {

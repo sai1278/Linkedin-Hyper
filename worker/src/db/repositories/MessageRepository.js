@@ -212,6 +212,35 @@ class MessageRepository {
   }
 
   /**
+   * Get all conversations with full persisted message history.
+   * Used by the unified inbox API so refreshes can rebuild the same thread state
+   * from the database instead of falling back to preview-only rows.
+   * @param {number} limit - Number of conversations to return
+   * @param {number} offset - Offset for pagination
+   * @returns {Promise<Array>} Array of conversations with messages
+   */
+  async getAllConversationsWithMessages(limit = 100, offset = 0) {
+    const prisma = getPrisma();
+
+    return await prisma.conversation.findMany({
+      include: {
+        account: {
+          select: {
+            id: true,
+            displayName: true,
+          },
+        },
+        messages: {
+          orderBy: { sentAt: 'asc' },
+        },
+      },
+      orderBy: { lastMessageAt: 'desc' },
+      take: limit,
+      skip: offset,
+    });
+  }
+
+  /**
    * Get messages by conversation with pagination
    * @param {string} conversationId - Conversation ID
    * @param {number} limit - Number of messages to return

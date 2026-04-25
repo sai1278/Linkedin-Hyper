@@ -255,6 +255,10 @@ async function readMessagesInternal({
       chat.accountId = accountId;
     });
 
+    console.log(
+      `[readMessages:${accountId}] fetched conversations=${chats.length} limit=${limit} refreshSessionCookies=${refreshSessionCookies ? 1 : 0}`
+    );
+
     if (refreshSessionCookies && process.env.REFRESH_SESSION_COOKIES === '1') {
       await saveCookies(accountId, await context.cookies(), {
         skipIfMissingAuthCookies: true,
