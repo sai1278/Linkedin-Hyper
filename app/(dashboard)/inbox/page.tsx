@@ -93,23 +93,66 @@ function normalizeMessageText(value: string | undefined | null): string {
   return String(value || '').trim().replace(/\s+/g, ' ');
 }
 
+const MESSAGE_DEDUP_WINDOW_MS = 60 * 1000;
+
+function isSyntheticMessageId(messageId: string | undefined | null): boolean {
+  const normalizedId = String(messageId || '').trim().toLowerCase();
+  return (
+    normalizedId.startsWith('opt-') ||
+    normalizedId.startsWith('preview-') ||
+    normalizedId.startsWith('live-') ||
+    normalizedId.startsWith('msg:')
+  );
+}
+
 function getMessageTimestamp(message: Message | undefined | null): number {
   return Number(message?.sentAt) || 0;
 }
 
-function areEquivalentMessages(left: Message, right: Message): boolean {
-  const leftId = String(left.id || '').trim();
-  const rightId = String(right.id || '').trim();
-  if (leftId && rightId && leftId === rightId) {
-    return true;
+function getMessageSenderIdentity(message: Message): string {
+  if (message.sentByMe) {
+    return '__self__';
   }
 
-  return (
-    left.sentByMe === right.sentByMe &&
-    normalizeMessageText(left.senderName) === normalizeMessageText(right.senderName) &&
-    normalizeMessageText(left.text) === normalizeMessageText(right.text) &&
-    Math.abs(getMessageTimestamp(left) - getMessageTimestamp(right)) <= 2 * 60 * 1000
-  );
+  return normalizeMessageText(message.senderName).toLowerCase() || 'unknown';
+}
+
+function buildMessageFallbackId(
+  message: Message,
+  context: { accountId?: string; conversationId?: string } = {}
+): string {
+  return [
+    'msg',
+    String(context.accountId || ''),
+    String(context.conversationId || ''),
+    getMessageSenderIdentity(message),
+    normalizeMessageText(message.text).toLowerCase(),
+    String(Math.floor(getMessageTimestamp(message) / MESSAGE_DEDUP_WINDOW_MS)),
+  ].join(':');
+}
+
+function normalizeMessage(
+  message: Message,
+  context: { accountId?: string; conversationId?: string } = {}
+): Message {
+  const sentAt = getMessageTimestamp(message) || Date.now();
+  const normalizedMessage: Message = {
+    ...message,
+    id: String(message.id || '').trim(),
+    text: normalizeMessageText(message.text),
+    sentAt,
+    sentByMe: Boolean(message.sentByMe),
+    senderName: message.sentByMe
+      ? normalizeMessageText(message.senderName) || String(context.accountId || 'Me')
+      : normalizeMessageText(message.senderName) || 'Unknown',
+    error: message.error ?? null,
+  };
+
+  if (!normalizedMessage.id) {
+    normalizedMessage.id = buildMessageFallbackId(normalizedMessage, context);
+  }
+
+  return normalizedMessage;
 }
 
 function scoreMessage(message: Message): number {
@@ -130,11 +173,16 @@ function scoreMessage(message: Message): number {
 function preferMessage(existing: Message, candidate: Message): Message {
   const preferred = scoreMessage(candidate) >= scoreMessage(existing) ? candidate : existing;
   const secondary = preferred === candidate ? existing : candidate;
+  const preferredId = String(preferred.id || '').trim();
+  const secondaryId = String(secondary.id || '').trim();
+  const stableId = !isSyntheticMessageId(preferredId)
+    ? preferredId
+    : (!isSyntheticMessageId(secondaryId) ? secondaryId : preferredId || secondaryId);
 
   return {
     ...secondary,
     ...preferred,
-    id: preferred.id || secondary.id,
+    id: stableId || buildMessageFallbackId(preferred),
     text: preferred.text || secondary.text,
     sentAt: getMessageTimestamp(preferred) || getMessageTimestamp(secondary),
     sentByMe: preferred.sentByMe ?? secondary.sentByMe,
@@ -144,27 +192,53 @@ function preferMessage(existing: Message, candidate: Message): Message {
   };
 }
 
-function mergeMessageHistory(...messageSets: Array<Message[] | undefined | null>): Message[] {
-  const merged: Message[] = [];
+function getMessageDedupKey(
+  message: Message,
+  context: { accountId?: string; conversationId?: string } = {}
+): string {
+  const normalizedMessage = normalizeMessage(message, context);
+  const stableId = String(normalizedMessage.id || '').trim();
+  if (stableId && !isSyntheticMessageId(stableId)) {
+    return `id:${stableId}`;
+  }
 
-  for (const message of messageSets.flatMap((set) => set || [])) {
-    if (!message) continue;
+  return [
+    'fp',
+    String(context.accountId || ''),
+    String(context.conversationId || ''),
+    getMessageSenderIdentity(normalizedMessage),
+    normalizeMessageText(normalizedMessage.text).toLowerCase(),
+    String(Math.floor(getMessageTimestamp(normalizedMessage) / MESSAGE_DEDUP_WINDOW_MS)),
+  ].join(':');
+}
 
-    const existingIndex = merged.findIndex((current) => areEquivalentMessages(current, message));
-    if (existingIndex >= 0) {
-      merged[existingIndex] = preferMessage(merged[existingIndex], message);
+function mergeMessages(
+  existingMessages: Message[] | undefined | null,
+  incomingMessages: Message[] | undefined | null,
+  context: { accountId?: string; conversationId?: string } = {},
+  label = 'mergeMessages'
+): Message[] {
+  const beforeCount = (existingMessages?.length || 0) + (incomingMessages?.length || 0);
+  const mergedByKey = new Map<string, Message>();
+  let duplicateSkippedCount = 0;
+
+  for (const rawMessage of [...(existingMessages || []), ...(incomingMessages || [])]) {
+    if (!rawMessage) continue;
+
+    const normalizedMessage = normalizeMessage(rawMessage, context);
+    const dedupKey = getMessageDedupKey(normalizedMessage, context);
+    const existingMessage = mergedByKey.get(dedupKey);
+
+    if (existingMessage) {
+      duplicateSkippedCount += 1;
+      mergedByKey.set(dedupKey, preferMessage(existingMessage, normalizedMessage));
       continue;
     }
 
-    merged.push({
-      ...message,
-      text: message.text || '',
-      senderName: message.senderName || 'Unknown',
-      error: message.error ?? null,
-    });
+    mergedByKey.set(dedupKey, normalizedMessage);
   }
 
-  return merged.sort((left, right) => {
+  const mergedMessages = Array.from(mergedByKey.values()).sort((left, right) => {
     const sentAtDiff = getMessageTimestamp(left) - getMessageTimestamp(right);
     if (sentAtDiff !== 0) {
       return sentAtDiff;
@@ -172,6 +246,12 @@ function mergeMessageHistory(...messageSets: Array<Message[] | undefined | null>
 
     return normalizeMessageText(left.text).localeCompare(normalizeMessageText(right.text));
   });
+
+  console.debug(
+    `[InboxMerge][${label}] before=${beforeCount} after=${mergedMessages.length} duplicatesSkipped=${duplicateSkippedCount}`
+  );
+
+  return mergedMessages;
 }
 
 function pickLatestLastMessage(
@@ -209,6 +289,7 @@ function logMessageArray(label: string, messages: Message[]): void {
     sentByMe: message.sentByMe,
     senderName: message.senderName,
     status: message.status,
+    dedupKey: getMessageDedupKey(message),
   })));
 }
 
@@ -270,10 +351,20 @@ export default function InboxPage() {
   ): Conversation => {
     const shouldMergeCurrent = areSameConversation(currentConversation, nextConversation);
     const fallbackMessages = getFallbackMessages(nextConversation);
-    const mergedMessages = mergeMessageHistory(
-      shouldMergeCurrent ? currentConversation?.messages : [],
-      nextConversation.messages,
-      fallbackMessages
+    const messageContext = {
+      accountId: nextConversation.accountId,
+      conversationId: nextConversation.conversationId,
+    };
+    const mergedMessages = mergeMessages(
+      mergeMessages(
+        shouldMergeCurrent ? currentConversation?.messages : [],
+        nextConversation.messages,
+        messageContext,
+        `mergeConversationForDisplay:thread:${nextConversation.conversationId}`
+      ),
+      fallbackMessages,
+      messageContext,
+      `mergeConversationForDisplay:fallback:${nextConversation.conversationId}`
     );
 
     return {
@@ -291,10 +382,21 @@ export default function InboxPage() {
     currentSelected: Conversation,
     freshConversation: Conversation
   ): Message[] => {
-    return mergeMessageHistory(
-      currentSelected.messages,
-      freshConversation.messages,
-      getFallbackMessages(freshConversation)
+    const messageContext = {
+      accountId: freshConversation.accountId,
+      conversationId: freshConversation.conversationId,
+    };
+
+    return mergeMessages(
+      mergeMessages(
+        currentSelected.messages,
+        freshConversation.messages,
+        messageContext,
+        `mergePreviewConversationMessages:thread:${freshConversation.conversationId}`
+      ),
+      getFallbackMessages(freshConversation),
+      messageContext,
+      `mergePreviewConversationMessages:fallback:${freshConversation.conversationId}`
     );
   }, [getFallbackMessages]);
 
@@ -399,6 +501,7 @@ export default function InboxPage() {
 
   useEffect(() => {
     const unsubscribeInboxUpdate = wsClient.on('inbox:updated', (_data: InboxUpdatedPayload) => {
+      console.debug('[Inbox][WS] inbox:updated received');
       void (async () => {
         const nextConversations = await loadInbox();
         await refreshSelectedConversation(nextConversations);
@@ -406,6 +509,9 @@ export default function InboxPage() {
     });
 
     const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data: InboxNewMessagePayload) => {
+      console.debug(
+        `[Inbox][WS] inbox:new_message incomingChatId=${String(data.chatId || '')} selectedChatId=${String(selectedRef.current?.conversationId || '')}`
+      );
       const currentSelected = selectedRef.current;
       if (currentSelected && data.chatId === currentSelected.conversationId) {
         void handleSelect(currentSelected);

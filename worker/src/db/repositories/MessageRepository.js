@@ -6,6 +6,10 @@
 const { getPrisma } = require('../prisma');
 
 class MessageRepository {
+  normalizeMessageText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
   /**
    * Upsert a conversation (create if not exists, update if exists)
    * @param {Object} data - Conversation data
@@ -69,28 +73,87 @@ class MessageRepository {
       linkedinMessageId,
     } = data;
 
+    const normalizedText = this.normalizeMessageText(text);
+    const normalizedSentAt = new Date(sentAt);
+    const sentAtDate = Number.isNaN(normalizedSentAt.getTime()) ? new Date() : normalizedSentAt;
+    const stableLinkedinMessageId = String(linkedinMessageId || '').trim() || null;
+
     try {
+      if (stableLinkedinMessageId) {
+        const existingByLinkedinId = await prisma.message.findFirst({
+          where: {
+            accountId,
+            conversationId,
+            linkedinMessageId: stableLinkedinMessageId,
+          },
+        });
+
+        if (existingByLinkedinId) {
+          await prisma.message.update({
+            where: { id: existingByLinkedinId.id },
+            data: {
+              senderName,
+              linkedinMessageId: stableLinkedinMessageId,
+            },
+          });
+          console.log(
+            `[MessageRepository] Duplicate skipped by linkedinMessageId for conversation ${conversationId}: ${stableLinkedinMessageId}`
+          );
+          return null;
+        }
+      }
+
+      const duplicateWindowMs = 60 * 1000;
+      const existingNearMatch = await prisma.message.findFirst({
+        where: {
+          accountId,
+          conversationId,
+          senderId,
+          text: normalizedText,
+          sentAt: {
+            gte: new Date(sentAtDate.getTime() - duplicateWindowMs),
+            lte: new Date(sentAtDate.getTime() + duplicateWindowMs),
+          },
+        },
+        orderBy: { sentAt: 'asc' },
+      });
+
+      if (existingNearMatch) {
+        await prisma.message.update({
+          where: { id: existingNearMatch.id },
+          data: {
+            senderName,
+            linkedinMessageId: stableLinkedinMessageId || existingNearMatch.linkedinMessageId,
+          },
+        });
+        console.log(
+          `[MessageRepository] Duplicate skipped by fuzzy match for conversation ${conversationId}: sender=${senderId} sentAt=${sentAtDate.toISOString()}`
+        );
+        return null;
+      }
+
       return await prisma.message.upsert({
         where: {
           conversationId_sentAt_text: {
             conversationId,
-            sentAt: new Date(sentAt),
-            text,
+            sentAt: sentAtDate,
+            text: normalizedText,
           },
         },
         update: {
           // Update metadata if needed (typically we don't update messages)
           senderName,
+          linkedinMessageId: stableLinkedinMessageId || undefined,
         },
         create: {
           conversationId,
           accountId,
           senderId,
           senderName,
-          text,
-          sentAt: new Date(sentAt),
+          text: normalizedText,
+          sentAt: sentAtDate,
           isSentByMe,
-          linkedinMessageId: linkedinMessageId || null,
+          linkedinMessageId: stableLinkedinMessageId,
         },
       });
     } catch (error) {

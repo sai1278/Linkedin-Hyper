@@ -33,6 +33,10 @@ function isSyntheticConversationId(chatId) {
   return String(chatId || '').startsWith('fallback-');
 }
 
+function normalizeThreadText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
 async function readThreadInternal({
   accountId,
   chatId,
@@ -141,7 +145,104 @@ async function readThreadInternal({
       return { name, profileUrl };
     });
 
-    const messages = await page.evaluate((maxItems) => {
+    const messages = await page.evaluate(({ maxItems, currentChatId }) => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const stableHash = (value) => {
+        const input = String(value || '');
+        let hash = 2166136261;
+        for (let i = 0; i < input.length; i += 1) {
+          hash ^= input.charCodeAt(i);
+          hash = Math.imul(hash, 16777619);
+        }
+        return Math.abs(hash >>> 0).toString(36);
+      };
+      const parseLooseTimestamp = (rawLabel) => {
+        const label = normalize(rawLabel).toLowerCase();
+        if (!label) return '';
+
+        const now = new Date();
+        const timeMatch = label.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/i);
+        if (timeMatch) {
+          const hoursRaw = Number(timeMatch[1]);
+          const minutes = Number(timeMatch[2]);
+          const meridiem = timeMatch[3].toLowerCase();
+          let hours = hoursRaw % 12;
+          if (meridiem === 'pm') hours += 12;
+          const candidate = new Date(now);
+          candidate.setHours(hours, minutes, 0, 0);
+          if (candidate.getTime() > now.getTime() + 5 * 60 * 1000) {
+            candidate.setDate(candidate.getDate() - 1);
+          }
+          return candidate.toISOString();
+        }
+
+        if (label === 'yesterday') {
+          const candidate = new Date(now);
+          candidate.setDate(candidate.getDate() - 1);
+          return candidate.toISOString();
+        }
+
+        const relativeMatch = label.match(/^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks|mo|month|months)$/);
+        if (relativeMatch) {
+          const amount = Number(relativeMatch[1]);
+          const unit = relativeMatch[2];
+          const candidate = new Date(now);
+
+          if (['m', 'min', 'mins', 'minute', 'minutes'].includes(unit)) {
+            candidate.setMinutes(candidate.getMinutes() - amount);
+          } else if (['h', 'hr', 'hrs', 'hour', 'hours'].includes(unit)) {
+            candidate.setHours(candidate.getHours() - amount);
+          } else if (['d', 'day', 'days'].includes(unit)) {
+            candidate.setDate(candidate.getDate() - amount);
+          } else if (['w', 'wk', 'wks', 'week', 'weeks'].includes(unit)) {
+            candidate.setDate(candidate.getDate() - (amount * 7));
+          } else if (['mo', 'month', 'months'].includes(unit)) {
+            candidate.setMonth(candidate.getMonth() - amount);
+          } else {
+            return '';
+          }
+
+          return candidate.toISOString();
+        }
+
+        return '';
+      };
+      const extractStableMessageId = (item, bodyEl, timeEl, senderName, text, isSelf) => {
+        const candidates = [
+          item.getAttribute('data-event-urn') || '',
+          item.getAttribute('data-urn') || '',
+          item.getAttribute('data-message-id') || '',
+          item.getAttribute('data-id') || '',
+          item.getAttribute('id') || '',
+          bodyEl?.getAttribute?.('data-event-urn') || '',
+          bodyEl?.getAttribute?.('data-urn') || '',
+          bodyEl?.getAttribute?.('data-message-id') || '',
+          bodyEl?.getAttribute?.('data-id') || '',
+          bodyEl?.getAttribute?.('id') || '',
+        ];
+
+        for (const candidate of candidates) {
+          const normalizedCandidate = normalize(candidate);
+          if (!normalizedCandidate) continue;
+          const urnMatch = normalizedCandidate.match(/fsd?_message:([^,\s)]+)/i);
+          if (urnMatch?.[1]) {
+            return `li-msg-${urnMatch[1]}`;
+          }
+          const directIdMatch = normalizedCandidate.match(/message[:/=-]([^,\s)]+)/i);
+          if (directIdMatch?.[1]) {
+            return `li-msg-${directIdMatch[1]}`;
+          }
+          if (!normalizedCandidate.includes('msg-s-event') && normalizedCandidate.length <= 128) {
+            return `li-msg-${stableHash(normalizedCandidate)}`;
+          }
+        }
+
+        const senderKey = isSelf ? '__self__' : normalize(senderName).toLowerCase();
+        const textKey = normalize(text).toLowerCase();
+        const timeKey = normalize(timeEl?.getAttribute?.('datetime') || timeEl?.textContent || '').toLowerCase();
+        return `li-msg-${stableHash([currentChatId, senderKey, textKey, timeKey].join('|'))}`;
+      };
+
       const results = [];
       const items = document.querySelectorAll(
         '.msg-s-event-listitem, [data-view-name="messaging-message-list-item"]'
@@ -161,15 +262,22 @@ async function readThreadInternal({
 
           if (!bodyEl) continue;
 
-          const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const text = normalize(bodyEl.textContent);
+          if (!text) continue;
+          const senderName = isSelf ? '__self__' : normalize(senderNameEl?.textContent) || 'Unknown';
+          const createdAt =
+            timeEl?.getAttribute('datetime') ||
+            parseLooseTimestamp(timeEl?.textContent || '') ||
+            '';
+          const msgId = extractStableMessageId(item, bodyEl, timeEl, senderName, text, isSelf);
 
           results.push({
             id: msgId,
             chatId: '',
             senderId: isSelf ? '__self__' : senderEl?.href?.match(/\/in\/([^/]+)/)?.[1] || 'other',
-            text: bodyEl.textContent?.trim() || '',
-            createdAt: timeEl?.getAttribute('datetime') || new Date().toISOString(),
-            senderName: isSelf ? '__self__' : senderNameEl?.textContent?.trim() || 'Unknown',
+            text,
+            createdAt,
+            senderName,
             isRead: true,
           });
         } catch (_) {
@@ -178,7 +286,7 @@ async function readThreadInternal({
       }
 
       return results;
-    }, limit);
+    }, { maxItems: limit, currentChatId: chatId });
 
     messages.forEach((m) => {
       m.chatId = chatId;

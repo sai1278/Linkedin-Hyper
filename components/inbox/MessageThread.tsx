@@ -40,6 +40,25 @@ function logThreadMessages(label: string, messages: Message[]) {
   })));
 }
 
+function normalizeThreadMessageText(value: string | undefined | null): string {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function getRenderableMessageKey(message: Message, accountId: string, conversationId: string): string {
+  const stableId = String(message.id || '').trim();
+  if (stableId) {
+    return stableId;
+  }
+
+  return [
+    accountId,
+    conversationId,
+    message.sentByMe ? '__self__' : normalizeThreadMessageText(message.senderName).toLowerCase(),
+    normalizeThreadMessageText(message.text).toLowerCase(),
+    String(message.sentAt || 0),
+  ].join(':');
+}
+
 export function MessageThread({ conversation, accountLabelById, onMessageSent, onSyncAfterSend, onBack }: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -180,7 +199,9 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
     }
   }
 
-  const groupedMessages = groupConsecutiveMessages(messages);
+  const groupedMessages = groupConsecutiveMessages(
+    [...messages].sort((left, right) => (Number(left.sentAt) || 0) - (Number(right.sentAt) || 0))
+  );
 
   return (
     <div className="flex flex-1 flex-col" style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
@@ -237,6 +258,8 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
               isSentByMe={group.isSentByMe}
               senderName={group.senderName}
               accountLabel={accountLabel}
+              accountId={accountId}
+              conversationId={conversation.conversationId}
               participantAvatarUrl={participant.avatarUrl}
               onRetry={handleSend}
             />
@@ -313,6 +336,8 @@ function MessageGroup({
   isSentByMe,
   senderName,
   accountLabel,
+  accountId,
+  conversationId,
   participantAvatarUrl,
   onRetry,
 }: {
@@ -320,6 +345,8 @@ function MessageGroup({
   isSentByMe: boolean;
   senderName: string;
   accountLabel: string;
+  accountId: string;
+  conversationId: string;
   participantAvatarUrl?: string | null;
   onRetry: (text: string, messageId?: string) => Promise<void>;
 }) {
@@ -342,7 +369,7 @@ function MessageGroup({
 
         {messages.map((message, index) => (
           <MessageBubble
-            key={message.id}
+            key={getRenderableMessageKey(message, accountId, conversationId)}
             message={message}
             isSentByMe={isSentByMe}
             isLast={index === messages.length - 1}
