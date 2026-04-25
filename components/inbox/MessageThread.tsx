@@ -110,7 +110,7 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
       error: null,
     };
 
-    const updatedMessages = messageId
+    const updatedMessages: Message[] = messageId
       ? activeConversation.messages.map((message) =>
           message.id === targetId ? { ...message, ...optimisticMessage } : message
         )
@@ -144,13 +144,14 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
       }
 
       const confirmedAt = Date.now();
-      const confirmedConversation = {
+      const confirmedMessages: Message[] = updatedConversation.messages.map((message): Message =>
+        message.id === targetId
+          ? { ...message, sentAt: confirmedAt, status: 'sent', error: null }
+          : message
+      );
+      const confirmedConversation: Conversation = {
         ...updatedConversation,
-        messages: updatedConversation.messages.map((message) =>
-          message.id === targetId
-            ? { ...message, sentAt: confirmedAt, status: 'sent', error: null }
-            : message
-        ),
+        messages: confirmedMessages,
         lastMessage: { text, sentAt: confirmedAt, sentByMe: true, status: 'sent' },
       };
       logThreadMessages(`after confirmed send ${confirmedConversation.conversationId}`, confirmedConversation.messages);
@@ -162,13 +163,14 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to send message';
 
-      const failedConversation = {
+      const failedMessages: Message[] = updatedConversation.messages.map((message): Message =>
+        message.id === targetId
+          ? { ...message, status: 'failed', error: errorMessage }
+          : message
+      );
+      const failedConversation: Conversation = {
         ...updatedConversation,
-        messages: updatedConversation.messages.map((message) =>
-          message.id === targetId
-            ? { ...message, status: 'failed', error: errorMessage }
-            : message
-        ),
+        messages: failedMessages,
         lastMessage: { text, sentAt: nextSentAt, sentByMe: true, status: 'failed' },
       };
       logThreadMessages(`after failed send ${failedConversation.conversationId}`, failedConversation.messages);
