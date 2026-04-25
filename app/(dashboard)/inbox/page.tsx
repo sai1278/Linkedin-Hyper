@@ -509,6 +509,7 @@ export default function InboxPage() {
           <MessageThread
             conversation={selected}
             accountLabelById={accountLabelById}
+            onSyncAfterSend={handleReloadInbox}
             onBack={selected ? () => setSelected(null) : undefined}
             onMessageSent={(updatedConversation) => {
               setConversations((currentConversations) =>

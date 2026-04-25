@@ -15,6 +15,7 @@ interface MessageThreadProps {
   conversation: Conversation | null;
   accountLabelById: Record<string, string>;
   onMessageSent: (updated: Conversation) => void;
+  onSyncAfterSend?: () => Promise<void>;
   onBack?: () => void;
 }
 
@@ -26,7 +27,9 @@ function getConversationProfileUrl(conversation: Conversation): string {
   return conversation.participant.profileUrl?.trim() || '';
 }
 
-export function MessageThread({ conversation, accountLabelById, onMessageSent, onBack }: MessageThreadProps) {
+const MESSAGE_GROUP_WINDOW_MS = 2 * 60 * 1000;
+
+export function MessageThread({ conversation, accountLabelById, onMessageSent, onSyncAfterSend, onBack }: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -112,15 +115,18 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
 
     try {
       const profileUrl = getConversationProfileUrl(activeConversation);
+      let didSend = false;
 
       // Prefer the higher-level profile send flow whenever we know who the
       // participant is. It is much more resilient than thread-id replies.
       if (profileUrl) {
         await sendMessageNew(accountId, profileUrl, text);
+        didSend = true;
       } else if (isPreviewConversationId(activeConversation.conversationId)) {
         throw new Error('This preview conversation is missing a LinkedIn profile URL. Run sync and retry.');
       } else {
         await sendMessage(accountId, activeConversation.conversationId, text);
+        didSend = true;
       }
 
       const confirmedAt = Date.now();
@@ -133,6 +139,10 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
         ),
         lastMessage: { text, sentAt: confirmedAt, sentByMe: true, status: 'sent' },
       });
+
+      if (didSend && onSyncAfterSend) {
+        void onSyncAfterSend().catch(() => undefined);
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to send message';
 
@@ -240,11 +250,16 @@ function groupConsecutiveMessages(messages: Message[]): Array<{ messages: Messag
 
   messages.forEach((message) => {
     const lastGroup = groups[groups.length - 1];
+    const lastMessageInGroup = lastGroup?.messages[lastGroup.messages.length - 1];
+    const withinGroupWindow = lastMessageInGroup
+      ? Math.abs((Number(message.sentAt) || 0) - (Number(lastMessageInGroup.sentAt) || 0)) <= MESSAGE_GROUP_WINDOW_MS
+      : false;
 
     if (
       lastGroup &&
       lastGroup.isSentByMe === message.sentByMe &&
-      lastGroup.senderName === message.senderName
+      lastGroup.senderName === message.senderName &&
+      withinGroupWindow
     ) {
       lastGroup.messages.push(message);
       return;
