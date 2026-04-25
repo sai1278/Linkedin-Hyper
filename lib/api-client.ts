@@ -158,7 +158,7 @@ export async function getUnifiedInbox(limit = 25): Promise<{ conversations: Conv
 export async function getConversationThread(
   accountId: string,
   chatId: string,
-  options?: { refresh?: boolean }
+  options?: { refresh?: boolean; limit?: number }
 ): Promise<{ messages: Message[] }> {
   const query = new URLSearchParams({
     accountId,
@@ -166,6 +166,9 @@ export async function getConversationThread(
   });
   if (options?.refresh) {
     query.set('refresh', '1');
+  }
+  if (options?.limit) {
+    query.set('limit', String(options.limit));
   }
 
   const res = await apiFetch<{

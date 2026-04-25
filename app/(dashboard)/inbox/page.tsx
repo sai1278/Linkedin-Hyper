@@ -218,7 +218,9 @@ function mergeMessages(
   context: { accountId?: string; conversationId?: string } = {},
   label = 'mergeMessages'
 ): Message[] {
-  const beforeCount = (existingMessages?.length || 0) + (incomingMessages?.length || 0);
+  const existingCount = existingMessages?.length || 0;
+  const incomingCount = incomingMessages?.length || 0;
+  const beforeCount = existingCount + incomingCount;
   const mergedByKey = new Map<string, Message>();
   let duplicateSkippedCount = 0;
 
@@ -248,7 +250,7 @@ function mergeMessages(
   });
 
   console.debug(
-    `[InboxMerge][${label}] before=${beforeCount} after=${mergedMessages.length} duplicatesSkipped=${duplicateSkippedCount}`
+    `[InboxMerge][${label}] accountId=${String(context.accountId || '')} threadId=${String(context.conversationId || '')} existing=${existingCount} incoming=${incomingCount} before=${beforeCount} after=${mergedMessages.length} duplicatesSkipped=${duplicateSkippedCount}`
   );
 
   return mergedMessages;
@@ -457,6 +459,7 @@ export default function InboxPage() {
     try {
       const thread = await getConversationThread(conversation.accountId, conversation.conversationId, {
         refresh: true,
+        limit: 250,
       });
       const hasThreadMessages = Array.isArray(thread.messages) && thread.messages.length > 0;
       setSelected((currentSelected) => {

@@ -252,7 +252,7 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
               accountId,
               chatId: conversationId,
               proxyUrl,
-              limit: 100,
+              limit: 250,
               refreshSessionCookies: allowSessionCookieRefresh,
             });
           } catch (threadErr) {
@@ -271,7 +271,7 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
               accountId,
               chatId: conversationId,
               proxyUrl,
-              limit: 100,
+              limit: 250,
               refreshSessionCookies: allowSessionCookieRefresh,
             });
           }
@@ -313,6 +313,9 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
         }
 
         if (threadData && threadData.items && threadData.items.length > 0) {
+          console.log(
+            `[MessageSync] Thread merge input accountId=${accountId} threadId=${conversationId} incoming=${threadData.items.length}`
+          );
           // Get existing message count before sync
           const existingCount = await withTimeout(
             messageRepo.countMessagesByConversation(conversationId),
@@ -332,6 +335,7 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
                 sentAt: new Date(msg.createdAt || Date.now()),
                 isSentByMe: msg.senderId === '__self__',
                 linkedinMessageId: msg.id || null,
+                timestampInferred: msg.hasExactTimestamp !== true,
               }), 4000);
 
               // If message was newly created (not a duplicate)

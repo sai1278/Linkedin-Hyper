@@ -312,6 +312,8 @@ function mapLiveMessagesToApiItems(messages, fallbackChatId, accountId) {
       isSentByMe,
       senderName: normalizedItem.senderName,
       linkedinMessageId: msg.linkedinMessageId || msg.id || stableFallbackId,
+      hasExactTimestamp: msg.hasExactTimestamp === true,
+      rawTimeLabel: msg.rawTimeLabel || '',
     };
   });
 }
@@ -1838,7 +1840,7 @@ app.get('/messages/thread', async (req, res) => {
     const accountId = await assertKnownAccountId(req.query.accountId);
     const chatId    = validateId(req.query.chatId, { field: 'chatId' });
     const normalizedChatId = await assertConversationBelongsToAccount(accountId, chatId);
-    const limit     = parseLimit(req.query.limit, 100);
+    const limit     = parseLimit(req.query.limit, 250, 500);
     const offset    = parseInt(req.query.offset) || 0;
     const refresh   = String(req.query.refresh || '') === '1';
     const proxyUrl  = process.env.PROXY_URL || null;
@@ -1864,7 +1866,7 @@ app.get('/messages/thread', async (req, res) => {
     const dbItems = mapDbMessagesToApiItems(dbMessages);
 
     if (dbItems.length > 0 && !refresh) {
-      console.log(`[Thread] Returning cached DB thread for ${accountId}/${normalizedChatId}: ${dbItems.length} message(s)`);
+      console.log(`[Thread] Returning cached DB thread for ${accountId}/${normalizedChatId}: db=${dbItems.length} refresh=0 limit=${limit}`);
       return res.json({
         items: dbItems,
         cursor: null,
@@ -1963,6 +1965,9 @@ app.get('/messages/thread', async (req, res) => {
     }
 
     const mergedThreadItems = mergeApiThreadItems(dbItems, liveItems);
+    console.log(
+      `[Thread] Merge summary accountId=${accountId} threadId=${normalizedChatId} db=${dbItems.length} live=${liveItems.length} merged=${mergedThreadItems.length} refresh=${refresh ? 1 : 0}`
+    );
 
     // Best-effort persistence so next load comes from DB.
     if (liveItems.length > 0) {
@@ -1995,6 +2000,7 @@ app.get('/messages/thread', async (req, res) => {
             sentAt: item.createdAt,
             isSentByMe: item.senderId === '__self__',
             linkedinMessageId: item.id,
+            timestampInferred: item.hasExactTimestamp !== true,
           }), 4000);
         }
       } catch (persistErr) {
@@ -2006,7 +2012,7 @@ app.get('/messages/thread', async (req, res) => {
 
     if (mergedThreadItems.length > 0) {
       console.log(
-        `[Thread] Returning merged thread for ${accountId}/${normalizedChatId}: db=${dbItems.length}, live=${liveItems.length}, merged=${mergedThreadItems.length}`
+        `[Thread] Returning merged thread for ${accountId}/${normalizedChatId}: db=${dbItems.length}, live=${liveItems.length}, merged=${mergedThreadItems.length}, limit=${limit}`
       );
       return res.json({
         items: mergedThreadItems,

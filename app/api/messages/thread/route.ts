@@ -20,10 +20,14 @@ export async function GET(req: NextRequest) {
       'chatId'
     );
     const refresh = req.nextUrl.searchParams.get('refresh') === '1';
+    const limit = req.nextUrl.searchParams.get('limit');
 
     const query = new URLSearchParams({ accountId, chatId });
     if (refresh) {
       query.set('refresh', '1');
+    }
+    if (limit) {
+      query.set('limit', limit);
     }
 
     return forwardToBackend({

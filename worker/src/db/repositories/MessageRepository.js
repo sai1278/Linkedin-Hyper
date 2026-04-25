@@ -71,6 +71,7 @@ class MessageRepository {
       sentAt,
       isSentByMe,
       linkedinMessageId,
+      timestampInferred = false,
     } = data;
 
     const normalizedText = this.normalizeMessageText(text);
@@ -103,33 +104,35 @@ class MessageRepository {
         }
       }
 
-      const duplicateWindowMs = 60 * 1000;
-      const existingNearMatch = await prisma.message.findFirst({
-        where: {
-          accountId,
-          conversationId,
-          senderId,
-          text: normalizedText,
-          sentAt: {
-            gte: new Date(sentAtDate.getTime() - duplicateWindowMs),
-            lte: new Date(sentAtDate.getTime() + duplicateWindowMs),
+      if (timestampInferred) {
+        const duplicateWindowMs = 60 * 1000;
+        const existingNearMatch = await prisma.message.findFirst({
+          where: {
+            accountId,
+            conversationId,
+            senderId,
+            text: normalizedText,
+            sentAt: {
+              gte: new Date(sentAtDate.getTime() - duplicateWindowMs),
+              lte: new Date(sentAtDate.getTime() + duplicateWindowMs),
+            },
           },
-        },
-        orderBy: { sentAt: 'asc' },
-      });
-
-      if (existingNearMatch) {
-        await prisma.message.update({
-          where: { id: existingNearMatch.id },
-          data: {
-            senderName,
-            linkedinMessageId: stableLinkedinMessageId || existingNearMatch.linkedinMessageId,
-          },
+          orderBy: { sentAt: 'asc' },
         });
-        console.log(
-          `[MessageRepository] Duplicate skipped by fuzzy match for conversation ${conversationId}: sender=${senderId} sentAt=${sentAtDate.toISOString()}`
-        );
-        return null;
+
+        if (existingNearMatch) {
+          await prisma.message.update({
+            where: { id: existingNearMatch.id },
+            data: {
+              senderName,
+              linkedinMessageId: stableLinkedinMessageId || existingNearMatch.linkedinMessageId,
+            },
+          });
+          console.log(
+            `[MessageRepository] Duplicate skipped by inferred-time fuzzy match for conversation ${conversationId}: sender=${senderId} sentAt=${sentAtDate.toISOString()}`
+          );
+          return null;
+        }
       }
 
       return await prisma.message.upsert({
