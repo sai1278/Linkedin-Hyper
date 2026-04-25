@@ -628,6 +628,7 @@ export default function InboxPage() {
 
   const handleReloadInbox = useCallback(async () => {
     const scopedAccountId = selectedRef.current?.accountId || (filter !== 'all' ? filter : undefined);
+    console.debug(`[Inbox] Sync & Reload requested accountId=${String(scopedAccountId || '')}`);
     if (!scopedAccountId) {
       await loadInbox();
       return;
@@ -637,13 +638,19 @@ export default function InboxPage() {
     setIsReloadingInbox(true);
 
     try {
-      await syncMessages(scopedAccountId);
+      const syncResult = await syncMessages(scopedAccountId);
+      console.debug(
+        `[Inbox] Sync & Reload completed accountId=${scopedAccountId} message=${syncResult?.message || ''} stats=${JSON.stringify(syncResult?.stats || null)}`
+      );
       const nextConversations = await loadInbox();
+      console.debug(`[Inbox] Reloaded unified inbox after sync accountId=${scopedAccountId} conversations=${nextConversations.length}`);
       await refreshSelectedConversation(nextConversations);
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : 'Failed to sync inbox';
+      console.warn(`[Inbox] Sync & Reload failed accountId=${scopedAccountId}: ${message}`);
       toast.error(message);
       const nextConversations = await loadInbox();
+      console.debug(`[Inbox] Reloaded unified inbox after failed sync accountId=${scopedAccountId} conversations=${nextConversations.length}`);
       await refreshSelectedConversation(nextConversations);
     } finally {
       syncInFlightRef.current = false;

@@ -52,9 +52,11 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     const url =
       process.env.NEXT_PUBLIC_WS_URL ||
       (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
+    console.debug(`[WebSocketProvider] connect requested url=${url}`);
     wsClient.connect(url);
 
     const unsubscribeStatus = wsClient.on('status:changed', (data: StatusChangedPayload) => {
+      console.debug(`[WebSocketProvider] status changed -> ${String(data.status || 'unknown')}`);
       if (data.status === 'connected') {
         toast.success('Connected to real-time updates', { duration: 2000 });
       } else if (data.status === 'disconnected') {
@@ -63,6 +65,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     });
 
     const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data: InboxNewMessagePayload) => {
+      console.debug('[WebSocketProvider] inbox:new_message received', data);
       const senderName = data.message?.senderName || data.senderName || 'Someone';
       if (senderName === '__self__' || senderName.includes('account')) {
         return;

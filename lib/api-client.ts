@@ -113,14 +113,14 @@ export async function deleteAccountSession(accountId: string): Promise<void> {
   });
 }
 
-export async function syncAllMessages(): Promise<{ success: boolean; message: string }> {
-  return apiFetch<{ success: boolean; message: string }>('sync/messages', {
+export async function syncAllMessages(): Promise<{ success: boolean; message: string; completed?: boolean; stats?: unknown }> {
+  return apiFetch<{ success: boolean; message: string; completed?: boolean; stats?: unknown }>('sync/messages', {
     method: 'POST',
   });
 }
 
-export async function syncMessages(accountId?: string): Promise<{ success: boolean; message: string }> {
-  return apiFetch<{ success: boolean; message: string }>('sync/messages', {
+export async function syncMessages(accountId?: string): Promise<{ success: boolean; message: string; completed?: boolean; stats?: unknown; accountId?: string }> {
+  return apiFetch<{ success: boolean; message: string; completed?: boolean; stats?: unknown; accountId?: string }>('sync/messages', {
     method: 'POST',
     body: accountId ? JSON.stringify({ accountId }) : undefined,
   });

@@ -1493,22 +1493,27 @@ app.post('/sync/messages', async (req, res) => {
       ? await assertKnownAccountId(req.body.accountId)
       : '';
     const proxyUrl = process.env.PROXY_URL || null;
+    res.setTimeout(240_000, () => {
+      if (!res.headersSent) res.status(504).json({ error: 'Manual sync timed out' });
+    });
 
     console.log('[API] Manual sync triggered', accountId ? `for account ${accountId}` : 'for all accounts');
 
-    // Trigger sync in background (don't wait for completion)
     if (accountId) {
-      markSyncStarted(accountId, 'manual');
-      syncAccount(accountId, proxyUrl, { source: 'manual' })
-        .then(stats => console.log('[API] Manual sync completed:', stats))
-        .catch(err => console.error('[API] Manual sync failed:', err));
-      
+      console.log(`[API] Manual sync awaiting completion for account ${accountId}`);
+      const stats = await syncAccount(accountId, proxyUrl, { source: 'manual' });
+      console.log('[API] Manual sync completed:', stats);
+
       res.json({ 
         success: true, 
-        message: `Sync started for account ${accountId}`,
+        message: `Sync completed for account ${accountId}`,
         accountId,
+        completed: true,
+        stats,
       });
     } else {
+      // Bulk sync remains backgrounded because it can legitimately run for minutes
+      // across multiple accounts and the dashboard button is scoped to one account.
       const configuredIds = (process.env.ACCOUNT_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
       markBulkSyncStarted(configuredIds, 'manual');
       syncAllAccounts(proxyUrl, { source: 'manual' })

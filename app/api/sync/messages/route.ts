@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
     method: 'POST',
     path: '/sync/messages',
     body,
-    timeoutMs: 120_000,
+    timeoutMs: 240_000,
   });
 }
 
