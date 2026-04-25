@@ -194,6 +194,83 @@ function mapLiveMessagesToApiItems(messages, fallbackChatId, accountId) {
   });
 }
 
+function getApiItemTimestamp(item) {
+  const raw = item?.createdAt || item?.sentAt || 0;
+  const parsed = new Date(raw).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isApiItemSentByMe(item) {
+  return item?.senderId === '__self__' || item?.isSentByMe === true;
+}
+
+function areEquivalentApiThreadItems(left, right) {
+  const leftId = String(left?.id || '').trim();
+  const rightId = String(right?.id || '').trim();
+  if (leftId && rightId && leftId === rightId) {
+    return true;
+  }
+
+  return (
+    isApiItemSentByMe(left) === isApiItemSentByMe(right) &&
+    normalizeWhitespace(left?.senderName || '') === normalizeWhitespace(right?.senderName || '') &&
+    normalizeWhitespace(left?.text || '') === normalizeWhitespace(right?.text || '') &&
+    Math.abs(getApiItemTimestamp(left) - getApiItemTimestamp(right)) <= 2 * 60 * 1000
+  );
+}
+
+function scoreApiThreadItem(item) {
+  const rawId = String(item?.id || '');
+  let score = 0;
+  if (rawId && !rawId.startsWith('live-')) score += 15;
+  if (item?.createdAt) score += 10;
+  if (normalizeWhitespace(item?.senderName || '') && item?.senderName !== 'Unknown') score += 5;
+  if (normalizeWhitespace(item?.text || '')) score += 3;
+  if (item?.chatId) score += 2;
+  return score;
+}
+
+function preferApiThreadItem(existing, candidate) {
+  const preferred = scoreApiThreadItem(candidate) >= scoreApiThreadItem(existing) ? candidate : existing;
+  const secondary = preferred === candidate ? existing : candidate;
+
+  return {
+    ...secondary,
+    ...preferred,
+    id: preferred?.id || secondary?.id,
+    chatId: preferred?.chatId || secondary?.chatId,
+    senderId: preferred?.senderId || secondary?.senderId,
+    text: preferred?.text || secondary?.text || '',
+    createdAt: preferred?.createdAt || secondary?.createdAt,
+    sentAt: preferred?.sentAt || secondary?.sentAt || preferred?.createdAt || secondary?.createdAt,
+    isSentByMe: preferred?.isSentByMe ?? secondary?.isSentByMe,
+    senderName: preferred?.senderName || secondary?.senderName || 'Unknown',
+  };
+}
+
+function mergeApiThreadItems(...itemSets) {
+  const merged = [];
+
+  for (const item of itemSets.flatMap((set) => set || [])) {
+    if (!item) continue;
+
+    const existingIndex = merged.findIndex((current) => areEquivalentApiThreadItems(current, item));
+    if (existingIndex >= 0) {
+      merged[existingIndex] = preferApiThreadItem(merged[existingIndex], item);
+      continue;
+    }
+
+    merged.push({
+      ...item,
+      text: item.text || '',
+      senderName: item.senderName || 'Unknown',
+      sentAt: item.sentAt || item.createdAt,
+    });
+  }
+
+  return merged.sort((left, right) => getApiItemTimestamp(left) - getApiItemTimestamp(right));
+}
+
 function normalizeWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -1711,6 +1788,7 @@ app.get('/messages/thread', async (req, res) => {
     const normalizedChatId = await assertConversationBelongsToAccount(accountId, chatId);
     const limit     = parseLimit(req.query.limit, 100);
     const offset    = parseInt(req.query.offset) || 0;
+    const refresh   = String(req.query.refresh || '') === '1';
     const proxyUrl  = process.env.PROXY_URL || null;
 
     let dbMessages = [];
@@ -1731,9 +1809,12 @@ app.get('/messages/thread', async (req, res) => {
       if (!isDatabaseUnavailable(dbErr)) throw dbErr;
     }
 
-    if (dbMessages.length > 0) {
+    const dbItems = mapDbMessagesToApiItems(dbMessages);
+
+    if (dbItems.length > 0 && !refresh) {
+      console.log(`[Thread] Returning cached DB thread for ${accountId}/${normalizedChatId}: ${dbItems.length} message(s)`);
       return res.json({
-        items: mapDbMessagesToApiItems(dbMessages),
+        items: dbItems,
         cursor: null,
         hasMore: dbMessages.length === limit,
       });
@@ -1829,6 +1910,8 @@ app.get('/messages/thread', async (req, res) => {
       liveItems = mapLiveMessagesToApiItems(liveThread?.items, normalizedChatId, accountId);
     }
 
+    const mergedThreadItems = mergeApiThreadItems(dbItems, liveItems);
+
     // Best-effort persistence so next load comes from DB.
     if (liveItems.length > 0) {
       try {
@@ -1867,6 +1950,17 @@ app.get('/messages/thread', async (req, res) => {
           console.warn('[Thread] Live fallback persistence failed:', persistErr.message || String(persistErr));
         }
       }
+    }
+
+    if (mergedThreadItems.length > 0) {
+      console.log(
+        `[Thread] Returning merged thread for ${accountId}/${normalizedChatId}: db=${dbItems.length}, live=${liveItems.length}, merged=${mergedThreadItems.length}`
+      );
+      return res.json({
+        items: mergedThreadItems,
+        cursor: null,
+        hasMore: mergedThreadItems.length >= limit,
+      });
     }
 
     if (liveItems.length === 0) {

@@ -157,8 +157,17 @@ export async function getUnifiedInbox(limit = 25): Promise<{ conversations: Conv
 
 export async function getConversationThread(
   accountId: string,
-  chatId: string
+  chatId: string,
+  options?: { refresh?: boolean }
 ): Promise<{ messages: Message[] }> {
+  const query = new URLSearchParams({
+    accountId,
+    chatId,
+  });
+  if (options?.refresh) {
+    query.set('refresh', '1');
+  }
+
   const res = await apiFetch<{
     items: Array<{
       id: string;
@@ -170,7 +179,7 @@ export async function getConversationThread(
       sentAt?: string;
       senderName?: string;
     }>;
-  }>(`messages/thread?accountId=${encodeURIComponent(accountId)}&chatId=${encodeURIComponent(chatId)}`);
+  }>(`messages/thread?${query.toString()}`);
 
   return {
     messages: res.items.map((message) => ({

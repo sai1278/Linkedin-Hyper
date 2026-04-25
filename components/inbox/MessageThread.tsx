@@ -29,6 +29,17 @@ function getConversationProfileUrl(conversation: Conversation): string {
 
 const MESSAGE_GROUP_WINDOW_MS = 2 * 60 * 1000;
 
+function logThreadMessages(label: string, messages: Message[]) {
+  console.debug(`[Inbox][Thread] ${label}`, messages.map((message) => ({
+    id: message.id,
+    text: message.text,
+    sentAt: message.sentAt,
+    sentByMe: message.sentByMe,
+    senderName: message.senderName,
+    status: message.status,
+  })));
+}
+
 export function MessageThread({ conversation, accountLabelById, onMessageSent, onSyncAfterSend, onBack }: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -111,6 +122,9 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
       lastMessage: { text, sentAt: nextSentAt, sentByMe: true, status: 'sending' },
     };
 
+    setAutoScroll(true);
+    logThreadMessages(`before send update ${activeConversation.conversationId}`, activeConversation.messages);
+    logThreadMessages(`after optimistic send ${updatedConversation.conversationId}`, updatedConversation.messages);
     onMessageSent(updatedConversation);
 
     try {
@@ -130,7 +144,7 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
       }
 
       const confirmedAt = Date.now();
-      onMessageSent({
+      const confirmedConversation = {
         ...updatedConversation,
         messages: updatedConversation.messages.map((message) =>
           message.id === targetId
@@ -138,7 +152,9 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
             : message
         ),
         lastMessage: { text, sentAt: confirmedAt, sentByMe: true, status: 'sent' },
-      });
+      };
+      logThreadMessages(`after confirmed send ${confirmedConversation.conversationId}`, confirmedConversation.messages);
+      onMessageSent(confirmedConversation);
 
       if (didSend && onSyncAfterSend) {
         void onSyncAfterSend().catch(() => undefined);
@@ -146,7 +162,7 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to send message';
 
-      onMessageSent({
+      const failedConversation = {
         ...updatedConversation,
         messages: updatedConversation.messages.map((message) =>
           message.id === targetId
@@ -154,7 +170,9 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
             : message
         ),
         lastMessage: { text, sentAt: nextSentAt, sentByMe: true, status: 'failed' },
-      });
+      };
+      logThreadMessages(`after failed send ${failedConversation.conversationId}`, failedConversation.messages);
+      onMessageSent(failedConversation);
 
       toast.error(errorMessage);
     }
@@ -210,9 +228,9 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
         className="flex-1 overflow-y-auto px-6 py-6"
         style={{ backgroundColor: 'var(--bg-primary, var(--bg-base))' }}
       >
-        {groupedMessages.map((group, index) => (
+        {groupedMessages.map((group) => (
             <MessageGroup
-              key={`${group.senderName}-${index}`}
+              key={getMessageGroupKey(group)}
               messages={group.messages}
               isSentByMe={group.isSentByMe}
               senderName={group.senderName}
@@ -273,6 +291,19 @@ function groupConsecutiveMessages(messages: Message[]): Array<{ messages: Messag
   });
 
   return groups;
+}
+
+function getMessageGroupKey(group: { messages: Message[]; isSentByMe: boolean; senderName: string }): string {
+  const firstMessage = group.messages[0];
+  const lastMessage = group.messages[group.messages.length - 1];
+
+  return [
+    group.isSentByMe ? 'me' : 'them',
+    group.senderName,
+    firstMessage?.id || firstMessage?.sentAt || 'first',
+    lastMessage?.id || lastMessage?.sentAt || 'last',
+    group.messages.length,
+  ].join(':');
 }
 
 function MessageGroup({

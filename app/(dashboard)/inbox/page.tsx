@@ -67,6 +67,151 @@ function findMatchingConversation(
   )) || null;
 }
 
+function areSameConversation(left: Conversation | null | undefined, right: Conversation | null | undefined): boolean {
+  if (!left || !right) {
+    return false;
+  }
+
+  if (left.conversationId === right.conversationId) {
+    return true;
+  }
+
+  if (left.accountId !== right.accountId) {
+    return false;
+  }
+
+  const leftProfile = normalizeConversationValue(left.participant.profileUrl);
+  const rightProfile = normalizeConversationValue(right.participant.profileUrl);
+  if (leftProfile && rightProfile && leftProfile === rightProfile) {
+    return true;
+  }
+
+  return normalizeConversationValue(left.participant.name) === normalizeConversationValue(right.participant.name);
+}
+
+function normalizeMessageText(value: string | undefined | null): string {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function getMessageTimestamp(message: Message | undefined | null): number {
+  return Number(message?.sentAt) || 0;
+}
+
+function areEquivalentMessages(left: Message, right: Message): boolean {
+  const leftId = String(left.id || '').trim();
+  const rightId = String(right.id || '').trim();
+  if (leftId && rightId && leftId === rightId) {
+    return true;
+  }
+
+  return (
+    left.sentByMe === right.sentByMe &&
+    normalizeMessageText(left.senderName) === normalizeMessageText(right.senderName) &&
+    normalizeMessageText(left.text) === normalizeMessageText(right.text) &&
+    Math.abs(getMessageTimestamp(left) - getMessageTimestamp(right)) <= 2 * 60 * 1000
+  );
+}
+
+function scoreMessage(message: Message): number {
+  const rawId = String(message.id || '');
+  let score = 0;
+
+  if (message.status === 'sent' || (!message.sentByMe && !message.status)) score += 40;
+  if (message.status === 'sending') score += 20;
+  if (message.status === 'failed') score += 10;
+  if (message.error == null) score += 5;
+  if (rawId && !rawId.startsWith('opt-') && !rawId.startsWith('preview-') && !rawId.startsWith('live-')) score += 5;
+  if (normalizeMessageText(message.senderName)) score += 2;
+  if (normalizeMessageText(message.text)) score += 2;
+
+  return score;
+}
+
+function preferMessage(existing: Message, candidate: Message): Message {
+  const preferred = scoreMessage(candidate) >= scoreMessage(existing) ? candidate : existing;
+  const secondary = preferred === candidate ? existing : candidate;
+
+  return {
+    ...secondary,
+    ...preferred,
+    id: preferred.id || secondary.id,
+    text: preferred.text || secondary.text,
+    sentAt: getMessageTimestamp(preferred) || getMessageTimestamp(secondary),
+    sentByMe: preferred.sentByMe ?? secondary.sentByMe,
+    senderName: preferred.senderName || secondary.senderName,
+    status: preferred.status ?? secondary.status,
+    error: preferred.error ?? secondary.error ?? null,
+  };
+}
+
+function mergeMessageHistory(...messageSets: Array<Message[] | undefined | null>): Message[] {
+  const merged: Message[] = [];
+
+  for (const message of messageSets.flatMap((set) => set || [])) {
+    if (!message) continue;
+
+    const existingIndex = merged.findIndex((current) => areEquivalentMessages(current, message));
+    if (existingIndex >= 0) {
+      merged[existingIndex] = preferMessage(merged[existingIndex], message);
+      continue;
+    }
+
+    merged.push({
+      ...message,
+      text: message.text || '',
+      senderName: message.senderName || 'Unknown',
+      error: message.error ?? null,
+    });
+  }
+
+  return merged.sort((left, right) => {
+    const sentAtDiff = getMessageTimestamp(left) - getMessageTimestamp(right);
+    if (sentAtDiff !== 0) {
+      return sentAtDiff;
+    }
+
+    return normalizeMessageText(left.text).localeCompare(normalizeMessageText(right.text));
+  });
+}
+
+function pickLatestLastMessage(
+  currentLastMessage: Conversation['lastMessage'] | null | undefined,
+  nextLastMessage: Conversation['lastMessage'] | null | undefined,
+  mergedMessages: Message[]
+): Conversation['lastMessage'] {
+  const latestMerged = mergedMessages[mergedMessages.length - 1];
+  if (latestMerged) {
+    return {
+      text: latestMerged.text,
+      sentAt: latestMerged.sentAt,
+      sentByMe: latestMerged.sentByMe,
+      status: latestMerged.sentByMe ? (latestMerged.status ?? 'sent') : undefined,
+    };
+  }
+
+  return (currentLastMessage && nextLastMessage
+    ? (getMessageTimestamp(currentLastMessage as Message) >= getMessageTimestamp(nextLastMessage as Message)
+      ? currentLastMessage
+      : nextLastMessage)
+    : nextLastMessage || currentLastMessage || {
+        text: '',
+        sentAt: Date.now(),
+        sentByMe: false,
+        status: undefined,
+      }) as Conversation['lastMessage'];
+}
+
+function logMessageArray(label: string, messages: Message[]): void {
+  console.debug(`[Inbox] ${label}`, messages.map((message) => ({
+    id: message.id,
+    text: message.text,
+    sentAt: message.sentAt,
+    sentByMe: message.sentByMe,
+    senderName: message.senderName,
+    status: message.status,
+  })));
+}
+
 export default function InboxPage() {
   const routeMeta = DASHBOARD_ROUTE_META.inbox;
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -119,37 +264,38 @@ export default function InboxPage() {
     }];
   }, []);
 
+  const mergeConversationForDisplay = useCallback((
+    currentConversation: Conversation | null | undefined,
+    nextConversation: Conversation
+  ): Conversation => {
+    const shouldMergeCurrent = areSameConversation(currentConversation, nextConversation);
+    const fallbackMessages = getFallbackMessages(nextConversation);
+    const mergedMessages = mergeMessageHistory(
+      shouldMergeCurrent ? currentConversation?.messages : [],
+      nextConversation.messages,
+      fallbackMessages
+    );
+
+    return {
+      ...nextConversation,
+      messages: mergedMessages,
+      lastMessage: pickLatestLastMessage(
+        shouldMergeCurrent ? currentConversation?.lastMessage : undefined,
+        nextConversation.lastMessage,
+        mergedMessages
+      ),
+    };
+  }, [getFallbackMessages]);
+
   const mergePreviewConversationMessages = useCallback((
     currentSelected: Conversation,
     freshConversation: Conversation
   ): Message[] => {
-    const currentMessages = Array.isArray(currentSelected.messages) ? currentSelected.messages : [];
-    const fallbackMessages = getFallbackMessages(freshConversation);
-
-    if (!isPreviewConversationId(freshConversation.conversationId)) {
-      return currentMessages.length > 0 ? currentMessages : fallbackMessages;
-    }
-
-    if (currentMessages.length === 0) {
-      return fallbackMessages;
-    }
-
-    const latestFallback = fallbackMessages[fallbackMessages.length - 1];
-    if (!latestFallback) {
-      return currentMessages;
-    }
-
-    const alreadyPresent = currentMessages.some((message) => (
-      message.sentAt === latestFallback.sentAt &&
-      message.text === latestFallback.text &&
-      message.sentByMe === latestFallback.sentByMe
-    ));
-
-    if (alreadyPresent) {
-      return currentMessages;
-    }
-
-    return [...currentMessages, latestFallback].sort((left, right) => left.sentAt - right.sentAt);
+    return mergeMessageHistory(
+      currentSelected.messages,
+      freshConversation.messages,
+      getFallbackMessages(freshConversation)
+    );
   }, [getFallbackMessages]);
 
   const loadAccounts = useCallback(async () => {
@@ -169,16 +315,16 @@ export default function InboxPage() {
       setSelected((currentSelected) => {
         if (!currentSelected) return currentSelected;
 
-        const freshConversation = inboxData.conversations.find(
-          (conversation) => conversation.conversationId === currentSelected.conversationId
-        );
+        const freshConversation = findMatchingConversation(currentSelected, inboxData.conversations);
 
         if (!freshConversation) return currentSelected;
 
-        return {
+        const mergedConversation = mergeConversationForDisplay(currentSelected, {
           ...freshConversation,
           messages: mergePreviewConversationMessages(currentSelected, freshConversation),
-        };
+        });
+        logMessageArray(`loadInbox merged selected ${mergedConversation.conversationId}`, mergedConversation.messages);
+        return mergedConversation;
       });
       setError(null);
       return inboxData.conversations;
@@ -188,7 +334,7 @@ export default function InboxPage() {
     } finally {
       setLoading(false);
     }
-  }, [mergePreviewConversationMessages]);
+  }, [mergeConversationForDisplay, mergePreviewConversationMessages]);
 
   useEffect(() => {
     void loadAccounts();
@@ -199,25 +345,43 @@ export default function InboxPage() {
   }, [loadInbox]);
 
   const handleSelect = useCallback(async (conversation: Conversation) => {
-    setSelected({
+    const initialConversation = mergeConversationForDisplay(selectedRef.current, {
       ...conversation,
       messages: getFallbackMessages(conversation),
     });
+    logMessageArray(`handleSelect before thread fetch ${conversation.conversationId}`, initialConversation.messages);
+    setSelected(initialConversation);
 
     try {
-      const thread = await getConversationThread(conversation.accountId, conversation.conversationId);
+      const thread = await getConversationThread(conversation.accountId, conversation.conversationId, {
+        refresh: true,
+      });
       const hasThreadMessages = Array.isArray(thread.messages) && thread.messages.length > 0;
-      setSelected({
-        ...conversation,
-        messages: hasThreadMessages ? thread.messages : getFallbackMessages(conversation),
+      setSelected((currentSelected) => {
+        const baselineConversation = areSameConversation(currentSelected, conversation)
+          ? currentSelected
+          : initialConversation;
+        const mergedConversation = mergeConversationForDisplay(baselineConversation, {
+          ...conversation,
+          messages: hasThreadMessages ? thread.messages : getFallbackMessages(conversation),
+        });
+        logMessageArray(`handleSelect after thread fetch ${conversation.conversationId}`, mergedConversation.messages);
+        return mergedConversation;
       });
     } catch {
-      setSelected({
-        ...conversation,
-        messages: getFallbackMessages(conversation),
+      setSelected((currentSelected) => {
+        const baselineConversation = areSameConversation(currentSelected, conversation)
+          ? currentSelected
+          : initialConversation;
+        const mergedConversation = mergeConversationForDisplay(baselineConversation, {
+          ...conversation,
+          messages: getFallbackMessages(conversation),
+        });
+        logMessageArray(`handleSelect fallback ${conversation.conversationId}`, mergedConversation.messages);
+        return mergedConversation;
       });
     }
-  }, [getFallbackMessages]);
+  }, [getFallbackMessages, mergeConversationForDisplay]);
 
   const refreshSelectedConversation = useCallback(async (nextConversations: Conversation[]) => {
     const currentSelected = selectedRef.current;
@@ -513,13 +677,22 @@ export default function InboxPage() {
             onBack={selected ? () => setSelected(null) : undefined}
             onMessageSent={(updatedConversation) => {
               setConversations((currentConversations) =>
-                currentConversations.map((conversation) =>
-                  conversation.conversationId === updatedConversation.conversationId
-                    ? updatedConversation
-                    : conversation
-                )
+                currentConversations.map((conversation) => {
+                  if (!areSameConversation(conversation, updatedConversation)) {
+                    return conversation;
+                  }
+
+                  logMessageArray(`before onMessageSent list update ${conversation.conversationId}`, conversation.messages);
+                  const mergedConversation = mergeConversationForDisplay(conversation, updatedConversation);
+                  logMessageArray(`after onMessageSent list update ${mergedConversation.conversationId}`, mergedConversation.messages);
+                  return mergedConversation;
+                })
               );
-              setSelected(updatedConversation);
+              setSelected((currentSelected) => {
+                const mergedConversation = mergeConversationForDisplay(currentSelected, updatedConversation);
+                logMessageArray(`after onMessageSent selected update ${mergedConversation.conversationId}`, mergedConversation.messages);
+                return mergedConversation;
+              });
             }}
           />
         </div>

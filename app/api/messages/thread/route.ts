@@ -19,11 +19,17 @@ export async function GET(req: NextRequest) {
       req.nextUrl.searchParams.get('chatId'),
       'chatId'
     );
+    const refresh = req.nextUrl.searchParams.get('refresh') === '1';
+
+    const query = new URLSearchParams({ accountId, chatId });
+    if (refresh) {
+      query.set('refresh', '1');
+    }
 
     return forwardToBackend({
       method: 'GET',
       path: '/messages/thread',
-      query: new URLSearchParams({ accountId, chatId }),
+      query,
     });
   } catch (error) {
     return badRequest(error);
