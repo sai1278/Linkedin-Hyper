@@ -72,7 +72,7 @@ export const ConversationList = memo(function ConversationList({
 
   return (
     <div
-      className="flex h-full w-[360px] flex-col flex-shrink-0"
+      className="flex h-full min-w-0 flex-1 flex-col"
       style={{
         borderRight: '1px solid var(--border)',
         backgroundColor: 'var(--bg-secondary, var(--bg-panel))',
@@ -141,7 +141,7 @@ export const ConversationList = memo(function ConversationList({
         {totalUnread > 0 && <UnreadBadge count={totalUnread} />}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {conversations.length === 0 ? (
           <div className="flex h-64 flex-col items-center justify-center px-6 text-center">
             <div

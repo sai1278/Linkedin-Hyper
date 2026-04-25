@@ -204,9 +204,9 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
   );
 
   return (
-    <div className="flex flex-1 flex-col" style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
       <div
-        className="flex items-center justify-between border-b px-6 py-4"
+        className="shrink-0 flex items-center justify-between border-b px-8 py-5 max-[900px]:px-4"
         style={{
           borderColor: 'var(--border)',
           backgroundColor: 'var(--bg-secondary, var(--bg-panel))',
@@ -248,7 +248,7 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-6 py-6"
+        className="min-h-0 flex-1 overflow-y-auto px-8 py-6 max-[900px]:px-4"
         style={{ backgroundColor: 'var(--bg-primary, var(--bg-base))' }}
       >
         {groupedMessages.map((group) => (
@@ -273,7 +273,7 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
             setAutoScroll(true);
             bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
           }}
-          className="absolute bottom-24 right-8 rounded-full px-4 py-2 shadow-lg transition-all"
+          className="absolute bottom-28 right-8 z-10 rounded-full px-4 py-2 shadow-lg transition-all max-[900px]:right-4"
           style={{
             backgroundColor: 'var(--color-primary-500)',
             color: 'white',
@@ -362,7 +362,7 @@ function MessageGroup({
         />
       </div>
 
-      <div className={`flex max-w-[70%] flex-col gap-1 ${isSentByMe ? 'items-end' : 'items-start'}`}>
+      <div className={`flex max-w-[78%] flex-col gap-1 max-[900px]:max-w-[88%] ${isSentByMe ? 'items-end' : 'items-start'}`}>
         <span className="mb-1 px-2 text-xs font-medium" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
           {displayName}
         </span>

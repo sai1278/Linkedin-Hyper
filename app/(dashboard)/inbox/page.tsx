@@ -212,6 +212,32 @@ function getMessageDedupKey(
   ].join(':');
 }
 
+function areProbablySameMessage(left: Message, right: Message): boolean {
+  const leftId = String(left.id || '').trim();
+  const rightId = String(right.id || '').trim();
+
+  if (leftId && rightId && !isSyntheticMessageId(leftId) && !isSyntheticMessageId(rightId)) {
+    return leftId === rightId;
+  }
+
+  const needsFuzzyMatch =
+    !leftId ||
+    !rightId ||
+    isSyntheticMessageId(leftId) ||
+    isSyntheticMessageId(rightId);
+
+  if (!needsFuzzyMatch) {
+    return false;
+  }
+
+  return (
+    left.sentByMe === right.sentByMe &&
+    getMessageSenderIdentity(left) === getMessageSenderIdentity(right) &&
+    normalizeMessageText(left.text).toLowerCase() === normalizeMessageText(right.text).toLowerCase() &&
+    Math.abs(getMessageTimestamp(left) - getMessageTimestamp(right)) <= MESSAGE_DEDUP_WINDOW_MS
+  );
+}
+
 function mergeMessages(
   existingMessages: Message[] | undefined | null,
   incomingMessages: Message[] | undefined | null,
@@ -221,7 +247,7 @@ function mergeMessages(
   const existingCount = existingMessages?.length || 0;
   const incomingCount = incomingMessages?.length || 0;
   const beforeCount = existingCount + incomingCount;
-  const mergedByKey = new Map<string, Message>();
+  const mergedMessages: Message[] = [];
   let duplicateSkippedCount = 0;
 
   for (const rawMessage of [...(existingMessages || []), ...(incomingMessages || [])]) {
@@ -229,18 +255,21 @@ function mergeMessages(
 
     const normalizedMessage = normalizeMessage(rawMessage, context);
     const dedupKey = getMessageDedupKey(normalizedMessage, context);
-    const existingMessage = mergedByKey.get(dedupKey);
+    const existingIndex = mergedMessages.findIndex((currentMessage) => (
+      getMessageDedupKey(currentMessage, context) === dedupKey ||
+      areProbablySameMessage(currentMessage, normalizedMessage)
+    ));
 
-    if (existingMessage) {
+    if (existingIndex >= 0) {
       duplicateSkippedCount += 1;
-      mergedByKey.set(dedupKey, preferMessage(existingMessage, normalizedMessage));
+      mergedMessages[existingIndex] = preferMessage(mergedMessages[existingIndex], normalizedMessage);
       continue;
     }
 
-    mergedByKey.set(dedupKey, normalizedMessage);
+    mergedMessages.push(normalizedMessage);
   }
 
-  const mergedMessages = Array.from(mergedByKey.values()).sort((left, right) => {
+  const sortedMessages = mergedMessages.sort((left, right) => {
     const sentAtDiff = getMessageTimestamp(left) - getMessageTimestamp(right);
     if (sentAtDiff !== 0) {
       return sentAtDiff;
@@ -250,10 +279,10 @@ function mergeMessages(
   });
 
   console.debug(
-    `[InboxMerge][${label}] accountId=${String(context.accountId || '')} threadId=${String(context.conversationId || '')} existing=${existingCount} incoming=${incomingCount} before=${beforeCount} after=${mergedMessages.length} duplicatesSkipped=${duplicateSkippedCount}`
+    `[InboxMerge][${label}] accountId=${String(context.accountId || '')} threadId=${String(context.conversationId || '')} existing=${existingCount} incoming=${incomingCount} before=${beforeCount} after=${sortedMessages.length} duplicatesSkipped=${duplicateSkippedCount}`
   );
 
-  return mergedMessages;
+  return sortedMessages;
 }
 
 function pickLatestLastMessage(
@@ -655,17 +684,19 @@ export default function InboxPage() {
 
   if (loading) {
     return (
-      <div className="flex h-full flex-1 overflow-hidden max-[900px]:block">
+      <div className="flex h-full min-h-0 flex-1 overflow-hidden px-6 pb-6 pt-4 max-[900px]:block max-[900px]:px-0 max-[900px]:pb-0">
+        <div className="flex h-full min-h-0 w-full overflow-hidden rounded-[28px] border shadow-sm max-[900px]:rounded-none max-[900px]:border-x-0 max-[900px]:border-b-0">
         <div
-          className="w-[360px] flex-shrink-0 border-r max-[900px]:w-full max-[900px]:border-r-0"
+          className="min-w-[320px] max-w-[420px] flex-[0_0_32%] border-r max-[1100px]:min-w-[280px] max-[900px]:w-full max-[900px]:min-w-0 max-[900px]:max-w-none max-[900px]:border-r-0"
           style={{ borderColor: 'var(--border)', backgroundColor: 'var(--bg-secondary, var(--bg-panel))' }}
         >
           <ConversationListSkeleton count={8} />
         </div>
-        <div className="flex flex-1 items-stretch max-[900px]:hidden" style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
-          <div className="w-full p-6">
+        <div className="flex min-w-0 flex-1 items-stretch overflow-hidden max-[900px]:hidden" style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
+          <div className="min-h-0 w-full p-6">
             <MessageThreadSkeleton />
           </div>
+        </div>
         </div>
       </div>
     );
@@ -676,8 +707,8 @@ export default function InboxPage() {
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b px-6 py-3" style={{ borderColor: 'var(--border)' }}>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="shrink-0 flex items-center justify-between border-b px-6 py-3" style={{ borderColor: 'var(--border)' }}>
         <div>
           <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
             {routeMeta.pageTitle}
@@ -717,93 +748,97 @@ export default function InboxPage() {
       </div>
 
       {!isLive && (
-        <div
-          className="mx-6 mt-4 flex items-start justify-between gap-4 rounded-2xl border px-4 py-3 shadow-sm"
-          style={{
-            backgroundColor: wsStatus === 'reconnecting' ? '#fff7ed' : '#fef2f2',
-            borderColor: wsStatus === 'reconnecting' ? '#fdba74' : '#fca5a5',
-          }}
-        >
-          <div className="flex items-start gap-3">
-            <WifiOff size={18} style={{ color: wsStatus === 'reconnecting' ? '#c2410c' : '#b91c1c' }} />
-            <div>
-              <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {wsStatus === 'reconnecting'
-                  ? 'Real-time inbox is reconnecting'
-                  : 'Real-time inbox is offline'}
-              </p>
-              <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                {wsStatus === 'reconnecting'
-                  ? 'New events may be delayed for a moment. You can reconnect or refresh manually.'
-                  : 'Live updates are paused. Reconnect the socket or reload the inbox to catch up.'}
-              </p>
+        <div className="shrink-0 px-6 pt-4">
+          <div
+            className="flex items-start justify-between gap-4 rounded-2xl border px-4 py-3 shadow-sm"
+            style={{
+              backgroundColor: wsStatus === 'reconnecting' ? '#fff7ed' : '#fef2f2',
+              borderColor: wsStatus === 'reconnecting' ? '#fdba74' : '#fca5a5',
+            }}
+          >
+            <div className="flex items-start gap-3">
+              <WifiOff size={18} style={{ color: wsStatus === 'reconnecting' ? '#c2410c' : '#b91c1c' }} />
+              <div>
+                <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {wsStatus === 'reconnecting'
+                    ? 'Real-time inbox is reconnecting'
+                    : 'Real-time inbox is offline'}
+                </p>
+                <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {wsStatus === 'reconnecting'
+                    ? 'New events may be delayed for a moment. You can reconnect or refresh manually.'
+                    : 'Live updates are paused. Reconnect the socket or reload the inbox to catch up.'}
+                </p>
+              </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void handleReconnect()}
-              className="button-primary rounded-xl px-3 py-2 text-sm font-medium"
-            >
-              Reconnect
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleReloadInbox()}
-              disabled={isReloadingInbox}
-              className="button-outline inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium"
-            >
-              <RefreshCw size={14} className={isReloadingInbox ? 'animate-spin' : ''} />
-              {isReloadingInbox ? 'Syncing inbox...' : 'Sync & Reload inbox'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleReconnect()}
+                className="button-primary rounded-xl px-3 py-2 text-sm font-medium"
+              >
+                Reconnect
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleReloadInbox()}
+                disabled={isReloadingInbox}
+                className="button-outline inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium"
+              >
+                <RefreshCw size={14} className={isReloadingInbox ? 'animate-spin' : ''} />
+                {isReloadingInbox ? 'Syncing inbox...' : 'Sync & Reload inbox'}
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden max-[900px]:block">
-        <div className={selected ? 'h-full max-[900px]:hidden' : 'h-full'}>
-          <ConversationList
-            conversations={filteredConversations}
-            accounts={accounts}
-            accountLabels={accountLabelById}
-            selected={selected}
-            filter={filter}
-            search={search}
-            canLoadMore={canLoadMore}
-            isLoadingMore={isLoadingMore}
-            onFilterChange={setFilter}
-            onSearchChange={setSearch}
-            onLoadMore={() => void handleLoadMore()}
-            onSelect={handleSelect}
-          />
-        </div>
-        <div className={`flex flex-1 overflow-hidden ${selected ? 'max-[900px]:flex' : 'max-[900px]:hidden'}`}>
-          <MessageThread
-            conversation={selected}
-            accountLabelById={accountLabelById}
-            onSyncAfterSend={handleReloadInbox}
-            onBack={selected ? () => setSelected(null) : undefined}
-            onMessageSent={(updatedConversation) => {
-              setConversations((currentConversations) =>
-                currentConversations.map((conversation) => {
-                  if (!areSameConversation(conversation, updatedConversation)) {
-                    return conversation;
-                  }
+      <div className="min-h-0 flex-1 overflow-hidden px-6 pb-6 pt-4 max-[900px]:px-0 max-[900px]:pb-0">
+        <div className="flex h-full min-h-0 overflow-hidden rounded-[28px] border shadow-sm max-[900px]:block max-[900px]:rounded-none max-[900px]:border-x-0 max-[900px]:border-b-0" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
+          <div className={`${selected ? 'h-full max-[900px]:hidden' : 'h-full'} min-w-[320px] max-w-[420px] flex-[0_0_32%] overflow-hidden border-r max-[1100px]:min-w-[280px] max-[900px]:w-full max-[900px]:min-w-0 max-[900px]:max-w-none max-[900px]:border-r-0`} style={{ borderColor: 'var(--border)' }}>
+            <ConversationList
+              conversations={filteredConversations}
+              accounts={accounts}
+              accountLabels={accountLabelById}
+              selected={selected}
+              filter={filter}
+              search={search}
+              canLoadMore={canLoadMore}
+              isLoadingMore={isLoadingMore}
+              onFilterChange={setFilter}
+              onSearchChange={setSearch}
+              onLoadMore={() => void handleLoadMore()}
+              onSelect={handleSelect}
+            />
+          </div>
+          <div className={`flex min-w-0 flex-1 overflow-hidden ${selected ? 'max-[900px]:flex' : 'max-[900px]:hidden'}`}>
+            <MessageThread
+              conversation={selected}
+              accountLabelById={accountLabelById}
+              onSyncAfterSend={handleReloadInbox}
+              onBack={selected ? () => setSelected(null) : undefined}
+              onMessageSent={(updatedConversation) => {
+                setConversations((currentConversations) =>
+                  currentConversations.map((conversation) => {
+                    if (!areSameConversation(conversation, updatedConversation)) {
+                      return conversation;
+                    }
 
-                  logMessageArray(`before onMessageSent list update ${conversation.conversationId}`, conversation.messages);
-                  const mergedConversation = mergeConversationForDisplay(conversation, updatedConversation);
-                  logMessageArray(`after onMessageSent list update ${mergedConversation.conversationId}`, mergedConversation.messages);
+                    logMessageArray(`before onMessageSent list update ${conversation.conversationId}`, conversation.messages);
+                    const mergedConversation = mergeConversationForDisplay(conversation, updatedConversation);
+                    logMessageArray(`after onMessageSent list update ${mergedConversation.conversationId}`, mergedConversation.messages);
+                    return mergedConversation;
+                  })
+                );
+                setSelected((currentSelected) => {
+                  const mergedConversation = mergeConversationForDisplay(currentSelected, updatedConversation);
+                  logMessageArray(`after onMessageSent selected update ${mergedConversation.conversationId}`, mergedConversation.messages);
                   return mergedConversation;
-                })
-              );
-              setSelected((currentSelected) => {
-                const mergedConversation = mergeConversationForDisplay(currentSelected, updatedConversation);
-                logMessageArray(`after onMessageSent selected update ${mergedConversation.conversationId}`, mergedConversation.messages);
-                return mergedConversation;
-              });
-            }}
-          />
+                });
+              }}
+            />
+          </div>
         </div>
       </div>
     </div>

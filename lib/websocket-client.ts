@@ -15,33 +15,60 @@ function debugSocket(...args: unknown[]): void {
 export class WebSocketClient {
   private socket: Socket | null = null;
   private listeners: Map<string, Set<ListenerCallback>> = new Map();
+  private target = '';
   private url = '';
+  private path = '/socket.io';
   private reconnectAttempts = 0;
   private maxReconnectDelay = 30000;
   private _isConnected = false;
+  private joinedRooms: Set<string> = new Set();
 
   get isConnected(): boolean {
     return this._isConnected;
   }
 
-  private normalizeSocketOrigin(rawUrl: string): string {
+  private parseSocketTarget(rawUrl: string): { origin: string; path: string } {
     try {
       const parsed = new URL(rawUrl);
       if (parsed.protocol === 'ws:') parsed.protocol = 'http:';
       if (parsed.protocol === 'wss:') parsed.protocol = 'https:';
-      return parsed.origin;
+      const requestedPath = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/socket.io';
+      const pathname = requestedPath === '/ws' || requestedPath === '/ws/'
+        ? '/socket.io'
+        : requestedPath;
+      if (requestedPath !== pathname) {
+        console.info(`[WebSocket] Remapped socket path ${requestedPath} -> ${pathname}`);
+      }
+      return {
+        origin: parsed.origin,
+        path: pathname,
+      };
     } catch {
-      return rawUrl;
+      return {
+        origin: rawUrl,
+        path: '/socket.io',
+      };
     }
+  }
+
+  private rejoinRooms(): void {
+    if (!this.socket || !this.socket.connected) {
+      return;
+    }
+
+    this.joinedRooms.forEach((room) => {
+      this.socket?.emit('join:account', room);
+      console.debug(`[WebSocket] Rejoined room ${room}`);
+    });
   }
 
   connect(url: string): void {
     if (!url || typeof window === 'undefined') return;
 
-    const origin = this.normalizeSocketOrigin(url);
+    const { origin, path } = this.parseSocketTarget(url);
 
     if (this.socket) {
-      if (this.url === origin) {
+      if (this.url === origin && this.path === path) {
         if (!this.socket.connected) {
           this.socket.connect();
         }
@@ -52,11 +79,14 @@ export class WebSocketClient {
       this.socket = null;
     }
 
+    this.target = url;
     this.url = origin;
+    this.path = path;
 
     try {
+      console.debug(`[WebSocket] Connecting origin=${origin} path=${path}`);
       this.socket = io(origin, {
-        path: '/socket.io',
+        path,
         transports: ['websocket', 'polling'],
         withCredentials: true,
         reconnection: true,
@@ -66,33 +96,35 @@ export class WebSocketClient {
       });
 
       this.socket.on('connect', () => {
-        debugSocket('[WebSocket] Connected');
+        console.debug('[WebSocket] Connected');
         this._isConnected = true;
         this.reconnectAttempts = 0;
+        this.rejoinRooms();
         this.notifyStatusListeners('connected');
       });
 
       this.socket.on('disconnect', (reason) => {
-        debugSocket('[WebSocket] Disconnected:', reason);
+        console.warn('[WebSocket] Disconnected:', reason);
         this._isConnected = false;
         this.notifyStatusListeners('disconnected');
       });
 
       this.socket.on('connect_error', (error) => {
-        console.warn('[WebSocket] Connection warning:', error.message);
+        console.warn('[WebSocket] Connection warning:', error.message, `origin=${origin}`, `path=${path}`);
         this.reconnectAttempts++;
         this.notifyStatusListeners('reconnecting');
       });
 
       this.socket.on('reconnect', (attemptNumber) => {
-        debugSocket(`[WebSocket] Reconnected after ${attemptNumber} attempts`);
+        console.info(`[WebSocket] Reconnected after ${attemptNumber} attempts`);
         this._isConnected = true;
         this.reconnectAttempts = 0;
+        this.rejoinRooms();
         this.notifyStatusListeners('connected');
       });
 
       this.socket.on('reconnect_attempt', (attemptNumber) => {
-        debugSocket(`[WebSocket] Reconnection attempt ${attemptNumber}`);
+        console.info(`[WebSocket] Reconnection attempt ${attemptNumber}`);
         this.notifyStatusListeners('reconnecting');
       });
 
@@ -123,8 +155,8 @@ export class WebSocketClient {
       return;
     }
 
-    if (this.url) {
-      this.connect(this.url);
+    if (this.target) {
+      this.connect(this.target);
     }
   }
 
@@ -154,10 +186,14 @@ export class WebSocketClient {
   }
 
   joinAccountRoom(accountId: string): void {
+    if (!accountId) return;
+    this.joinedRooms.add(accountId);
     this.emit('join:account', accountId);
   }
 
   leaveAccountRoom(accountId: string): void {
+    if (!accountId) return;
+    this.joinedRooms.delete(accountId);
     this.emit('leave:account', accountId);
   }
 
