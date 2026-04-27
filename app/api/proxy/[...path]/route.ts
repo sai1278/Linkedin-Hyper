@@ -43,7 +43,7 @@ const TOKEN_ROLE_MAP: Readonly<Record<string, Role>> = (() => {
  * Security notes:
  * - stats/:accountId pattern uses [a-zA-Z0-9_-]+ intentionally.
  *   This prevents path injection via the accountId segment.
- * - messages/send is admin-only because it is a write action.
+ * - messages/send-new is admin-only because it is a write action.
  */
 const ALLOWLIST: readonly RouteRule[] = [
   {
@@ -71,7 +71,7 @@ const ALLOWLIST: readonly RouteRule[] = [
     injectApiKey: true,
   },
   {
-    pattern:      /^messages\/send$/,
+    pattern:      /^messages\/send-new$/,
     methods:      new Set(['POST']),
     roles:        new Set(['admin']),   // write action â€” admin only
     injectApiKey: true,

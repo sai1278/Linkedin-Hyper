@@ -114,6 +114,15 @@ async function withTimeout(promise, timeoutMs, code = 'DB_TIMEOUT') {
   }
 }
 
+function applyRetryAfterHeader(res, err) {
+  const retryAfterSec = Number.parseInt(String(err?.retryAfterSec ?? ''), 10);
+  if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+    res.set('Retry-After', String(retryAfterSec));
+    return retryAfterSec;
+  }
+  return null;
+}
+
 function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
   if (process.env.NODE_ENV !== 'production') {
     return err?.message || fallbackMessage;
@@ -995,6 +1004,15 @@ let unifiedInboxCache = {
 };
 let unifiedInboxInFlight = null;
 
+function invalidateUnifiedInboxCache(reason = 'unspecified') {
+  unifiedInboxCache = {
+    expiresAt: 0,
+    payload: { conversations: [] },
+  };
+  unifiedInboxInFlight = null;
+  console.debug(`[Inbox] Unified inbox cache invalidated (${reason})`);
+}
+
 function normalizeConversationFromInboxItem(accountId, item) {
   const participantProfileUrl = String(item?.participants?.[0]?.profileUrl || '');
   const participantName = normalizeParticipantName(item?.participants?.[0]?.name, participantProfileUrl);
@@ -1242,6 +1260,22 @@ async function persistOptimisticSendNewResult({ accountId, profileUrl, text, res
   const messageId = String(result?.id || `optimistic-${Date.now()}`);
 
   try {
+    if (!participantProfileUrl && rawChatId && rawChatId !== 'new') {
+      await withTimeout(
+        messageRepo.updateConversationLastMessage(conversationId, {
+          text,
+          sentAt: createdAt,
+          sentByMe: true,
+        }),
+        4000
+      );
+      console.debug(
+        `[send-new] Updated last message preview for existing thread ${conversationId}; optimistic message row skipped`
+      );
+      invalidateUnifiedInboxCache(`optimistic-send:${accountId}:${conversationId}`);
+      return;
+    }
+
     await withTimeout(
       messageRepo.upsertConversation({
         id: conversationId,
@@ -1258,6 +1292,7 @@ async function persistOptimisticSendNewResult({ accountId, profileUrl, text, res
     console.debug(
       `[send-new] Conversation preview persisted for ${conversationId}; optimistic message row skipped to avoid duplicate thread history`
     );
+    invalidateUnifiedInboxCache(`optimistic-send:${accountId}:${conversationId}`);
   } catch (err) {
     if (!isDatabaseUnavailable(err)) {
       console.warn('[send-new] Optimistic DB persistence failed:', err?.message || String(err));
@@ -1502,6 +1537,7 @@ app.post('/sync/messages', async (req, res) => {
     if (accountId) {
       console.log(`[API] Manual sync awaiting completion for account ${accountId}`);
       const stats = await syncAccount(accountId, proxyUrl, { source: 'manual' });
+      invalidateUnifiedInboxCache(`manual-sync:${accountId}`);
       console.log('[API] Manual sync completed:', stats);
 
       res.json({ 
@@ -1517,7 +1553,10 @@ app.post('/sync/messages', async (req, res) => {
       const configuredIds = (process.env.ACCOUNT_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
       markBulkSyncStarted(configuredIds, 'manual');
       syncAllAccounts(proxyUrl, { source: 'manual' })
-        .then(stats => console.log('[API] Manual sync completed:', stats))
+        .then(stats => {
+          invalidateUnifiedInboxCache('manual-sync:all-accounts');
+          console.log('[API] Manual sync completed:', stats);
+        })
         .catch(err => console.error('[API] Manual sync failed:', err));
       
       res.json({ 
@@ -1526,7 +1565,8 @@ app.post('/sync/messages', async (req, res) => {
       });
     }
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message, code: err.code });
+    const retryAfterSec = applyRetryAfterHeader(res, err);
+    res.status(err.status || 500).json({ error: err.message, code: err.code, retryAfterSec });
   }
 });
 
@@ -2086,119 +2126,126 @@ app.get('/messages/thread', async (req, res) => {
 });
 
 app.post('/messages/send', async (req, res) => {
-  try {
-    const accountId = await assertKnownAccountId(req.body?.accountId);
-    const normalizedChatId = await assertConversationBelongsToAccount(accountId, req.body?.chatId);
-    const text      = sanitizeText(req.body?.text, { maxLength: 3000 });
-    if (!text) return res.status(400).json({ error: 'text is required' });
-    if (normalizedChatId.startsWith('activity-')) {
-      return res.status(400).json({
-        error: 'This conversation is activity-only and cannot be replied yet. Run sync and retry.',
-        code: 'THREAD_NOT_REPLYABLE',
-      });
-    }
-    if (normalizedChatId.startsWith('fallback-')) {
-      return res.status(400).json({
-        error: 'This conversation does not have a stable LinkedIn thread yet. Open the real thread or run sync and retry.',
-        code: 'THREAD_NOT_REPLYABLE',
-      });
-    }
-
-    const result = await runJob('sendMessage', {
-      accountId, chatId: normalizedChatId, text, proxyUrl: process.env.PROXY_URL || null,
-    });
-    if (!res.headersSent) {
-      res.json(result);
-    }
-  } catch (err) {
-    if (res.headersSent) return;
-    const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({
-      error: toPublicOperationError(err),
-      code: err.code,
-    });
-  }
+  // Legacy route retired in favor of /messages/send-new.
+  // Keep a clear 410 response during the migration window instead of
+  // silently forwarding to the deprecated implementation.
+  res.status(410).json({
+    error: 'This route is deprecated. Use /messages/send-new with profileUrl or chatId.',
+    code: 'SEND_ROUTE_DEPRECATED',
+  });
 });
 
 app.post('/messages/send-new', async (req, res) => {
   try {
-    const accountId  = await assertKnownAccountId(req.body?.accountId);
-    const profileUrl = validateProfileUrl(req.body?.profileUrl);
-    const text       = sanitizeText(req.body?.text, { maxLength: 3000 });
+    const accountId = await assertKnownAccountId(req.body?.accountId);
+    const rawProfileUrl = String(req.body?.profileUrl || '').trim();
+    const rawChatId = String(req.body?.chatId || '').trim();
+    const profileUrl = rawProfileUrl ? validateProfileUrl(rawProfileUrl) : '';
+    const normalizedChatId = rawChatId
+      ? await assertConversationBelongsToAccount(accountId, rawChatId)
+      : '';
+    const text = sanitizeText(req.body?.text, { maxLength: 3000 });
     if (!text) return res.status(400).json({ error: 'text is required' });
+    if (!profileUrl && !normalizedChatId) {
+      return res.status(400).json({
+        error: 'Either profileUrl or chatId is required',
+        code: 'SEND_TARGET_REQUIRED',
+      });
+    }
     res.setTimeout(230_000, () => {
       if (!res.headersSent) res.status(504).json({ error: 'Request timed out' });
     });
 
     let result;
-    try {
-      result = await runJob('sendMessageNew', {
-        accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
-      }, 220_000);
-    } catch (sendNewErr) {
-      const sendNewReason = String(sendNewErr?.message || sendNewErr || '').toLowerCase();
-      const skipThreadFallback =
-        sendNewErr?.code === 'SEND_NOT_CONFIRMED' ||
-        sendNewErr?.status === 504 ||
-        sendNewReason.includes('timed out after') ||
-        sendNewReason.includes('session expired for account') ||
-        sendNewReason.includes('authenticated linkedin member state was not reached') ||
-        sendNewReason.includes('checkpoint/challenge is still pending') ||
-        sendNewReason.includes('login is not fully completed') ||
-        sendNewReason.includes('cookies missing');
-
-      if (skipThreadFallback) {
-        throw sendNewErr;
+    if (normalizedChatId && !profileUrl) {
+      if (normalizedChatId.startsWith('activity-')) {
+        return res.status(400).json({
+          error: 'This conversation is activity-only and cannot be replied yet. Run sync and retry.',
+          code: 'THREAD_NOT_REPLYABLE',
+        });
       }
-
-      // Always try thread fallback before failing send-new.
-      // This helps when profile composer flow is flaky but an existing thread works.
-      const reason = String(sendNewErr?.message || sendNewErr || '');
-      console.warn(`[API] send-new failed for ${accountId}; trying thread fallback: ${reason}`);
-
-      // Reset browser context before inbox fallback to avoid stale/half-closed sessions.
-      await cleanupContext(accountId).catch(() => {});
-
-      let inboxResult;
-      try {
-        inboxResult = await runJob('readMessages', {
-          accountId,
-          limit: 100,
-          proxyUrl: process.env.PROXY_URL || null,
-        }, 90_000);
-      } catch (fallbackErr) {
-        const fallbackReason = String(fallbackErr?.message || fallbackErr || '');
-        console.warn(`[API] thread fallback inbox read failed for ${accountId}: ${fallbackReason}`);
-        throw sendNewErr;
+      if (normalizedChatId.startsWith('fallback-')) {
+        return res.status(400).json({
+          error: 'This conversation does not have a stable LinkedIn thread yet. Open the real thread or run sync and retry.',
+          code: 'THREAD_NOT_REPLYABLE',
+        });
       }
-
-      const normalizedTarget = normalizeProfileUrlForCompare(profileUrl);
-      const matchedConversation = (inboxResult?.items || []).find((item) => {
-        const participantUrl = item?.participants?.[0]?.profileUrl || '';
-        return (
-          participantUrl &&
-          normalizeProfileUrlForCompare(participantUrl) === normalizedTarget
-        );
-      });
-
-      if (!matchedConversation?.id) throw sendNewErr;
-
-      const matchedChatId = normalizeThreadId(accountId, matchedConversation.id);
-      if (!matchedChatId || matchedChatId.startsWith('activity-') || matchedChatId.startsWith('fallback-')) {
-        throw sendNewErr;
-      }
-
       result = await runJob('sendMessage', {
         accountId,
-        chatId: matchedChatId,
+        chatId: normalizedChatId,
         text,
         proxyUrl: process.env.PROXY_URL || null,
       });
+    } else {
+      try {
+        result = await runJob('sendMessageNew', {
+          accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
+        }, 220_000);
+      } catch (sendNewErr) {
+        const sendNewReason = String(sendNewErr?.message || sendNewErr || '').toLowerCase();
+        const skipThreadFallback =
+          sendNewErr?.code === 'SEND_NOT_CONFIRMED' ||
+          sendNewErr?.status === 504 ||
+          sendNewReason.includes('timed out after') ||
+          sendNewReason.includes('session expired for account') ||
+          sendNewReason.includes('authenticated linkedin member state was not reached') ||
+          sendNewReason.includes('checkpoint/challenge is still pending') ||
+          sendNewReason.includes('login is not fully completed') ||
+          sendNewReason.includes('cookies missing');
+
+        if (skipThreadFallback) {
+          throw sendNewErr;
+        }
+
+        // Always try thread fallback before failing send-new.
+        // This helps when profile composer flow is flaky but an existing thread works.
+        const reason = String(sendNewErr?.message || sendNewErr || '');
+        console.warn(`[API] send-new failed for ${accountId}; trying thread fallback: ${reason}`);
+
+        // Reset browser context before inbox fallback to avoid stale/half-closed sessions.
+        await cleanupContext(accountId).catch(() => {});
+
+        let inboxResult;
+        try {
+          inboxResult = await runJob('readMessages', {
+            accountId,
+            limit: 100,
+            proxyUrl: process.env.PROXY_URL || null,
+          }, 90_000);
+        } catch (fallbackErr) {
+          const fallbackReason = String(fallbackErr?.message || fallbackErr || '');
+          console.warn(`[API] thread fallback inbox read failed for ${accountId}: ${fallbackReason}`);
+          throw sendNewErr;
+        }
+
+        const normalizedTarget = normalizeProfileUrlForCompare(profileUrl);
+        const matchedConversation = (inboxResult?.items || []).find((item) => {
+          const participantUrl = item?.participants?.[0]?.profileUrl || '';
+          return (
+            participantUrl &&
+            normalizeProfileUrlForCompare(participantUrl) === normalizedTarget
+          );
+        });
+
+        if (!matchedConversation?.id) throw sendNewErr;
+
+        const matchedChatId = normalizeThreadId(accountId, matchedConversation.id);
+        if (!matchedChatId || matchedChatId.startsWith('activity-') || matchedChatId.startsWith('fallback-')) {
+          throw sendNewErr;
+        }
+
+        result = await runJob('sendMessage', {
+          accountId,
+          chatId: matchedChatId,
+          text,
+          proxyUrl: process.env.PROXY_URL || null,
+        });
+      }
     }
 
     await persistOptimisticSendNewResult({
       accountId,
-      profileUrl,
+      profileUrl: profileUrl || '',
       text,
       result,
     });
@@ -2209,9 +2256,11 @@ app.post('/messages/send-new', async (req, res) => {
   } catch (err) {
     if (res.headersSent) return;
     const status = err.status || (err.message ? 400 : 500);
+    const retryAfterSec = applyRetryAfterHeader(res, err);
     res.status(status).json({
       error: toPublicOperationError(err),
       code: err.code,
+      retryAfterSec,
     });
   }
 });
@@ -2244,9 +2293,11 @@ app.get('/connections/unified', async (req, res) => {
     res.json(payload);
   } catch (err) {
     if (err?.status) {
+      const retryAfterSec = applyRetryAfterHeader(res, err);
       return res.status(err.status).json({
         error: toPublicOperationError(err),
         code: err.code,
+        retryAfterSec,
       });
     }
 
@@ -2322,9 +2373,11 @@ app.get('/inbox/unified', async (req, res) => {
         return res.json(livePayload);
       } catch (fallbackErr) {
         if (fallbackErr?.status) {
+          const retryAfterSec = applyRetryAfterHeader(res, fallbackErr);
           return res.status(fallbackErr.status).json({
             error: toPublicOperationError(fallbackErr),
             code: fallbackErr.code,
+            retryAfterSec,
           });
         }
         console.error('[API] Error in fallback unified inbox:', fallbackErr);

@@ -51,6 +51,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
     const url =
       process.env.NEXT_PUBLIC_WS_URL ||
+      process.env.NEXT_PUBLIC_API_URL ||
       (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
     console.debug(`[WebSocketProvider] connect requested url=${url}`);
     wsClient.connect(url);

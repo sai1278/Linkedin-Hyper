@@ -14,6 +14,27 @@ const CLIENT_RETRYABLE_STATUSES = new Set([502, 503, 504]);
 const CLIENT_GET_RETRY_COUNT = 2;
 const CLIENT_GET_RETRY_DELAY_MS = 400;
 
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  retryAfterSec?: number;
+
+  constructor(message: string, options: { status: number; code?: string; retryAfterSec?: number }) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = options.status;
+    this.code = options.code;
+    this.retryAfterSec = options.retryAfterSec;
+  }
+}
+
+export type SendMessageRequest = {
+  accountId: string;
+  text: string;
+  profileUrl?: string;
+  chatId?: string;
+};
+
 export interface AccountSessionStatus {
   exists: boolean;
   savedAt?: number;
@@ -41,11 +62,24 @@ async function apiFetch<T>(path: string, options?: ApiFetchOptions): Promise<T> 
 
   if (!res.ok) {
     let errorDetail = res.statusText;
+    let errorCode: string | undefined;
+    const retryAfterRaw = res.headers.get('Retry-After');
+    let parsedRetryAfter = retryAfterRaw ? Number.parseInt(retryAfterRaw, 10) : NaN;
     try {
       const errBody = await res.json();
       if (errBody.error) errorDetail = errBody.error;
+      if (typeof errBody.code === 'string' && errBody.code.trim()) {
+        errorCode = errBody.code.trim();
+      }
+      if (!Number.isFinite(parsedRetryAfter) && Number.isFinite(Number.parseInt(String(errBody.retryAfterSec ?? ''), 10))) {
+        parsedRetryAfter = Number.parseInt(String(errBody.retryAfterSec), 10);
+      }
     } catch {}
-    throw new Error(`API ${res.status}: ${errorDetail}`);
+    throw new ApiError(`API ${res.status}: ${errorDetail}`, {
+      status: res.status,
+      code: errorCode,
+      retryAfterSec: Number.isFinite(parsedRetryAfter) ? parsedRetryAfter : undefined,
+    });
   }
 
   if (res.status === 204 || res.status === 205) {
@@ -241,21 +275,8 @@ export async function getUnifiedConnections(
   );
 }
 
-export async function sendMessage(
-  accountId: string,
-  chatId: string,
-  text: string
-): Promise<{ success: boolean }> {
-  return apiFetch<{ success: boolean }>('messages/send', {
-    method: 'POST',
-    body: JSON.stringify({ accountId, chatId, text }),
-  });
-}
-
 export async function sendMessageNew(
-  accountId: string,
-  profileUrl: string,
-  text: string
+  request: SendMessageRequest
 ): Promise<{
   id?: string;
   chatId?: string;
@@ -264,8 +285,21 @@ export async function sendMessageNew(
   createdAt?: string;
   isRead?: boolean;
 }> {
+  const body: Record<string, string> = {
+    accountId: request.accountId,
+    text: request.text,
+  };
+
+  if (request.profileUrl) {
+    body.profileUrl = request.profileUrl;
+  }
+
+  if (request.chatId) {
+    body.chatId = request.chatId;
+  }
+
   return apiFetch('messages/send-new', {
     method: 'POST',
-    body: JSON.stringify({ accountId, profileUrl, text }),
+    body: JSON.stringify(body),
   });
 }

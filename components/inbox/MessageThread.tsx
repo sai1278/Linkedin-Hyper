@@ -6,7 +6,7 @@ import { AlertCircle, ArrowLeft, CheckCheck, LoaderCircle, RotateCcw } from 'luc
 import { Avatar } from '@/components/ui/Avatar';
 import { AccountBadge } from '@/components/ui/AccountBadge';
 import { ReplyInput } from '@/components/inbox/ReplyInput';
-import { sendMessage, sendMessageNew } from '@/lib/api-client';
+import { sendMessageNew } from '@/lib/api-client';
 import { formatRelativeTime, formatTimestamp } from '@/lib/time-utils';
 import { ExportButton } from '@/components/ui/ExportButton';
 import toast from 'react-hot-toast';
@@ -150,15 +150,20 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
       const profileUrl = getConversationProfileUrl(activeConversation);
       let didSend = false;
 
-      // Prefer the higher-level profile send flow whenever we know who the
-      // participant is. It is much more resilient than thread-id replies.
+      // Keep one public send contract. Prefer profile-based sends when we have
+      // a stable LinkedIn profile URL, otherwise reuse the same send-new route
+      // with an existing chat id so older thread replies still work.
       if (profileUrl) {
-        await sendMessageNew(accountId, profileUrl, text);
+        await sendMessageNew({ accountId, profileUrl, text });
         didSend = true;
       } else if (isPreviewConversationId(activeConversation.conversationId)) {
         throw new Error('This preview conversation is missing a LinkedIn profile URL. Run sync and retry.');
       } else {
-        await sendMessage(accountId, activeConversation.conversationId, text);
+        await sendMessageNew({
+          accountId,
+          chatId: activeConversation.conversationId,
+          text,
+        });
         didSend = true;
       }
 

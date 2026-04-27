@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, WifiOff } from 'lucide-react';
 import type { Account, Conversation, Message } from '@/types/dashboard';
-import { getAccounts, getConversationThread, getUnifiedInbox, syncMessages } from '@/lib/api-client';
+import { ApiError, getAccounts, getConversationThread, getUnifiedInbox, syncMessages } from '@/lib/api-client';
 import { ConversationList } from '@/components/inbox/ConversationList';
 import { MessageThread } from '@/components/inbox/MessageThread';
 import { ConversationListSkeleton, MessageThreadSkeleton } from '@/components/ui/SkeletonLoader';
@@ -14,10 +14,6 @@ import { DASHBOARD_ROUTE_META } from '@/lib/dashboard-route-meta';
 import { getAccountLabel } from '@/lib/account-label';
 import toast from 'react-hot-toast';
 
-type InboxUpdatedPayload = {
-  conversations?: Conversation[];
-};
-
 type InboxNewMessagePayload = {
   chatId?: string;
 };
@@ -26,9 +22,7 @@ type StatusChangedPayload = {
   status?: 'connected' | 'disconnected' | 'reconnecting';
 };
 
-function isPreviewConversationId(conversationId: string): boolean {
-  return conversationId.startsWith('activity-') || conversationId.startsWith('fallback-');
-}
+const DEFAULT_RELOAD_BACKOFF_SEC = 30;
 
 function normalizeConversationValue(value: string | undefined | null): string {
   return String(value || '').trim().replace(/\/+$/, '').toLowerCase();
@@ -336,6 +330,8 @@ export default function InboxPage() {
   const [visibleLimit, setVisibleLimit] = useState(25);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isReloadingInbox, setIsReloadingInbox] = useState(false);
+  const [reloadCooldownUntil, setReloadCooldownUntil] = useState(0);
+  const [cooldownClock, setCooldownClock] = useState(Date.now());
   const [wsStatus, setWsStatus] = useState<'connected' | 'disconnected' | 'reconnecting'>(
     wsClient.isConnected ? 'connected' : 'disconnected'
   );
@@ -346,6 +342,18 @@ export default function InboxPage() {
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+
+  useEffect(() => {
+    if (reloadCooldownUntil <= Date.now()) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setCooldownClock(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [reloadCooldownUntil]);
 
   useEffect(() => {
     visibleLimitRef.current = visibleLimit;
@@ -462,6 +470,11 @@ export default function InboxPage() {
       setError(null);
       return inboxData.conversations;
     } catch (nextError) {
+      if (nextError instanceof ApiError && nextError.status === 429) {
+        const retryAfterSec = nextError.retryAfterSec ?? DEFAULT_RELOAD_BACKOFF_SEC;
+        setReloadCooldownUntil(Date.now() + (retryAfterSec * 1000));
+        setCooldownClock(Date.now());
+      }
       setError(nextError instanceof Error ? nextError.message : 'Failed to load inbox');
       return [];
     } finally {
@@ -532,7 +545,7 @@ export default function InboxPage() {
   }, [handleSelect]);
 
   useEffect(() => {
-    const unsubscribeInboxUpdate = wsClient.on('inbox:updated', (_data: InboxUpdatedPayload) => {
+    const unsubscribeInboxUpdate = wsClient.on('inbox:updated', () => {
       console.debug('[Inbox][WS] inbox:updated received');
       void (async () => {
         const nextConversations = await loadInbox();
@@ -592,6 +605,10 @@ export default function InboxPage() {
 
   const isLive = wsStatus === 'connected';
   const canLoadMore = conversations.length >= visibleLimit;
+  const reloadCooldownRemainingSec = Math.max(
+    0,
+    Math.ceil((reloadCooldownUntil - cooldownClock) / 1000)
+  );
   const liveTooltip = wsStatus === 'connected'
     ? 'Live means real-time inbox updates are connected. New messages should appear automatically.'
     : wsStatus === 'reconnecting'
@@ -627,6 +644,13 @@ export default function InboxPage() {
   }, [loadInbox]);
 
   const handleReloadInbox = useCallback(async () => {
+    if (reloadCooldownUntil > Date.now()) {
+      toast(`Please wait ${Math.max(1, Math.ceil((reloadCooldownUntil - Date.now()) / 1000))}s before syncing again.`, {
+        icon: 'i',
+      });
+      return;
+    }
+
     const scopedAccountId = selectedRef.current?.accountId || (filter !== 'all' ? filter : undefined);
     console.debug(`[Inbox] Sync & Reload requested accountId=${String(scopedAccountId || '')}`);
     if (!scopedAccountId) {
@@ -648,6 +672,11 @@ export default function InboxPage() {
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : 'Failed to sync inbox';
       console.warn(`[Inbox] Sync & Reload failed accountId=${scopedAccountId}: ${message}`);
+      if (nextError instanceof ApiError && nextError.status === 429) {
+        const retryAfterSec = nextError.retryAfterSec ?? DEFAULT_RELOAD_BACKOFF_SEC;
+        setReloadCooldownUntil(Date.now() + (retryAfterSec * 1000));
+        setCooldownClock(Date.now());
+      }
       toast.error(message);
       const nextConversations = await loadInbox();
       console.debug(`[Inbox] Reloaded unified inbox after failed sync accountId=${scopedAccountId} conversations=${nextConversations.length}`);
@@ -656,7 +685,7 @@ export default function InboxPage() {
       syncInFlightRef.current = false;
       setIsReloadingInbox(false);
     }
-  }, [filter, loadInbox, refreshSelectedConversation]);
+  }, [filter, loadInbox, refreshSelectedConversation, reloadCooldownUntil]);
 
   useEffect(() => {
     const syncWhenVisible = () => {
@@ -790,11 +819,15 @@ export default function InboxPage() {
               <button
                 type="button"
                 onClick={() => void handleReloadInbox()}
-                disabled={isReloadingInbox}
+                disabled={isReloadingInbox || reloadCooldownRemainingSec > 0}
                 className="button-outline inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium"
               >
                 <RefreshCw size={14} className={isReloadingInbox ? 'animate-spin' : ''} />
-                {isReloadingInbox ? 'Syncing inbox...' : 'Sync & Reload inbox'}
+                {isReloadingInbox
+                  ? 'Syncing inbox...'
+                  : reloadCooldownRemainingSec > 0
+                    ? `Retry in ${reloadCooldownRemainingSec}s`
+                    : 'Sync & Reload inbox'}
               </button>
             </div>
           </div>
