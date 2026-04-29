@@ -37,7 +37,15 @@ function normalizeThreadText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-const THREAD_MESSAGE_SELECTOR = '.msg-s-event-listitem, [data-view-name="messaging-message-list-item"]';
+const THREAD_MESSAGE_SELECTOR = [
+  '.msg-s-event-listitem',
+  '.msg-s-message-list__event',
+  '.msg-s-message-list__event--own-turn',
+  '.msg-s-message-list__event--other-turn',
+  '[data-view-name="messaging-message-list-item"]',
+  '[data-view-name="messaging-self-message"]',
+  '[data-view-name="messaging-remote-message"]',
+].join(', ');
 
 function getThreadSnapshotMessageKey(item) {
   const stableId = String(item?.id || '').trim();
@@ -113,6 +121,33 @@ function mergeThreadParticipant(existingParticipant, incomingParticipant) {
 async function extractThreadSnapshot(page, chatId, limit) {
   return page.evaluate(({ maxItems, currentChatId, messageSelector }) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const pickBestMessageText = (root) => {
+      if (!root) return '';
+
+      const selectorCandidates = [
+        '.msg-s-event__content',
+        '.msg-s-event__content [dir]',
+        '.msg-s-event__message',
+        '[data-view-name="messaging-message-body"]',
+        '[data-test-message-text]',
+        '.break-words',
+        '.body',
+      ];
+
+      const candidates = Array.from(
+        new Set(
+          [
+            root,
+            ...selectorCandidates.flatMap((selector) => Array.from(root.querySelectorAll(selector) || [])),
+          ]
+        )
+      )
+        .map((node) => normalize(node?.textContent))
+        .filter(Boolean)
+        .sort((left, right) => right.length - left.length);
+
+      return candidates[0] || '';
+    };
     const stableHash = (value) => {
       const input = String(value || '');
       let hash = 2166136261;
@@ -245,7 +280,9 @@ async function extractThreadSnapshot(page, chatId, limit) {
 
     for (const item of Array.from(items).slice(-maxItems)) {
       try {
-        const bodyEl = item.querySelector('.msg-s-event__content, .body');
+        const bodyEl =
+          item.querySelector('.msg-s-event__content, .msg-s-event__message, [data-view-name="messaging-message-body"], [data-test-message-text], .break-words, .body') ||
+          item;
         const timeEl = item.querySelector('time');
         const senderEl = item.querySelector('.msg-s-message-group__profile-link, .msg-s-event__link');
         const senderNameEl = item.querySelector(
@@ -255,9 +292,7 @@ async function extractThreadSnapshot(page, chatId, limit) {
           item.classList.contains('msg-s-message-list__event--own-turn') ||
           item.querySelector('[data-view-name="messaging-self-message"]') !== null;
 
-        if (!bodyEl) continue;
-
-        const text = normalize(bodyEl.textContent);
+        const text = pickBestMessageText(bodyEl);
         if (!text) continue;
 
         const rawTimeLabel = normalize(timeEl?.textContent || '');

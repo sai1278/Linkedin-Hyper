@@ -378,6 +378,12 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
               newMessages: actualNew,
             });
           }
+        } else if (!isSyntheticConversationId(conversationId)) {
+          log.warn('sync.thread_empty', {
+            threadId: conversationId,
+            previewTextPresent: Boolean(initialLastMessageText),
+            participantName,
+          });
         }
 
         // Small delay to avoid rate limits
