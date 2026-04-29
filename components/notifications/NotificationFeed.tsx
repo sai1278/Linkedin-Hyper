@@ -12,6 +12,7 @@ const TABS: { id: ActivityTab; label: string }[] = [
   { id: 'messageSent',    label: 'Messages'      },
   { id: 'connectionSent', label: 'Connections'   },
   { id: 'profileViewed',  label: 'Profile Views' },
+  { id: 'sync',           label: 'Sync'          },
 ];
 
 interface NotificationFeedProps {
@@ -77,7 +78,7 @@ export function NotificationFeed({
           {totalUnread > 0 && (
             <span
               className="text-xs font-bold px-2 py-0.5 rounded-full text-white"
-              style={{ background: '#6c63ff' }}
+              style={{ background: 'var(--accent)' }}
             >
               {totalUnread} entries
             </span>

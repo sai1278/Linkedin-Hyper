@@ -25,7 +25,7 @@ export function Avatar({ name, size = 'md', src }: AvatarProps) {
   return (
     <div
       className={`${sizeClasses[size]} rounded-full flex items-center justify-center font-semibold text-white flex-shrink-0`}
-      style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #4c1d95 100%)' }}
+      style={{ background: 'var(--accent)' }}
     >
       {canRenderImage ? (
         <img

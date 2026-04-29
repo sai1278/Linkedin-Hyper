@@ -138,4 +138,4 @@ export interface JobResult {
   error?: string;
 }
 
-export type ActivityTab = 'all' | 'messageSent' | 'connectionSent' | 'profileViewed';
+export type ActivityTab = 'all' | 'messageSent' | 'connectionSent' | 'profileViewed' | 'sync';
