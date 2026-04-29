@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "cookies:capture": "node scripts/cookies-operator.mjs capture",
+    "cookies:import": "node scripts/cookies-operator.mjs import",
+    "cookies:verify": "node scripts/cookies-operator.mjs verify",
+    "cookies:status": "node scripts/cookies-operator.mjs status"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

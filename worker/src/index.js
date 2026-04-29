@@ -1154,7 +1154,12 @@ app.post('/accounts/:accountId/session', async (req, res) => {
         });
       }
     }
-    res.json({ success: true, accountId, cookieCount: cookies.length });
+    res.json({
+      success: true,
+      accountId,
+      cookieCount: cookies.length,
+      message: `LinkedIn cookies imported successfully for account ${accountId}. Run verify next.`,
+    });
   } catch (err) {
     logger.error('session_import.failed', {
       accountId: String(req.params.accountId || ''),
@@ -1354,7 +1359,10 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
     const result = await verifySession({ accountId, proxyUrl });
 
     clearSessionIssue(accountId);
-    res.json(result);
+    res.json({
+      ...result,
+      message: `LinkedIn session verification succeeded for account ${accountId}.`,
+    });
   } catch (err) {
     if (['NO_SESSION', 'SESSION_EXPIRED', 'AUTHENTICATED_STATE_NOT_REACHED', 'COOKIES_MISSING'].includes(err?.code)) {
       markSessionIssue(req.params.accountId, {
