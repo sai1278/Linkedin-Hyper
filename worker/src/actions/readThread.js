@@ -55,9 +55,7 @@ function isLowSignalParticipantName(value) {
 
 const THREAD_MESSAGE_SELECTOR = [
   '.msg-s-event-listitem',
-  '.msg-s-message-list__event',
-  '.msg-s-message-list__event--own-turn',
-  '.msg-s-message-list__event--other-turn',
+  '[data-view-name="message-list-item"]',
   '[data-view-name="messaging-message-list-item"]',
   '[data-view-name="messaging-self-message"]',
   '[data-view-name="messaging-remote-message"]',
@@ -147,7 +145,7 @@ async function extractThreadSnapshot(page, chatId, limit) {
     const skipReasons = {
       missingText: 0,
       malformed: 0,
-      lowSignalSender: 0,
+      senderFallbackUsed: 0,
       idCollisionResolved: 0,
     };
     const pickBestMessageText = (root) => {
@@ -258,6 +256,44 @@ async function extractThreadSnapshot(page, chatId, limit) {
       }
       return values;
     };
+    const extractMessageUrnId = (candidateValue) => {
+      const value = normalize(candidateValue);
+      if (!value) return '';
+
+      const compositeMatch = value.match(
+        /urn:li:(?:msg|fsd)_message:\((?:[^,]+),\s*([^)\s]+)\)/i
+      );
+      if (compositeMatch?.[1]) {
+        return compositeMatch[1];
+      }
+
+      const directMatch = value.match(/(?:urn:li:)?(?:msg|fsd)_message:([^,\s)]+)/i);
+      if (directMatch?.[1]) {
+        return directMatch[1];
+      }
+
+      return '';
+    };
+    const resolveSenderName = (item) => {
+      const directName = normalize(
+        item.querySelector(
+          '.msg-s-message-group__name, .msg-s-message-group__profile-link, .msg-s-event__link, [data-anonymize="person-name"]'
+        )?.textContent
+      );
+      if (directName) return directName;
+
+      const imageAlt = normalize(
+        item.querySelector('.msg-s-event-listitem__profile-picture')?.getAttribute('alt')
+      );
+      if (imageAlt) return imageAlt;
+
+      const imageTitle = normalize(
+        item.querySelector('.msg-s-event-listitem__profile-picture')?.getAttribute('title')
+      );
+      if (imageTitle) return imageTitle;
+
+      return 'Unknown';
+    };
     const extractStableMessageId = (item, bodyEl, timeEl, senderName, text, isSelf) => {
       const candidates = [
         ...collectCandidateAttributes(item),
@@ -269,17 +305,21 @@ async function extractThreadSnapshot(page, chatId, limit) {
         const candidateName = candidate?.name || 'unknown';
         const lowerCandidate = candidateValue.toLowerCase();
 
+        const messageUrnId = extractMessageUrnId(candidateValue);
+        if (
+          messageUrnId &&
+          !messageUrnId.toLowerCase().includes('fsd_profile:') &&
+          !messageUrnId.toLowerCase().includes('fs_profile:')
+        ) {
+          return `li-msg-${messageUrnId}`;
+        }
+
         if (
           lowerCandidate.includes('fsd_profile:') ||
           lowerCandidate.includes('fs_profile:') ||
           lowerCandidate.includes('profile-displayphoto')
         ) {
           continue;
-        }
-
-        const urnMatch = candidateValue.match(/(?:urn:li:)?fsd?_message:([^,\s)]+)/i);
-        if (urnMatch?.[1]) {
-          return `li-msg-${urnMatch[1]}`;
         }
 
         if (
@@ -336,13 +376,21 @@ async function extractThreadSnapshot(page, chatId, limit) {
           item.querySelector('.msg-s-event__content, .msg-s-event__message, .msg-s-event-listitem__body, [data-view-name="messaging-message-body"], [data-test-message-content], [data-test-message-text], .break-words, .body') ||
           item;
         const timeEl = item.querySelector('time');
-        const senderEl = item.querySelector('.msg-s-message-group__profile-link, .msg-s-event__link');
-        const senderNameEl = item.querySelector(
-          '.msg-s-message-group__name, .msg-s-message-group__profile-link, .msg-s-event__link, [data-anonymize="person-name"]'
+        const senderEl = item.querySelector(
+          '.msg-s-event-listitem__link[href*="/in/"], .msg-s-message-group__profile-link[href*="/in/"], .msg-s-event__link[href*="/in/"], a[href*="/in/"]'
+        );
+        const hasVisibleMessageBubble = Boolean(
+          item.querySelector('.msg-s-event-listitem__message-bubble, .msg-s-event__content, .msg-s-event-listitem__body')
+        );
+        const hasSenderIdentity = Boolean(
+          item.querySelector(
+            '.msg-s-event-listitem__link[href*="/in/"], .msg-s-message-group__meta, .msg-s-message-group__profile-link, .msg-s-event__link, [data-anonymize="person-name"]'
+          )
         );
         const isSelf =
           item.classList.contains('msg-s-message-list__event--own-turn') ||
-          item.querySelector('[data-view-name="messaging-self-message"]') !== null;
+          item.querySelector('[data-view-name="messaging-self-message"]') !== null ||
+          (hasVisibleMessageBubble && !hasSenderIdentity);
 
         const text = pickBestMessageText(bodyEl);
         if (!text) {
@@ -353,9 +401,9 @@ async function extractThreadSnapshot(page, chatId, limit) {
         const rawTimeLabel = normalize(timeEl?.textContent || '');
         const exactDatetime = timeEl?.getAttribute('datetime') || '';
         const createdAt = exactDatetime || parseLooseTimestamp(rawTimeLabel) || '';
-        const senderName = isSelf ? '__self__' : normalize(senderNameEl?.textContent) || 'Unknown';
+        const senderName = isSelf ? '__self__' : resolveSenderName(item);
         if (!isSelf && senderName === 'Unknown') {
-          skipReasons.lowSignalSender += 1;
+          skipReasons.senderFallbackUsed += 1;
         }
         const msgId = extractStableMessageId(item, bodyEl, timeEl, senderName, text, isSelf);
 
@@ -403,8 +451,7 @@ async function extractThreadSnapshot(page, chatId, limit) {
         extractedCount: normalizedResults.length,
         skippedCount:
           Number(skipReasons.missingText || 0) +
-          Number(skipReasons.malformed || 0) +
-          Number(skipReasons.lowSignalSender || 0),
+          Number(skipReasons.malformed || 0),
         skipReasons,
       },
     };
@@ -533,21 +580,26 @@ async function readThreadInternal({
     let messages = [];
     let previousCollectedCount = 0;
     let stablePasses = 0;
+    const debugPasses = [];
 
     for (let pass = 1; pass <= 8; pass += 1) {
       const snapshot = await extractThreadSnapshot(page, chatId, limit);
       participant = mergeThreadParticipant(participant, snapshot?.participant);
       messages = mergeThreadSnapshotItems(messages, snapshot?.items || [], limit);
-
-      logger.debug('thread.snapshot_pass', {
-        accountId,
-        threadId: chatId,
+      const passStats = {
         pass,
         visibleCount: Number(snapshot?.stats?.visibleCount || (snapshot?.items || []).length || 0),
         extractedCount: Number(snapshot?.stats?.extractedCount || (snapshot?.items || []).length || 0),
         collectedCount: messages.length,
         skippedCount: Number(snapshot?.stats?.skippedCount || 0),
         skipReasons: snapshot?.stats?.skipReasons || {},
+      };
+      debugPasses.push(passStats);
+
+      logger.debug('thread.snapshot_pass', {
+        accountId,
+        threadId: chatId,
+        ...passStats,
       });
 
       if (
@@ -622,7 +674,16 @@ async function readThreadInternal({
       });
     }
 
-    return { items: messages, participant, cursor: null, hasMore: false };
+    return {
+      items: messages,
+      participant,
+      cursor: null,
+      hasMore: false,
+      debug: {
+        passes: debugPasses,
+        finalCollectedCount: messages.length,
+      },
+    };
   } catch (err) {
     if (__attempt < 2 && isRecoverableBrowserError(err)) {
       await cleanupContext(accountId).catch(() => {});
