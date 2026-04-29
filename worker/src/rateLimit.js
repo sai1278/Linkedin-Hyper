@@ -1,6 +1,7 @@
 'use strict';
 
 const { getRedis } = require('./redisClient');
+const { recordRateLimitBlocked } = require('./utils/metrics');
 
 const DAY_SECONDS = 86400;
 const HOUR_SECONDS = 3600;
@@ -112,6 +113,7 @@ async function checkSimpleDailyLimit(accountId, action) {
   }
 
   if (current > limit) {
+    recordRateLimitBlocked(accountId, `${action.toUpperCase()}_DAILY_LIMIT`);
     throw buildRateLimitError(
       `Daily limit reached: ${action} (${current}/${limit}) for account ${accountId}`,
       secondsUntilMidnight
@@ -139,6 +141,7 @@ async function checkMessageSendLimit(accountId) {
     const secondsSinceLastSend = nowSec - lastSentSec;
     if (secondsSinceLastSend < MESSAGE_SEND_POLICY.minGapSeconds) {
       const retryAfterSec = MESSAGE_SEND_POLICY.minGapSeconds - secondsSinceLastSend;
+      recordRateLimitBlocked(accountId, 'SEND_COOLDOWN');
       throw buildRateLimitError(
         `Send cooldown active for account ${accountId}. Wait ${retryAfterSec}s before sending again.`,
         retryAfterSec
@@ -149,6 +152,7 @@ async function checkMessageSendLimit(accountId) {
   const hourlyCount = history.filter((timestamp) => timestamp > nowSec - HOUR_SECONDS).length;
   if (hourlyCount >= MESSAGE_SEND_POLICY.hourlyLimit) {
     const retryAfterSec = Math.max(1, HOUR_SECONDS - (nowSec - history[history.length - hourlyCount]));
+    recordRateLimitBlocked(accountId, 'SEND_HOURLY_LIMIT');
     throw buildRateLimitError(
       `Hourly send limit reached (${hourlyCount}/${MESSAGE_SEND_POLICY.hourlyLimit}) for account ${accountId}`,
       retryAfterSec
@@ -159,6 +163,7 @@ async function checkMessageSendLimit(accountId) {
   if (burstCount >= MESSAGE_SEND_POLICY.burstLimit) {
     const burstAnchor = history[history.length - burstCount];
     const retryAfterSec = Math.max(1, MESSAGE_SEND_POLICY.burstWindowSeconds - (nowSec - burstAnchor));
+    recordRateLimitBlocked(accountId, 'SEND_BURST_LIMIT');
     throw buildRateLimitError(
       `Burst protection triggered for account ${accountId}. Wait ${retryAfterSec}s before sending another message.`,
       retryAfterSec
@@ -167,6 +172,7 @@ async function checkMessageSendLimit(accountId) {
 
   if (history.length >= MESSAGE_SEND_POLICY.dailyLimit) {
     const retryAfterSec = Math.max(1, Math.floor((getNextUtcMidnightMs() - nowMs) / 1000));
+    recordRateLimitBlocked(accountId, 'SEND_DAILY_LIMIT');
     throw buildRateLimitError(
       `Daily send limit reached (${history.length}/${MESSAGE_SEND_POLICY.dailyLimit}) for account ${accountId}`,
       retryAfterSec

@@ -5,6 +5,8 @@
 
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
+const { logger } = require('../utils/logger');
+const { recordDatabaseError } = require('../utils/metrics');
 
 let prisma = null;
 
@@ -34,7 +36,7 @@ function getPrisma() {
       await prisma.$disconnect();
     });
 
-    console.log('[Prisma] Database client initialized');
+    logger.info('prisma.client_initialized');
   }
 
   return prisma;
@@ -47,7 +49,7 @@ async function disconnectPrisma() {
   if (prisma) {
     await prisma.$disconnect();
     prisma = null;
-    console.log('[Prisma] Database client disconnected');
+    logger.info('prisma.client_disconnected');
   }
 }
 
@@ -61,7 +63,11 @@ async function checkDatabaseConnection() {
     await client.$queryRaw`SELECT 1`;
     return true;
   } catch (error) {
-    console.error('[Prisma] Database connection check failed:', error.message);
+    recordDatabaseError(error?.code || 'PRISMA_CHECK_FAILED');
+    logger.error('prisma.connection_check_failed', {
+      errorCode: error?.code || 'PRISMA_CHECK_FAILED',
+      error,
+    });
     return false;
   }
 }

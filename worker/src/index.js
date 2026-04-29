@@ -4,7 +4,7 @@ const express    = require('express');
 const crypto     = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { getQueue, getQueueEvents }   = require('./queue');
-const { startWorker }  = require('./worker');
+const { startWorker, getWorkerStatus }  = require('./worker');
 const {
   saveCookies,
   loadCookies,
@@ -22,6 +22,13 @@ const { sendMessageNew } = require('./actions/sendMessageNew');
 const { sendConnectionRequest } = require('./actions/connect');
 const { searchPeople } = require('./actions/searchPeople');
 const { getLimits }    = require('./rateLimit');
+const { createRequestLoggerMiddleware, logger } = require('./utils/logger');
+const { getMetricsSnapshot, recordMessageSent, recordSendFailure, recordSessionExpired, recordSyncResult } = require('./utils/metrics');
+const { DB_READ_TIMEOUT_MS, DB_WRITE_TIMEOUT_MS, isDatabaseUnavailable, recordDatabaseIssue, withTimeout } = require('./utils/database');
+const { registerPublicHealthRoute, registerInternalHealthRoutes } = require('./routes/health');
+const { registerMetricsRoutes } = require('./routes/metrics');
+const { registerSyncRoutes } = require('./routes/sync');
+const { registerInboxRoutes } = require('./routes/inbox');
 const {
   sanitizeText,
   sanitizeNote,
@@ -41,6 +48,7 @@ if (process.env.ACCOUNT_IDS) {
   }
 }
 
+app.use(createRequestLoggerMiddleware());
 app.use(express.json({ limit: '2mb' }));
 
 // Return JSON for malformed request bodies instead of Express HTML error page.
@@ -79,39 +87,6 @@ function requireApiKey(req, res, next) {
   }
 
   next();
-}
-
-function isDatabaseUnavailable(err) {
-  if (!err) return false;
-  const code = err.code || err?.meta?.code;
-  const message = err instanceof Error ? err.message : String(err);
-  return (
-    code === 'DB_TIMEOUT' ||
-    code === 'ECONNREFUSED' ||
-    code === 'P1001' ||
-    code === 'P2021' || // table does not exist
-    code === 'P2022' || // column does not exist
-    message.includes('ECONNREFUSED') ||
-    message.includes("Can't reach database server") ||
-    message.includes('does not exist in the current database')
-  );
-}
-
-async function withTimeout(promise, timeoutMs, code = 'DB_TIMEOUT') {
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      const err = new Error(`Operation timed out after ${timeoutMs}ms`);
-      err.code = code;
-      reject(err);
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    clearTimeout(timeoutId);
-  }
 }
 
 function applyRetryAfterHeader(res, err) {
@@ -493,7 +468,7 @@ async function buildHealthSummary() {
 
   let dbAccounts = [];
   try {
-    dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+    dbAccounts = await withTimeout(accountRepo.getAllAccounts(), DB_READ_TIMEOUT_MS);
   } catch (err) {
     if (!isDatabaseUnavailable(err)) {
       throw err;
@@ -628,7 +603,7 @@ async function buildStartupValidationReport() {
   }
 
   try {
-    const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+    const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), DB_READ_TIMEOUT_MS);
     checks.push({
       id: 'database',
       label: 'Database connectivity',
@@ -1003,6 +978,7 @@ let unifiedInboxCache = {
   payload: { conversations: [] },
 };
 let unifiedInboxInFlight = null;
+const liveThreadFallbacksInFlight = new Map();
 
 function invalidateUnifiedInboxCache(reason = 'unspecified') {
   unifiedInboxCache = {
@@ -1010,7 +986,35 @@ function invalidateUnifiedInboxCache(reason = 'unspecified') {
     payload: { conversations: [] },
   };
   unifiedInboxInFlight = null;
-  console.debug(`[Inbox] Unified inbox cache invalidated (${reason})`);
+  logger.debug('inbox.cache_invalidated', { reason });
+}
+
+function getUnifiedInboxCacheState() {
+  return {
+    expiresAt: unifiedInboxCache.expiresAt,
+    payload: {
+      conversations: Array.isArray(unifiedInboxCache.payload?.conversations)
+        ? [...unifiedInboxCache.payload.conversations]
+        : [],
+    },
+  };
+}
+
+async function dedupeInFlightFallback(map, key, factory) {
+  if (map.has(key)) {
+    return map.get(key);
+  }
+
+  const promise = (async () => factory())();
+  map.set(key, promise);
+
+  try {
+    return await promise;
+  } finally {
+    if (map.get(key) === promise) {
+      map.delete(key);
+    }
+  }
 }
 
 function normalizeConversationFromInboxItem(accountId, item) {
@@ -1257,7 +1261,6 @@ async function persistOptimisticSendNewResult({ accountId, profileUrl, text, res
 
   const parsedCreatedAt = new Date(result?.createdAt || Date.now());
   const createdAt = Number.isNaN(parsedCreatedAt.getTime()) ? new Date() : parsedCreatedAt;
-  const messageId = String(result?.id || `optimistic-${Date.now()}`);
 
   try {
     if (!participantProfileUrl && rawChatId && rawChatId !== 'new') {
@@ -1267,11 +1270,12 @@ async function persistOptimisticSendNewResult({ accountId, profileUrl, text, res
           sentAt: createdAt,
           sentByMe: true,
         }),
-        4000
+        DB_WRITE_TIMEOUT_MS
       );
-      console.debug(
-        `[send-new] Updated last message preview for existing thread ${conversationId}; optimistic message row skipped`
-      );
+      logger.debug('send_new.preview_updated', {
+        accountId,
+        conversationId,
+      });
       invalidateUnifiedInboxCache(`optimistic-send:${accountId}:${conversationId}`);
       return;
     }
@@ -1287,15 +1291,25 @@ async function persistOptimisticSendNewResult({ accountId, profileUrl, text, res
         lastMessageText: text,
         lastMessageSentByMe: true,
       }),
-      4000
+      DB_WRITE_TIMEOUT_MS
     );
-    console.debug(
-      `[send-new] Conversation preview persisted for ${conversationId}; optimistic message row skipped to avoid duplicate thread history`
-    );
+    logger.debug('send_new.preview_persisted', {
+      accountId,
+      conversationId,
+    });
     invalidateUnifiedInboxCache(`optimistic-send:${accountId}:${conversationId}`);
   } catch (err) {
     if (!isDatabaseUnavailable(err)) {
-      console.warn('[send-new] Optimistic DB persistence failed:', err?.message || String(err));
+      logger.warn('send_new.preview_persist_failed', {
+        accountId,
+        conversationId,
+        errorCode: err?.code || 'SEND_PREVIEW_PERSIST_FAILED',
+        error: err,
+      });
+    } else {
+      recordDatabaseIssue(logger.child({ accountId, conversationId }), err, {
+        stage: 'optimistic-send-preview',
+      });
     }
   }
 }
@@ -1321,13 +1335,18 @@ async function buildUnifiedInboxFromLive(limit = 100) {
     } catch (err) {
       const code = err?.code;
       if (code === 'NO_SESSION' || code === 'SESSION_EXPIRED') {
+        recordSessionExpired(accountId, code);
         markSessionIssue(accountId, {
           code,
           message: err?.message || 'LinkedIn session expired. Refresh cookies.',
         });
         sessionFailures.push({ accountId, code });
       } else if (code !== 'READ_INBOX_TIMEOUT') {
-        console.warn(`[Inbox] Live read failed for ${accountId}:`, err?.message || String(err));
+        logger.warn('inbox.live_read_failed', {
+          accountId,
+          errorCode: err?.code || 'INBOX_LIVE_READ_FAILED',
+          detail: err?.message || String(err),
+        });
       }
     }
   }
@@ -1393,16 +1412,10 @@ async function buildUnifiedInboxWithFallback(limit = 100) {
   }
 }
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', ts: new Date().toISOString() });
-});
-
 // â”€â”€ All routes below require API key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-app.use(requireApiKey);
-
 const { getRedis } = require('./redisClient');
-const { cleanupContext } = require('./browser');
+const { cleanupContext, getBrowserStats, isBrowserManagerReady } = require('./browser');
 const accountRepo = require('./db/repositories/AccountRepository');
 const exportRoutes = require('./routes/export');
 const { syncAccount, syncAllAccounts } = require('./services/messageSyncService');
@@ -1414,6 +1427,18 @@ const {
   markSyncStarted,
 } = require('./healthState');
 
+registerPublicHealthRoute(app, {
+  getRedis,
+  withTimeout,
+  accountRepo,
+  getWorkerStatus,
+  getBrowserStats,
+  isBrowserManagerReady,
+  logger,
+});
+
+app.use(requireApiKey);
+
 async function getKnownAccountIdsSet() {
   const ids = new Set(
     (await listKnownAccountIds())
@@ -1422,7 +1447,7 @@ async function getKnownAccountIdsSet() {
   );
 
   try {
-    const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+    const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), DB_READ_TIMEOUT_MS);
     for (const account of dbAccounts || []) {
       const id = String(account?.id || '').trim();
       if (id) ids.add(id);
@@ -1467,9 +1492,9 @@ async function assertConversationBelongsToAccount(accountId, conversationId) {
   let conversation = null;
 
   try {
-    conversation = await withTimeout(messageRepo.getConversationById(rawChatId), 4000);
+    conversation = await withTimeout(messageRepo.getConversationById(rawChatId), DB_READ_TIMEOUT_MS);
     if (!conversation && normalizedChatId !== rawChatId) {
-      conversation = await withTimeout(messageRepo.getConversationById(normalizedChatId), 4000);
+      conversation = await withTimeout(messageRepo.getConversationById(normalizedChatId), DB_READ_TIMEOUT_MS);
     }
   } catch (err) {
     if (!isDatabaseUnavailable(err)) {
@@ -1501,73 +1526,28 @@ async function assertConversationBelongsToAccount(accountId, conversationId) {
 // Mount export routes
 app.use('/export', exportRoutes);
 
-app.get('/health/summary', async (_req, res) => {
-  try {
-    const summary = await buildHealthSummary();
-    res.json(summary);
-  } catch (err) {
-    console.error('[API] Health summary failed:', err);
-    res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
-  }
+registerInternalHealthRoutes(app, {
+  buildHealthSummary,
+  buildStartupValidationReport,
+  logger,
 });
 
-app.get('/health/startup-validation', async (_req, res) => {
-  try {
-    const report = await buildStartupValidationReport();
-    res.json(report);
-  } catch (err) {
-    console.error('[API] Startup validation failed:', err);
-    res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
-  }
+registerMetricsRoutes(app, {
+  getMetricsSnapshot,
+  getBrowserStats,
+  getWorkerStatus,
 });
 
-// POST /sync/messages - Manual message sync trigger
-app.post('/sync/messages', async (req, res) => {
-  try {
-    const accountId = req.body?.accountId
-      ? await assertKnownAccountId(req.body.accountId)
-      : '';
-    const proxyUrl = process.env.PROXY_URL || null;
-    res.setTimeout(240_000, () => {
-      if (!res.headersSent) res.status(504).json({ error: 'Manual sync timed out' });
-    });
-
-    console.log('[API] Manual sync triggered', accountId ? `for account ${accountId}` : 'for all accounts');
-
-    if (accountId) {
-      console.log(`[API] Manual sync awaiting completion for account ${accountId}`);
-      const stats = await syncAccount(accountId, proxyUrl, { source: 'manual' });
-      invalidateUnifiedInboxCache(`manual-sync:${accountId}`);
-      console.log('[API] Manual sync completed:', stats);
-
-      res.json({ 
-        success: true, 
-        message: `Sync completed for account ${accountId}`,
-        accountId,
-        completed: true,
-        stats,
-      });
-    } else {
-      // Bulk sync remains backgrounded because it can legitimately run for minutes
-      // across multiple accounts and the dashboard button is scoped to one account.
-      const configuredIds = (process.env.ACCOUNT_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
-      markBulkSyncStarted(configuredIds, 'manual');
-      syncAllAccounts(proxyUrl, { source: 'manual' })
-        .then(stats => {
-          invalidateUnifiedInboxCache('manual-sync:all-accounts');
-          console.log('[API] Manual sync completed:', stats);
-        })
-        .catch(err => console.error('[API] Manual sync failed:', err));
-      
-      res.json({ 
-        success: true, 
-        message: 'Sync started for all accounts',
-      });
-    }
-  } catch (err) {
-    const retryAfterSec = applyRetryAfterHeader(res, err);
-    res.status(err.status || 500).json({ error: err.message, code: err.code, retryAfterSec });
-  }
+registerSyncRoutes(app, {
+  assertKnownAccountId,
+  applyRetryAfterHeader,
+  syncAccount,
+  syncAllAccounts,
+  invalidateUnifiedInboxCache,
+  markBulkSyncStarted,
+  recordSyncResult,
+  recordSessionExpired,
+  logger,
 });
 
 // GET /accounts
@@ -1576,13 +1556,20 @@ app.get('/accounts', async (_req, res) => {
     const ids = new Set(await listKnownAccountIds());
 
     try {
-      const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+      const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), DB_READ_TIMEOUT_MS);
       for (const acc of dbAccounts) {
         if (acc?.id) ids.add(acc.id);
       }
     } catch (dbErr) {
       if (!isDatabaseUnavailable(dbErr)) {
-        console.warn('[Accounts] Could not read account list from database:', dbErr.message);
+        logger.warn('accounts.list_db_read_failed', {
+          errorCode: dbErr?.code || 'ACCOUNTS_DB_READ_FAILED',
+          error: dbErr,
+        });
+      } else {
+        recordDatabaseIssue(logger.child({ route: '/accounts' }), dbErr, {
+          stage: 'get-all-accounts',
+        });
       }
     }
 
@@ -1622,15 +1609,27 @@ app.post('/accounts/:accountId/session', async (req, res) => {
     await saveCookies(accountId, cookies, { requireAuthCookies: true, source: 'api-import' });
     clearSessionIssue(accountId);
     try {
-      await withTimeout(accountRepo.upsertAccount(accountId, accountId), 4000);
+      await withTimeout(accountRepo.upsertAccount(accountId, accountId), DB_WRITE_TIMEOUT_MS);
     } catch (dbErr) {
       if (!isDatabaseUnavailable(dbErr)) {
-        console.warn('[Session Import] Failed to upsert account in database:', dbErr.message);
+        logger.warn('session_import.account_upsert_failed', {
+          accountId,
+          errorCode: dbErr?.code || 'SESSION_IMPORT_DB_WRITE_FAILED',
+          error: dbErr,
+        });
+      } else {
+        recordDatabaseIssue(logger.child({ accountId, route: '/accounts/:accountId/session' }), dbErr, {
+          stage: 'session-import-upsert',
+        });
       }
     }
     res.json({ success: true, accountId, cookieCount: cookies.length });
   } catch (err) {
-    console.error('[Session Import]', err.message);
+    logger.error('session_import.failed', {
+      accountId: String(req.params.accountId || ''),
+      errorCode: err?.code || 'SESSION_IMPORT_FAILED',
+      error: err,
+    });
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
   }
 });
@@ -1894,14 +1893,14 @@ app.get('/messages/thread', async (req, res) => {
     try {
       dbMessages = await withTimeout(
         messageRepo.getMessagesByConversation(chatId, limit, offset),
-        4000
+        DB_READ_TIMEOUT_MS
       );
 
       // Support prefixed IDs from unified fallback (accountId:rawChatId).
       if (dbMessages.length === 0 && normalizedChatId !== chatId) {
         dbMessages = await withTimeout(
           messageRepo.getMessagesByConversation(normalizedChatId, limit, offset),
-          4000
+          DB_READ_TIMEOUT_MS
         );
       }
     } catch (dbErr) {
@@ -1911,7 +1910,13 @@ app.get('/messages/thread', async (req, res) => {
     const dbItems = mapDbMessagesToApiItems(dbMessages);
 
     if (dbItems.length > 0 && !refresh) {
-      console.log(`[Thread] Returning cached DB thread for ${accountId}/${normalizedChatId}: db=${dbItems.length} refresh=0 limit=${limit}`);
+      logger.debug('thread.cached_db_returned', {
+        accountId,
+        threadId: normalizedChatId,
+        dbCount: dbItems.length,
+        refresh: 0,
+        limit,
+      });
       return res.json({
         items: dbItems,
         cursor: null,
@@ -1984,35 +1989,56 @@ app.get('/messages/thread', async (req, res) => {
     let liveThread = null;
     let liveItems = [];
     if (normalizedChatId.startsWith('fallback-')) {
-      console.log(`[Thread] Skipping live thread fetch for unresolved conversation ${normalizedChatId}`);
+      logger.debug('thread.live_fetch_skipped_unresolved', {
+        accountId,
+        threadId: normalizedChatId,
+      });
     } else {
-      try {
-        liveThread = await runJob('readThread', {
-          accountId,
-          chatId: normalizedChatId,
-          proxyUrl,
-          limit,
-        });
-      } catch (queueErr) {
-        const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
-        const isQueueConnectivityError =
-          msg.includes('Connection is closed') ||
-          msg.includes('ECONNREFUSED') ||
-          msg.includes('ENOTFOUND') ||
-          msg.includes('getaddrinfo');
+      const liveFallbackKey = `${accountId}|${normalizedChatId}|${limit}`;
+      const resolvedLiveThread = await dedupeInFlightFallback(
+        liveThreadFallbacksInFlight,
+        liveFallbackKey,
+        async () => {
+          try {
+            return await runJob('readThread', {
+              accountId,
+              chatId: normalizedChatId,
+              proxyUrl,
+              limit,
+            });
+          } catch (queueErr) {
+            const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+            const isQueueConnectivityError =
+              msg.includes('Connection is closed') ||
+              msg.includes('ECONNREFUSED') ||
+              msg.includes('ENOTFOUND') ||
+              msg.includes('getaddrinfo');
 
-        if (!isQueueConnectivityError) throw queueErr;
-        console.warn('[Thread] Queue unavailable, falling back to direct readThread:', msg);
-        liveThread = await readThread({ accountId, chatId: normalizedChatId, proxyUrl, limit });
-      }
+            if (!isQueueConnectivityError) throw queueErr;
+            logger.warn('thread.queue_fallback_direct_read', {
+              accountId,
+              threadId: normalizedChatId,
+              errorCode: 'QUEUE_UNAVAILABLE',
+              detail: msg,
+            });
+            return readThread({ accountId, chatId: normalizedChatId, proxyUrl, limit });
+          }
+        }
+      );
 
+      liveThread = resolvedLiveThread;
       liveItems = mapLiveMessagesToApiItems(liveThread?.items, normalizedChatId, accountId);
     }
 
     const mergedThreadItems = mergeApiThreadItems(dbItems, liveItems);
-    console.log(
-      `[Thread] Merge summary accountId=${accountId} threadId=${normalizedChatId} db=${dbItems.length} live=${liveItems.length} merged=${mergedThreadItems.length} refresh=${refresh ? 1 : 0}`
-    );
+    logger.info('thread.merge_summary', {
+      accountId,
+      threadId: normalizedChatId,
+      existingDbMessageCount: dbItems.length,
+      incomingMessageCount: liveItems.length,
+      finalMessageCount: mergedThreadItems.length,
+      refresh: refresh ? 1 : 0,
+    });
 
     // Best-effort persistence so next load comes from DB.
     if (liveItems.length > 0) {
@@ -2033,7 +2059,7 @@ app.get('/messages/thread', async (req, res) => {
           lastMessageAt: new Date(latestLive.createdAt),
           lastMessageText: latestLive.text || '',
           lastMessageSentByMe: latestLive.senderId === '__self__',
-        }), 4000);
+        }), DB_WRITE_TIMEOUT_MS);
 
         for (const item of liveItems) {
           await withTimeout(messageRepo.upsertMessage({
@@ -2046,19 +2072,33 @@ app.get('/messages/thread', async (req, res) => {
             isSentByMe: item.senderId === '__self__',
             linkedinMessageId: item.id,
             timestampInferred: item.hasExactTimestamp !== true,
-          }), 4000);
+          }), DB_WRITE_TIMEOUT_MS);
         }
       } catch (persistErr) {
         if (!isDatabaseUnavailable(persistErr)) {
-          console.warn('[Thread] Live fallback persistence failed:', persistErr.message || String(persistErr));
+          logger.warn('thread.live_persist_failed', {
+            accountId,
+            threadId: normalizedChatId,
+            errorCode: persistErr?.code || 'THREAD_PERSIST_FAILED',
+            error: persistErr,
+          });
+        } else {
+          recordDatabaseIssue(logger.child({ accountId, threadId: normalizedChatId }), persistErr, {
+            stage: 'thread-live-persist',
+          });
         }
       }
     }
 
     if (mergedThreadItems.length > 0) {
-      console.log(
-        `[Thread] Returning merged thread for ${accountId}/${normalizedChatId}: db=${dbItems.length}, live=${liveItems.length}, merged=${mergedThreadItems.length}, limit=${limit}`
-      );
+      logger.debug('thread.merged_returned', {
+        accountId,
+        threadId: normalizedChatId,
+        existingDbMessageCount: dbItems.length,
+        incomingMessageCount: liveItems.length,
+        finalMessageCount: mergedThreadItems.length,
+        limit,
+      });
       return res.json({
         items: mergedThreadItems,
         cursor: null,
@@ -2070,13 +2110,13 @@ app.get('/messages/thread', async (req, res) => {
       try {
         let conversation = await withTimeout(
           messageRepo.getConversationById(chatId),
-          4000
+          DB_READ_TIMEOUT_MS
         );
 
         if (!conversation && normalizedChatId !== chatId) {
           conversation = await withTimeout(
             messageRepo.getConversationById(normalizedChatId),
-            4000
+            DB_READ_TIMEOUT_MS
           );
         }
 
@@ -2106,7 +2146,16 @@ app.get('/messages/thread', async (req, res) => {
         }
       } catch (previewErr) {
         if (!isDatabaseUnavailable(previewErr)) {
-          console.warn('[Thread] Preview fallback failed:', previewErr.message || String(previewErr));
+          logger.warn('thread.preview_fallback_failed', {
+            accountId,
+            threadId: normalizedChatId,
+            errorCode: previewErr?.code || 'THREAD_PREVIEW_FALLBACK_FAILED',
+            error: previewErr,
+          });
+        } else {
+          recordDatabaseIssue(logger.child({ accountId, threadId: normalizedChatId }), previewErr, {
+            stage: 'thread-preview-fallback',
+          });
         }
       }
     }
@@ -2136,6 +2185,7 @@ app.post('/messages/send', async (req, res) => {
 });
 
 app.post('/messages/send-new', async (req, res) => {
+  const log = (req.log || logger).child({ route: '/messages/send-new' });
   try {
     const accountId = await assertKnownAccountId(req.body?.accountId);
     const rawProfileUrl = String(req.body?.profileUrl || '').trim();
@@ -2200,7 +2250,11 @@ app.post('/messages/send-new', async (req, res) => {
         // Always try thread fallback before failing send-new.
         // This helps when profile composer flow is flaky but an existing thread works.
         const reason = String(sendNewErr?.message || sendNewErr || '');
-        console.warn(`[API] send-new failed for ${accountId}; trying thread fallback: ${reason}`);
+        log.warn('send_new.primary_failed_thread_fallback', {
+          accountId,
+          errorCode: sendNewErr?.code || 'SEND_NEW_PRIMARY_FAILED',
+          detail: reason,
+        });
 
         // Reset browser context before inbox fallback to avoid stale/half-closed sessions.
         await cleanupContext(accountId).catch(() => {});
@@ -2214,7 +2268,11 @@ app.post('/messages/send-new', async (req, res) => {
           }, 90_000);
         } catch (fallbackErr) {
           const fallbackReason = String(fallbackErr?.message || fallbackErr || '');
-          console.warn(`[API] thread fallback inbox read failed for ${accountId}: ${fallbackReason}`);
+          log.warn('send_new.thread_fallback_inbox_failed', {
+            accountId,
+            errorCode: fallbackErr?.code || 'THREAD_FALLBACK_INBOX_FAILED',
+            detail: fallbackReason,
+          });
           throw sendNewErr;
         }
 
@@ -2249,6 +2307,11 @@ app.post('/messages/send-new', async (req, res) => {
       text,
       result,
     });
+    recordMessageSent(accountId);
+    log.info('send_new.completed', {
+      accountId,
+      chatId: result?.chatId || normalizedChatId || null,
+    });
 
     if (!res.headersSent) {
       res.json(result);
@@ -2257,6 +2320,16 @@ app.post('/messages/send-new', async (req, res) => {
     if (res.headersSent) return;
     const status = err.status || (err.message ? 400 : 500);
     const retryAfterSec = applyRetryAfterHeader(res, err);
+    recordSendFailure(String(req.body?.accountId || 'unknown'), err?.code || 'SEND_NEW_FAILED');
+    if (['SESSION_EXPIRED', 'NO_SESSION', 'AUTHENTICATED_STATE_NOT_REACHED', 'COOKIES_MISSING'].includes(err?.code)) {
+      recordSessionExpired(String(req.body?.accountId || 'unknown'), err.code);
+    }
+    log.error('send_new.failed', {
+      accountId: String(req.body?.accountId || 'unknown'),
+      errorCode: err?.code || 'SEND_NEW_FAILED',
+      error: err,
+      retryAfterSec,
+    });
     res.status(status).json({
       error: toPublicOperationError(err),
       code: err.code,
@@ -2301,102 +2374,28 @@ app.get('/connections/unified', async (req, res) => {
       });
     }
 
-    console.error('[API] Error fetching unified connections:', err);
+    logger.error('connections.unified_failed', {
+      errorCode: err?.code || 'UNIFIED_CONNECTIONS_FAILED',
+      error: err,
+    });
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
   }
 });
 
-app.get('/inbox/unified', async (req, res) => {
-  try {
-    const messageRepo = require('./db/repositories/MessageRepository');
-    const limit = parseLimit(req.query.limit, 100, 200);
-    const offset = parseInt(req.query.offset) || 0;
-
-    // Query all conversations from database
-    const conversations = await withTimeout(
-      messageRepo.getAllConversationsWithMessages(limit, offset),
-      4000
-    );
-
-    // Transform to match expected frontend format
-    const payload = {
-      conversations: conversations.map(conv => ({
-        conversationId: conv.id,
-        accountId: conv.accountId,
-        participant: {
-          name: conv.participantName,
-          profileUrl: conv.participantProfileUrl || '',
-          avatarUrl: conv.participantAvatarUrl || null,
-        },
-        lastMessage: {
-          text: conv.lastMessageText,
-          sentAt: new Date(conv.lastMessageAt).getTime(),
-          sentByMe: conv.lastMessageSentByMe,
-        },
-        unreadCount: 0, // We don't track unread in database yet
-        messages: (conv.messages || []).map((message) => ({
-          id: message.linkedinMessageId || message.id,
-          text: message.text,
-          sentAt: new Date(message.sentAt).getTime(),
-          sentByMe: Boolean(message.isSentByMe),
-          senderName: message.senderName || (message.isSentByMe ? conv.accountId : 'Unknown'),
-        })),
-      })),
-    };
-
-    // Merge DB-backed conversations with recent activity so newly sent messages
-    // show in the UI even before full thread sync catches up.
-    const activityPayload = await buildUnifiedInboxFromActivity(limit);
-    const mergedConversations = dedupeAndSortConversations([
-      ...payload.conversations,
-      ...(activityPayload?.conversations || []),
-    ]).slice(0, limit);
-
-    if (mergedConversations.length === 0) {
-      const livePayload = await buildUnifiedInboxWithFallback(limit);
-      return res.json(livePayload);
-    }
-
-    const totalReturnedMessages = mergedConversations.reduce(
-      (sum, conversation) => sum + (Array.isArray(conversation.messages) ? conversation.messages.length : 0),
-      0
-    );
-    console.log(
-      `[API] Unified inbox returned conversations=${mergedConversations.length} messages=${totalReturnedMessages} limit=${limit} offset=${offset}`
-    );
-
-    res.json({ conversations: mergedConversations });
-  } catch (err) {
-    if (isDatabaseUnavailable(err)) {
-      try {
-        const livePayload = await buildUnifiedInboxWithFallback(parseLimit(req.query.limit, 100, 200));
-        return res.json(livePayload);
-      } catch (fallbackErr) {
-        if (fallbackErr?.status) {
-          const retryAfterSec = applyRetryAfterHeader(res, fallbackErr);
-          return res.status(fallbackErr.status).json({
-            error: toPublicOperationError(fallbackErr),
-            code: fallbackErr.code,
-            retryAfterSec,
-          });
-        }
-        console.error('[API] Error in fallback unified inbox:', fallbackErr);
-        return res.status(500).json({
-          error: process.env.NODE_ENV === 'production' ? 'Internal error' : fallbackErr.message,
-        });
-      }
-    }
-
-    if (err?.status) {
-      return res.status(err.status).json({
-        error: toPublicOperationError(err),
-        code: err.code,
-      });
-    }
-
-    console.error('[API] Error fetching unified inbox:', err);
-    res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
-  }
+registerInboxRoutes(app, {
+  messageRepo: require('./db/repositories/MessageRepository'),
+  parseLimit,
+  withTimeout,
+  isDatabaseUnavailable,
+  buildUnifiedInboxFromActivity,
+  dedupeAndSortConversations,
+  buildUnifiedInboxWithFallback,
+  getUnifiedInboxCacheState,
+  recordDatabaseIssue,
+  applyRetryAfterHeader,
+  toPublicOperationError,
+  logger,
+  readTimeoutMs: DB_READ_TIMEOUT_MS,
 });
 
 // !! IMPORTANT: /stats/all/summary MUST be declared BEFORE /stats/:accountId/summary
@@ -2534,6 +2533,6 @@ const server = http.createServer(app);
 initializeWebSocket(server);
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[API] Worker API listening on port ${PORT}`);
-  console.log(`[WebSocket] WebSocket server ready on port ${PORT}`);
+  logger.info('worker.api_listening', { port: PORT });
+  logger.info('worker.websocket_ready', { port: PORT });
 });

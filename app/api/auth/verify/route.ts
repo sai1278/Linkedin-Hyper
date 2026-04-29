@@ -23,6 +23,7 @@ export async function GET(req: NextRequest) {
     name: fallbackName,
     email: fallbackEmail,
     role: session.role || 'admin',
+    authMode: session.authMode || (session.userId ? 'user' : 'legacy'),
   };
 
   if (session.userId) {
@@ -34,6 +35,7 @@ export async function GET(req: NextRequest) {
           name: dbUser.name,
           email: dbUser.email,
           role: dbUser.role,
+          authMode: 'user',
         };
       }
     } catch (error) {

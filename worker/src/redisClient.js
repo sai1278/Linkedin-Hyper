@@ -2,6 +2,8 @@
 
 const Redis = require('ioredis');
 const { EventEmitter } = require('events');
+const { logger } = require('./utils/logger');
+const { recordRedisError } = require('./utils/metrics');
 
 let _redis = null;
 let _memoryRedis = null;
@@ -209,7 +211,7 @@ function createInMemoryRedis() {
   };
 
   _memoryRedis = client;
-  console.log('[Redis] DISABLE_REDIS=1 enabled, using in-memory fallback store');
+  logger.warn('redis.memory_fallback.enabled', { mode: 'in-memory' });
   return _memoryRedis;
 }
 
@@ -240,7 +242,11 @@ function getRedis() {
   });
 
   _redis.on('error', (err) => {
-    console.error('[Redis] Connection error:', err.message);
+    recordRedisError(err?.code || 'REDIS_CONNECTION_ERROR');
+    logger.error('redis.connection_error', {
+      errorCode: err?.code || 'REDIS_CONNECTION_ERROR',
+      error: err,
+    });
   });
 
   return _redis;
@@ -268,7 +274,11 @@ function createRedisClient() {
   });
 
   client.on('error', (err) => {
-    console.error('[Redis Client] Connection error:', err.message);
+    recordRedisError(err?.code || 'REDIS_CLIENT_CONNECTION_ERROR');
+    logger.error('redis.client_connection_error', {
+      errorCode: err?.code || 'REDIS_CLIENT_CONNECTION_ERROR',
+      error: err,
+    });
   });
 
   return client;
