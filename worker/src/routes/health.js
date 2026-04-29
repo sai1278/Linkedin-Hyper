@@ -3,11 +3,13 @@
 function registerPublicHealthRoute(app, deps) {
   const {
     getRedis,
+    getRedisRuntimeState,
     withTimeout,
     accountRepo,
     getWorkerStatus,
     getBrowserStats,
     isBrowserManagerReady,
+    getQueueStats,
     logger,
   } = deps;
 
@@ -21,6 +23,7 @@ function registerPublicHealthRoute(app, deps) {
       database: { status: 'unknown' },
       worker: { status: 'unknown' },
       browser: { status: 'unknown' },
+      queue: { status: 'unknown' },
     };
 
     let redisHealthy = false;
@@ -73,6 +76,26 @@ function registerPublicHealthRoute(app, deps) {
       busyAccounts: browserStats.busyAccounts,
     };
 
+    try {
+      const queueStats = typeof getQueueStats === 'function'
+        ? await withTimeout(getQueueStats(), 4_000, 'QUEUE_TIMEOUT')
+        : null;
+      const readyQueues = Number(queueStats?.readyQueues || 0);
+      const queueCount = Number(queueStats?.queueCount || 0);
+      dependencies.queue = {
+        status: queueCount === 0 || readyQueues === queueCount ? 'healthy' : 'degraded',
+        detail: queueCount === 0
+          ? 'No BullMQ queues initialized yet'
+          : `${readyQueues}/${queueCount} queue connection(s) ready`,
+        ...queueStats,
+      };
+    } catch (error) {
+      dependencies.queue = {
+        status: 'degraded',
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+
     const criticalHealthy = redisHealthy && databaseHealthy;
     const statusCode = criticalHealthy ? 200 : 503;
     const payload = {
@@ -84,6 +107,7 @@ function registerPublicHealthRoute(app, deps) {
         database: databaseHealthy,
       },
       dependencies,
+      redisRuntime: typeof getRedisRuntimeState === 'function' ? getRedisRuntimeState() : undefined,
     };
 
     log.info('health.checked', {
@@ -93,6 +117,7 @@ function registerPublicHealthRoute(app, deps) {
       database: dependencies.database.status,
       worker: dependencies.worker.status,
       browser: dependencies.browser.status,
+      queue: dependencies.queue.status,
     });
 
     res.status(statusCode).json(payload);

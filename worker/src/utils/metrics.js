@@ -93,6 +93,7 @@ function recordSyncResult(accountId, ok) {
 }
 
 function getMetricsSnapshot(extra = {}) {
+  const queueTotals = extra?.queue?.totals || {};
   return {
     generatedAt: Date.now(),
     counters: Object.fromEntries(Array.from(counters.entries()).sort(([left], [right]) => left.localeCompare(right))),
@@ -112,6 +113,10 @@ function getMetricsSnapshot(extra = {}) {
       rateLimitBlockedSendsTotal: getCounter('rateLimit.blockedSends'),
       syncSuccessTotal: getCounter('sync.success'),
       syncFailureTotal: getCounter('sync.failure'),
+      queueWaitingTotal: Number(queueTotals.waiting || 0),
+      queueActiveTotal: Number(queueTotals.active || 0),
+      queueDelayedTotal: Number(queueTotals.delayed || 0),
+      queueFailedTotal: Number(queueTotals.failed || 0),
     },
     ...extra,
   };

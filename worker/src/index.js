@@ -3,7 +3,7 @@
 const express    = require('express');
 const crypto     = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { getQueue, getQueueEvents }   = require('./queue');
+const { getQueue, getQueueEvents, getQueueStats }   = require('./queue');
 const { startWorker, getWorkerStatus }  = require('./worker');
 const {
   saveCookies,
@@ -17,10 +17,9 @@ const { verifySession } = require('./actions/login');
 const { readMessages } = require('./actions/readMessages');
 const { readConnections } = require('./actions/readConnections');
 const { readThread } = require('./actions/readThread');
-const { sendMessage } = require('./actions/sendMessage');
-const { sendMessageNew } = require('./actions/sendMessageNew');
 const { sendConnectionRequest } = require('./actions/connect');
 const { searchPeople } = require('./actions/searchPeople');
+const { runNamedJob } = require('./jobRunner');
 const { getLimits }    = require('./rateLimit');
 const { createRequestLoggerMiddleware, logger } = require('./utils/logger');
 const { getMetricsSnapshot, recordMessageSent, recordSendFailure, recordSessionExpired, recordSyncResult } = require('./utils/metrics');
@@ -346,10 +345,16 @@ function isGenericUiLabel(value) {
   const blocked = [
     'unknown',
     'inbox',
+    'message',
+    'messaging',
     'messages',
     'activity',
     'notifications',
     'notifications total',
+    'linkedin member',
+    'member',
+    'conversation',
+    'view profile',
     'loading',
     'linkedin',
     'feed',
@@ -375,6 +380,28 @@ function normalizeParticipantName(name, profileUrl) {
     return parsedName;
   }
   return deriveNameFromProfileUrl(profileUrl) || 'Unknown';
+}
+
+function buildPreviewMessagesFromInboxItem(accountId, item, rawConversationId, participantName) {
+  const previewText = normalizeWhitespace(item?.lastMessage?.text || '');
+  if (!previewText) {
+    return [];
+  }
+
+  const createdAt = item?.lastMessage?.createdAt || item?.createdAt || new Date().toISOString();
+  const sentAt = Number(new Date(createdAt).getTime()) || Date.now();
+  const sentByMe = item?.lastMessage?.senderId === '__self__';
+
+  return [{
+    id: `preview-${rawConversationId}-${sentAt}`,
+    chatId: rawConversationId,
+    senderId: sentByMe ? '__self__' : 'other',
+    text: previewText,
+    createdAt,
+    sentAt,
+    isSentByMe: sentByMe,
+    senderName: sentByMe ? accountId : participantName,
+  }];
 }
 
 function normalizeProfileUrlForCompare(url) {
@@ -1024,6 +1051,7 @@ function normalizeConversationFromInboxItem(accountId, item) {
   const rawId = String(item?.id || `unknown-${Date.now()}`);
   const createdAt = item?.lastMessage?.createdAt || item?.createdAt || new Date().toISOString();
   const sentAt = Number(new Date(createdAt).getTime()) || Date.now();
+  const previewMessages = buildPreviewMessagesFromInboxItem(accountId, item, rawId, participantName);
 
   return {
     conversationId: `${accountId}:${rawId}`,
@@ -1039,7 +1067,8 @@ function normalizeConversationFromInboxItem(accountId, item) {
       sentByMe: item?.lastMessage?.senderId === '__self__',
     },
     unreadCount: Number(item?.unreadCount) || 0,
-    messages: [],
+    messages: previewMessages,
+    degraded: true,
   };
 }
 
@@ -1154,6 +1183,7 @@ function mergeConversations(previous, current) {
     lastMessage: latest?.lastMessage || canonical?.lastMessage,
     unreadCount: Math.max(Number(previous?.unreadCount) || 0, Number(current?.unreadCount) || 0),
     messages,
+    degraded: Boolean(previous?.degraded || current?.degraded),
   };
 }
 
@@ -1361,12 +1391,20 @@ async function buildUnifiedInboxFromLive(limit = 100) {
 async function buildUnifiedInboxWithFallback(limit = 100) {
   const now = Date.now();
   if (unifiedInboxCache.expiresAt > now) {
-    return { conversations: unifiedInboxCache.payload.conversations.slice(0, limit) };
+    return {
+      conversations: unifiedInboxCache.payload.conversations.slice(0, limit),
+      degraded: true,
+      source: 'live-cache',
+    };
   }
 
   if (unifiedInboxInFlight) {
     const payload = await unifiedInboxInFlight;
-    return { conversations: payload.conversations.slice(0, limit) };
+    return {
+      conversations: payload.conversations.slice(0, limit),
+      degraded: true,
+      source: 'live-inflight',
+    };
   }
 
   unifiedInboxInFlight = (async () => {
@@ -1396,7 +1434,11 @@ async function buildUnifiedInboxWithFallback(limit = 100) {
       throw err;
     }
 
-    const payload = { conversations: combined.slice(0, limit) };
+    const payload = {
+      conversations: combined.slice(0, limit),
+      degraded: true,
+      source: 'live-fallback',
+    };
     unifiedInboxCache = {
       expiresAt: Date.now() + UNIFIED_INBOX_CACHE_TTL_MS,
       payload,
@@ -1406,7 +1448,11 @@ async function buildUnifiedInboxWithFallback(limit = 100) {
 
   try {
     const payload = await unifiedInboxInFlight;
-    return { conversations: payload.conversations.slice(0, limit) };
+    return {
+      conversations: payload.conversations.slice(0, limit),
+      degraded: true,
+      source: payload.source || 'live-fallback',
+    };
   } finally {
     unifiedInboxInFlight = null;
   }
@@ -1414,7 +1460,7 @@ async function buildUnifiedInboxWithFallback(limit = 100) {
 
 // â”€â”€ All routes below require API key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-const { getRedis } = require('./redisClient');
+const { getRedis, getRedisRuntimeState } = require('./redisClient');
 const { cleanupContext, getBrowserStats, isBrowserManagerReady } = require('./browser');
 const accountRepo = require('./db/repositories/AccountRepository');
 const exportRoutes = require('./routes/export');
@@ -1429,11 +1475,13 @@ const {
 
 registerPublicHealthRoute(app, {
   getRedis,
+  getRedisRuntimeState,
   withTimeout,
   accountRepo,
   getWorkerStatus,
   getBrowserStats,
   isBrowserManagerReady,
+  getQueueStats,
   logger,
 });
 
@@ -1536,6 +1584,7 @@ registerMetricsRoutes(app, {
   getMetricsSnapshot,
   getBrowserStats,
   getWorkerStatus,
+  getQueueStats,
 });
 
 registerSyncRoutes(app, {
@@ -1680,7 +1729,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
   const accountId   = data.accountId || 'default';
   const queue       = getQueue(accountId);
   const queueEvents = getQueueEvents(accountId);
-  const nonIdempotentJobs = new Set(['sendMessage', 'sendMessageNew', 'sendConnectionRequest']);
+  const nonIdempotentJobs = new Set(['sendMessageNew', 'sendConnectionRequest']);
   const selfRetryingJobs = new Set(['verifySession', 'readConnections', 'readMessages', 'readThread', 'searchPeople']);
   const dedupeWindowJobs = new Set(['messageSync']);
 
@@ -1805,28 +1854,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
 }
 
 async function runDirectJob(name, data) {
-  switch (name) {
-    case 'verifySession':
-      return verifySession(data);
-    case 'readMessages':
-      return readMessages(data);
-    case 'readConnections':
-      return readConnections(data);
-    case 'readThread':
-      return readThread(data);
-    case 'sendMessage':
-      return sendMessage(data);
-    case 'sendMessageNew':
-      return sendMessageNew(data);
-    case 'sendConnectionRequest':
-      return sendConnectionRequest(data);
-    case 'searchPeople':
-      return searchPeople(data);
-    case 'messageSync':
-      return syncAllAccounts(data.proxyUrl, { source: data.source });
-    default:
-      throw new Error(`Unknown job type: ${name}`);
-  }
+  return runNamedJob(name, data);
 }
 
 // â”€â”€ LinkedIn action endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2044,7 +2072,7 @@ app.get('/messages/thread', async (req, res) => {
     if (liveItems.length > 0) {
       try {
         const participantName =
-          (liveThread?.participant?.name && liveThread.participant.name !== 'Unknown')
+          (liveThread?.participant?.name && !isGenericUiLabel(liveThread.participant.name))
             ? liveThread.participant.name
             : (liveItems.find((m) => m.senderId !== '__self__' && m.senderName !== 'Unknown')?.senderName || 'Unknown');
         const participantProfileUrl = liveThread?.participant?.profileUrl || null;
@@ -2220,7 +2248,7 @@ app.post('/messages/send-new', async (req, res) => {
           code: 'THREAD_NOT_REPLYABLE',
         });
       }
-      result = await runJob('sendMessage', {
+      result = await runJob('sendMessageNew', {
         accountId,
         chatId: normalizedChatId,
         text,
@@ -2292,7 +2320,7 @@ app.post('/messages/send-new', async (req, res) => {
           throw sendNewErr;
         }
 
-        result = await runJob('sendMessage', {
+        result = await runJob('sendMessageNew', {
           accountId,
           chatId: matchedChatId,
           text,

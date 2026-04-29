@@ -93,6 +93,7 @@ function registerInboxRoutes(app, deps) {
               parseLimit(req.query.limit, 100, 200)
             ),
             stale: true,
+            degraded: true,
           });
         }
 

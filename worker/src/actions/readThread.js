@@ -3,6 +3,7 @@
 const { getAccountContext, cleanupContext, withAccountLock } = require('../browser');
 const { loadCookies, saveCookies } = require('../session');
 const { delay, humanScroll } = require('../humanBehavior');
+const { logger } = require('../utils/logger');
 
 function isAuthLandingUrl(url) {
   const value = String(url || '').toLowerCase();
@@ -35,6 +36,21 @@ function isSyntheticConversationId(chatId) {
 
 function normalizeThreadText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isLowSignalParticipantName(value) {
+  const normalized = normalizeThreadText(value).toLowerCase();
+  if (!normalized) return true;
+
+  return [
+    'unknown',
+    'messaging',
+    'message',
+    'messages',
+    'linkedin member',
+    'member',
+    'conversation',
+  ].includes(normalized);
 }
 
 const THREAD_MESSAGE_SELECTOR = [
@@ -113,7 +129,14 @@ function mergeThreadParticipant(existingParticipant, incomingParticipant) {
   const incomingProfileUrl = String(incomingParticipant?.profileUrl || '').trim();
 
   return {
-    name: existingName && existingName !== 'Unknown' ? existingName : (incomingName || 'Unknown'),
+    name:
+      existingName && !isLowSignalParticipantName(existingName)
+        ? existingName
+        : (
+            incomingName && !isLowSignalParticipantName(incomingName)
+              ? incomingName
+              : (existingName || incomingName || 'Unknown')
+          ),
     profileUrl: existingProfileUrl || incomingProfileUrl || null,
   };
 }
@@ -121,6 +144,12 @@ function mergeThreadParticipant(existingParticipant, incomingParticipant) {
 async function extractThreadSnapshot(page, chatId, limit) {
   return page.evaluate(({ maxItems, currentChatId, messageSelector }) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const skipReasons = {
+      missingText: 0,
+      malformed: 0,
+      lowSignalSender: 0,
+      idCollisionResolved: 0,
+    };
     const pickBestMessageText = (root) => {
       if (!root) return '';
 
@@ -128,7 +157,9 @@ async function extractThreadSnapshot(page, chatId, limit) {
         '.msg-s-event__content',
         '.msg-s-event__content [dir]',
         '.msg-s-event__message',
+        '.msg-s-event-listitem__body',
         '[data-view-name="messaging-message-body"]',
+        '[data-test-message-content]',
         '[data-test-message-text]',
         '.break-words',
         '.body',
@@ -212,18 +243,18 @@ async function extractThreadSnapshot(page, chatId, limit) {
       const values = [];
       if (!root) return values;
 
-      const pushValue = (value) => {
+      const pushValue = (name, value) => {
         const normalizedValue = normalize(value);
-        if (normalizedValue) values.push(normalizedValue);
+        if (normalizedValue) values.push({ name, value: normalizedValue });
       };
 
       const nodes = [root, ...Array.from(root.querySelectorAll?.('[data-event-urn],[data-urn],[data-message-id],[data-id],[id]') || [])];
       for (const node of nodes) {
-        pushValue(node.getAttribute?.('data-event-urn'));
-        pushValue(node.getAttribute?.('data-urn'));
-        pushValue(node.getAttribute?.('data-message-id'));
-        pushValue(node.getAttribute?.('data-id'));
-        pushValue(node.getAttribute?.('id'));
+        pushValue('data-event-urn', node.getAttribute?.('data-event-urn'));
+        pushValue('data-urn', node.getAttribute?.('data-urn'));
+        pushValue('data-message-id', node.getAttribute?.('data-message-id'));
+        pushValue('data-id', node.getAttribute?.('data-id'));
+        pushValue('id', node.getAttribute?.('id'));
       }
       return values;
     };
@@ -234,13 +265,37 @@ async function extractThreadSnapshot(page, chatId, limit) {
       ];
 
       for (const candidate of candidates) {
-        const urnMatch = candidate.match(/fsd?_message:([^,\s)]+)/i);
+        const candidateValue = candidate?.value || '';
+        const candidateName = candidate?.name || 'unknown';
+        const lowerCandidate = candidateValue.toLowerCase();
+
+        if (
+          lowerCandidate.includes('fsd_profile:') ||
+          lowerCandidate.includes('fs_profile:') ||
+          lowerCandidate.includes('profile-displayphoto')
+        ) {
+          continue;
+        }
+
+        const urnMatch = candidateValue.match(/(?:urn:li:)?fsd?_message:([^,\s)]+)/i);
         if (urnMatch?.[1]) {
           return `li-msg-${urnMatch[1]}`;
         }
-        const directIdMatch = candidate.match(/message[:/=-]([^,\s)]+)/i);
-        if (directIdMatch?.[1]) {
-          return `li-msg-${directIdMatch[1]}`;
+
+        if (
+          candidateName === 'data-message-id' &&
+          lowerCandidate &&
+          !lowerCandidate.includes('profile')
+        ) {
+          return `li-msg-${candidateValue}`;
+        }
+
+        if (
+          (candidateName === 'data-id' || candidateName === 'id') &&
+          lowerCandidate.includes('message') &&
+          !lowerCandidate.includes('profile')
+        ) {
+          return `li-msg-${stableHash(candidateValue)}`;
         }
       }
 
@@ -273,12 +328,12 @@ async function extractThreadSnapshot(page, chatId, limit) {
     };
 
     const results = [];
-    const items = document.querySelectorAll(messageSelector);
+    const items = Array.from(document.querySelectorAll(messageSelector)).slice(-maxItems);
 
-    for (const item of Array.from(items).slice(-maxItems)) {
+    for (const item of items) {
       try {
         const bodyEl =
-          item.querySelector('.msg-s-event__content, .msg-s-event__message, [data-view-name="messaging-message-body"], [data-test-message-text], .break-words, .body') ||
+          item.querySelector('.msg-s-event__content, .msg-s-event__message, .msg-s-event-listitem__body, [data-view-name="messaging-message-body"], [data-test-message-content], [data-test-message-text], .break-words, .body') ||
           item;
         const timeEl = item.querySelector('time');
         const senderEl = item.querySelector('.msg-s-message-group__profile-link, .msg-s-event__link');
@@ -290,12 +345,18 @@ async function extractThreadSnapshot(page, chatId, limit) {
           item.querySelector('[data-view-name="messaging-self-message"]') !== null;
 
         const text = pickBestMessageText(bodyEl);
-        if (!text) continue;
+        if (!text) {
+          skipReasons.missingText += 1;
+          continue;
+        }
 
         const rawTimeLabel = normalize(timeEl?.textContent || '');
         const exactDatetime = timeEl?.getAttribute('datetime') || '';
         const createdAt = exactDatetime || parseLooseTimestamp(rawTimeLabel) || '';
         const senderName = isSelf ? '__self__' : normalize(senderNameEl?.textContent) || 'Unknown';
+        if (!isSelf && senderName === 'Unknown') {
+          skipReasons.lowSignalSender += 1;
+        }
         const msgId = extractStableMessageId(item, bodyEl, timeEl, senderName, text, isSelf);
 
         results.push({
@@ -310,11 +371,43 @@ async function extractThreadSnapshot(page, chatId, limit) {
           hasExactTimestamp: Boolean(exactDatetime),
         });
       } catch (_) {
-        // skip malformed items
+        skipReasons.malformed += 1;
       }
     }
 
-    return { participant, items: results };
+    const idCounts = new Map();
+    for (const item of results) {
+      idCounts.set(item.id, (idCounts.get(item.id) || 0) + 1);
+    }
+
+    const normalizedResults = results.map((item) => {
+      if ((idCounts.get(item.id) || 0) <= 1) {
+        return item;
+      }
+
+      skipReasons.idCollisionResolved += 1;
+      const senderKey = item.senderId === '__self__' ? '__self__' : normalize(item.senderName).toLowerCase();
+      const textKey = normalize(item.text).toLowerCase();
+      const timeKey = normalize(item.createdAt || item.rawTimeLabel || '').toLowerCase();
+      return {
+        ...item,
+        id: `li-msg-${stableHash([currentChatId, senderKey, textKey, timeKey].join('|'))}`,
+      };
+    });
+
+    return {
+      participant,
+      items: normalizedResults,
+      stats: {
+        visibleCount: items.length,
+        extractedCount: normalizedResults.length,
+        skippedCount:
+          Number(skipReasons.missingText || 0) +
+          Number(skipReasons.malformed || 0) +
+          Number(skipReasons.lowSignalSender || 0),
+        skipReasons,
+      },
+    };
   }, { maxItems: limit, currentChatId: chatId, messageSelector: THREAD_MESSAGE_SELECTOR });
 }
 
@@ -446,9 +539,30 @@ async function readThreadInternal({
       participant = mergeThreadParticipant(participant, snapshot?.participant);
       messages = mergeThreadSnapshotItems(messages, snapshot?.items || [], limit);
 
-      console.debug(
-        `[readThread:${accountId}/${chatId}] pass=${pass} visible=${(snapshot?.items || []).length} collected=${messages.length}`
-      );
+      logger.debug('thread.snapshot_pass', {
+        accountId,
+        threadId: chatId,
+        pass,
+        visibleCount: Number(snapshot?.stats?.visibleCount || (snapshot?.items || []).length || 0),
+        extractedCount: Number(snapshot?.stats?.extractedCount || (snapshot?.items || []).length || 0),
+        collectedCount: messages.length,
+        skippedCount: Number(snapshot?.stats?.skippedCount || 0),
+        skipReasons: snapshot?.stats?.skipReasons || {},
+      });
+
+      if (
+        Number(snapshot?.stats?.visibleCount || 0) >= 10 &&
+        Number(snapshot?.stats?.extractedCount || 0) <= 1
+      ) {
+        logger.warn('thread.snapshot_under_collected', {
+          accountId,
+          threadId: chatId,
+          pass,
+          visibleCount: Number(snapshot?.stats?.visibleCount || 0),
+          extractedCount: Number(snapshot?.stats?.extractedCount || 0),
+          skipReasons: snapshot?.stats?.skipReasons || {},
+        });
+      }
 
       if (messages.length >= limit) {
         break;
@@ -456,7 +570,11 @@ async function readThreadInternal({
 
       const scrollState = await scrollThreadHistory(page);
       if (!scrollState?.found) {
-        console.debug(`[readThread:${accountId}/${chatId}] no scrollable thread container found`);
+        logger.debug('thread.snapshot_no_scrollable_container', {
+          accountId,
+          threadId: chatId,
+          pass,
+        });
         break;
       }
 
@@ -469,9 +587,12 @@ async function readThreadInternal({
       previousCollectedCount = messages.length;
 
       if (stablePasses >= 2) {
-        console.debug(
-          `[readThread:${accountId}/${chatId}] history growth stabilized after pass=${pass} collected=${messages.length}`
-        );
+        logger.debug('thread.snapshot_growth_stabilized', {
+          accountId,
+          threadId: chatId,
+          pass,
+          collectedCount: messages.length,
+        });
         break;
       }
 
@@ -485,7 +606,7 @@ async function readThreadInternal({
       }
     });
 
-    if (participant?.name === 'Unknown') {
+    if (isLowSignalParticipantName(participant?.name)) {
       const firstOther = messages.find(
         (m) => m.senderId !== '__self__' && m.senderName && m.senderName !== 'Unknown'
       );

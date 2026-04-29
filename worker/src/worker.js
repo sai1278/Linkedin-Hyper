@@ -4,16 +4,7 @@ const { Worker } = require('bullmq');
 const { createRedisClient }             = require('./redisClient');
 const { getQueueName } = require('./queue');
 const { logger } = require('./utils/logger');
-
-const { verifySession }         = require('./actions/login');
-const { readMessages }          = require('./actions/readMessages');
-const { readConnections }       = require('./actions/readConnections');
-const { readThread }            = require('./actions/readThread');
-const { sendMessage }           = require('./actions/sendMessage');
-const { sendMessageNew }        = require('./actions/sendMessageNew');
-const { sendConnectionRequest } = require('./actions/connect');
-const { searchPeople }          = require('./actions/searchPeople');
-const { syncAllAccounts }       = require('./services/messageSyncService');
+const { runNamedJob } = require('./jobRunner');
 
 // Concurrency 1 per account: LinkedIn triggers bans on parallel browser instances for the same IP/account.
 const CONCURRENCY = 1;
@@ -52,20 +43,7 @@ function startWorker() {
           jobId: job.id,
           jobName: name,
         });
-
-        switch (name) {
-          case 'verifySession':         return verifySession(data);
-          case 'readMessages':          return readMessages(data);
-          case 'readConnections':       return readConnections(data);
-          case 'readThread':            return readThread(data);
-          case 'sendMessage':           return sendMessage(data);
-          case 'sendMessageNew':        return sendMessageNew(data);
-          case 'sendConnectionRequest': return sendConnectionRequest(data);
-          case 'searchPeople':          return searchPeople(data);
-          case 'messageSync':           return syncAllAccounts(data.proxyUrl, { source: data.source });
-          default:
-            throw new Error(`Unknown job type: ${name}`);
-        }
+        return runNamedJob(name, data);
       },
       {
         connection:    createRedisClient(), // dedicated connection for BullMQ worker

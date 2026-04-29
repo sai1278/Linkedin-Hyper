@@ -1942,13 +1942,14 @@ async function detectSendErrorBanner(page) {
   }
 }
 
-async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, __attempt = 1 }) {
+async function sendMessageNewInternal({ accountId, profileUrl, chatId, text, proxyUrl, __attempt = 1 }) {
   // W2 — checkAndIncrement moved to AFTER successful send.
   await cleanupContext(accountId).catch(() => {});
   const { context, cookiesLoaded } = await getAccountContext(accountId, proxyUrl);
   let page;
   let networkThreadProbe = null;
   let preResolvedChatId = '';
+  const directThreadId = isValidThreadId(chatId) ? normalizeThreadIdCandidate(chatId) : '';
 
   try {
     // W1 — Only inject cookies on a cache miss.
@@ -1968,6 +1969,59 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     // ever creating a real thread.
     let participantName = normalizeParticipantName('', profileUrl);
     let usedDirectUrl = false;
+
+    if (directThreadId) {
+      logSendStep(accountId, `opening existing thread: ${directThreadId}`);
+      try {
+        await page.goto(`https://www.linkedin.com/messaging/thread/${directThreadId}/`, {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000,
+        });
+      } catch (navErr) {
+        const navMsg = String(navErr?.message || navErr);
+        if (navMsg.includes('ERR_TOO_MANY_REDIRECTS')) {
+          const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+          err.code = 'SESSION_EXPIRED'; err.status = 401;
+          throw err;
+        }
+        throw navErr;
+      }
+
+      if (isAuthwallUrl(page.url())) {
+        const err = new Error(`Session expired for account ${accountId}. Re-import cookies.`);
+        err.code = 'SESSION_EXPIRED'; err.status = 401;
+        throw err;
+      }
+
+      const threadComposer = await page
+        .waitForSelector(COMPOSER_SELECTORS, { timeout: 20000 })
+        .catch(() => null);
+
+      if (threadComposer) {
+        usedDirectUrl = true;
+        preResolvedChatId = directThreadId;
+
+        try {
+          const candidateName = await page.evaluate(() => {
+            const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+            const nameEl = document.querySelector(
+              '.msg-thread__name, .msg-entity-lockup__entity-title, [data-anonymize="person-name"], h1, h2'
+            );
+            return normalize(nameEl?.textContent || '');
+          });
+          if (candidateName) {
+            participantName = normalizeParticipantName(candidateName, profileUrl);
+          }
+        } catch (_) {}
+      }
+
+      if (!usedDirectUrl) {
+        const err = new Error('Existing LinkedIn thread is not replyable because the composer could not be opened.');
+        err.code = 'THREAD_NOT_REPLYABLE';
+        err.status = 409;
+        throw err;
+      }
+    }
 
     if (!usedDirectUrl) {
       // Fallback 1: if conversation already exists, open from messaging home directly.
@@ -2268,7 +2322,7 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
     if (__attempt < 3 && isRecoverableBrowserError(err)) {
       await cleanupContext(accountId).catch(() => {});
       await delay(700 + (__attempt * 300), 1300 + (__attempt * 300));
-      return sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, __attempt: __attempt + 1 });
+      return sendMessageNewInternal({ accountId, profileUrl, chatId, text, proxyUrl, __attempt: __attempt + 1 });
     }
 
     const msg = String(err?.message || err || '');
@@ -2289,9 +2343,9 @@ async function sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, _
   }
 }
 
-async function sendMessageNew({ accountId, profileUrl, text, proxyUrl }) {
+async function sendMessageNew({ accountId, profileUrl, chatId, text, proxyUrl }) {
   return withAccountLock(accountId, async () =>
-    sendMessageNewInternal({ accountId, profileUrl, text, proxyUrl, __attempt: 1 })
+    sendMessageNewInternal({ accountId, profileUrl, chatId, text, proxyUrl, __attempt: 1 })
   );
 }
 

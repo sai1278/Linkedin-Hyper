@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import { signToken } from '@/lib/auth/jwt';
 import { shouldUseSecureCookie } from '@/lib/auth/cookie';
 import { verifyPassword } from '@/lib/auth/password';
+import { isLegacyAuthAllowed, isProductionRuntime } from '@/lib/auth/runtime';
 import { enforceMutationProtection } from '@/lib/server/backend-api';
 import { clearLoginAttempts, consumeLoginAttempt } from '@/lib/auth/login-rate-limit';
 import { getUserByEmail } from '@/lib/models/user';
@@ -72,6 +73,14 @@ export async function POST(req: NextRequest) {
     }
 
     if (!sessionUser) {
+      if (!isLegacyAuthAllowed()) {
+        console.warn('[auth/login] Legacy shared-password login blocked in production. Migrate operator to DB-backed user or set ALLOW_LEGACY_AUTH=true temporarily.');
+        return NextResponse.json(
+          { error: 'Legacy shared-password login is disabled in production' },
+          { status: 403 }
+        );
+      }
+
       const dashboardPassword = process.env.DASHBOARD_PASSWORD;
       if (!dashboardPassword) {
         console.error('DASHBOARD_PASSWORD environment variable is not set');
@@ -92,7 +101,9 @@ export async function POST(req: NextRequest) {
       const sessionEmail = (process.env.DASHBOARD_USER_EMAIL || '').trim();
 
       // TODO(auth-migration): Remove shared-password fallback after all operators are migrated to DB-backed users.
-      console.warn('[auth/login] Legacy shared-password login used; migrate operator to registered user account.');
+      console.warn(
+        `[auth/login] Legacy shared-password login used${isProductionRuntime() ? ' in production' : ''}; migrate operator to registered user account.`
+      );
       sessionUser = {
         name: sessionName,
         email: sessionEmail || undefined,

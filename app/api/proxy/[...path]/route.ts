@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isStaticServiceTokenAllowed } from '@/lib/auth/runtime';
 
 type Role = 'user' | 'admin';
-type AuthContext = { role: Role };
+type AuthContext = { role: Role; authMode: 'static-token' | 'cookie-token' };
 
 type RouteRule = {
   pattern: RegExp;
@@ -13,6 +14,7 @@ type RouteRule = {
 const BACKEND          = process.env.API_URL              ?? 'http://localhost:3001';
 const SECRET           = process.env.API_SECRET           ?? '';
 const AUTH_COOKIE_NAME = process.env.PROXY_AUTH_COOKIE_NAME ?? 'proxy_session';
+let staticProxyTokenWarningShown = false;
 
 /**
  * TOKEN_ROLE_MAP â€” loaded from PROXY_AUTH_TOKENS env var at module initialisation.
@@ -20,6 +22,11 @@ const AUTH_COOKIE_NAME = process.env.PROXY_AUTH_COOKIE_NAME ?? 'proxy_session';
  * Generate tokens: openssl rand -hex 32
  */
 const TOKEN_ROLE_MAP: Readonly<Record<string, Role>> = (() => {
+  if (!isStaticServiceTokenAllowed()) {
+    console.warn('[proxy] Static PROXY_AUTH_TOKENS are disabled in production. Use session-backed auth or explicitly set ALLOW_STATIC_SERVICE_TOKENS=true.');
+    return {};
+  }
+
   const raw = process.env.PROXY_AUTH_TOKENS;
   if (!raw) return {};
   try {
@@ -112,14 +119,16 @@ function getBearerToken(req: NextRequest): string | null {
 }
 
 function authenticate(req: NextRequest): AuthContext | null {
-  const token =
-    getBearerToken(req) ??
-    req.cookies.get(AUTH_COOKIE_NAME)?.value ??
-    null;
+  const bearerToken = getBearerToken(req);
+  const cookieToken = req.cookies.get(AUTH_COOKIE_NAME)?.value ?? null;
+  const token = bearerToken ?? cookieToken ?? null;
   if (!token) return null;
   const role = TOKEN_ROLE_MAP[token];
   if (!role) return null;
-  return { role };
+  return {
+    role,
+    authMode: bearerToken ? 'static-token' : 'cookie-token',
+  };
 }
 
 function resolveRule(pathStr: string, method: string): RouteRule | null {
@@ -158,6 +167,12 @@ async function handler(
   // 1. Authenticate â€” Bearer token or session cookie
   const auth = authenticate(req);
   if (!auth) return jsonError(401, 'Unauthorized');
+  if (auth.authMode === 'static-token') {
+    if (!staticProxyTokenWarningShown) {
+      staticProxyTokenWarningShown = true;
+      console.warn('[proxy] Static proxy token used. Prefer session-backed auth for interactive operator access.');
+    }
+  }
 
   // Enforce CSRF protection for POST/write methods
   if (req.method !== 'GET' && req.method !== 'HEAD') {

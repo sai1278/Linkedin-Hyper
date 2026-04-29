@@ -57,6 +57,20 @@ function isSessionRecoveryCandidate(err) {
   );
 }
 
+function isLowSignalParticipantName(value) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!normalized) return true;
+  return [
+    'unknown',
+    'messaging',
+    'message',
+    'messages',
+    'linkedin member',
+    'member',
+    'conversation',
+  ].includes(normalized);
+}
+
 /**
  * Sync messages for a single account
  * @param {string} accountId - Account ID to sync
@@ -256,13 +270,17 @@ async function syncAccount(accountId, proxyUrl = null, meta = {}) {
         // Enrich missing participant metadata from thread page.
         const threadParticipantName = threadData?.participant?.name;
         const threadParticipantProfileUrl = threadData?.participant?.profileUrl || null;
-        if (threadParticipantName && threadParticipantName !== 'Unknown' && participantName === 'Unknown') {
+        if (
+          threadParticipantName &&
+          !isLowSignalParticipantName(threadParticipantName) &&
+          isLowSignalParticipantName(participantName)
+        ) {
           participantName = threadParticipantName;
         }
         if (threadParticipantProfileUrl && !participantProfileUrl) {
           participantProfileUrl = threadParticipantProfileUrl;
         }
-        if ((!participantName || participantName === 'Unknown') && Array.isArray(threadData?.items)) {
+        if (isLowSignalParticipantName(participantName) && Array.isArray(threadData?.items)) {
           const firstOther = threadData.items.find(
             (msg) => msg?.senderId !== '__self__' && msg?.senderName && msg.senderName !== 'Unknown'
           );

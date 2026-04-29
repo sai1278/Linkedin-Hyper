@@ -138,6 +138,7 @@ async function readMessagesInternal({
           'linkedin member',
           'member',
           'message',
+          'messaging',
           'messages',
           'conversation',
           'view profile',

@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth/session';
+import { isStaticServiceTokenAllowed } from '@/lib/auth/runtime';
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001';
 const API_SECRET = process.env.API_SECRET ?? '';
 const BACKEND_NETWORK_RETRY_COUNT = 1;
 const BACKEND_NETWORK_RETRY_DELAY_MS = 250;
+let serviceTokenWarningShown = false;
 
 function applyPrivateNoStore(headers: Headers): void {
   headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
@@ -95,10 +97,22 @@ export function enforceMutationProtection(req: NextRequest): NextResponse | null
 export async function authenticateCaller(req: NextRequest): Promise<NextResponse | null> {
   const expectedToken = process.env.API_ROUTE_AUTH_TOKEN?.trim();
   const authHeader = req.headers.get('authorization');
-  const hasValidBearer = Boolean(expectedToken && authHeader === `Bearer ${expectedToken}`);
+  const bearerMatches = Boolean(expectedToken && authHeader === `Bearer ${expectedToken}`);
+  const hasValidBearer = bearerMatches && isStaticServiceTokenAllowed();
 
   if (hasValidBearer) {
+    if (!serviceTokenWarningShown) {
+      serviceTokenWarningShown = true;
+      console.warn('[backend-api] Static service bearer token used for BFF access. Prefer DB-backed session auth for interactive operators.');
+    }
     return null;
+  }
+
+  if (bearerMatches && !hasValidBearer) {
+    return NextResponse.json(
+      { error: 'Static service bearer tokens are disabled in production' },
+      { status: 403 }
+    );
   }
 
   const session = await getSession(req);
