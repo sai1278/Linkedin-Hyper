@@ -242,9 +242,6 @@ async function extractThreadSnapshot(page, chatId, limit) {
         if (directIdMatch?.[1]) {
           return `li-msg-${directIdMatch[1]}`;
         }
-        if (!candidate.includes('msg-s-event') && candidate.length <= 128) {
-          return `li-msg-${stableHash(candidate)}`;
-        }
       }
 
       const senderKey = isSelf ? '__self__' : normalize(senderName).toLowerCase();
