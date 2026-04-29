@@ -1054,6 +1054,11 @@ async function main() {
   }
 
   if (!savedPath) {
+    if (!args.useTempCopy) {
+      const cdpMessage = cdpError ? (cdpError instanceof Error ? cdpError.message : String(cdpError)) : 'unknown CDP failure';
+      throw new Error(`Live profile capture failed. Use cookies:capture-interactive instead. CDP details: ${cdpMessage}`);
+    }
+
     const modeLabel = args.useTempCopy ? 'temp profile copy' : 'live profile';
     console.warn(`Falling back to Playwright direct capture (${modeLabel}).`);
     const fallbackCookies = await captureLinkedInCookiesViaPlaywrightFallback({

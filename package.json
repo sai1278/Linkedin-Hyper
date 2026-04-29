@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "cookies:capture": "node scripts/cookies-operator.mjs capture",
+    "cookies:capture-interactive": "node scripts/cookies-operator.mjs capture-interactive",
     "cookies:import": "node scripts/cookies-operator.mjs import",
     "cookies:verify": "node scripts/cookies-operator.mjs verify",
     "cookies:status": "node scripts/cookies-operator.mjs status"

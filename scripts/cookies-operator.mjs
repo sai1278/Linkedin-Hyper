@@ -13,12 +13,14 @@ const repoRoot = path.resolve(__dirname, '..');
 function usage() {
   console.log(`Usage:
   npm run cookies:capture -- --accountId <id> [--browser chrome|edge] [--useLiveProfile]
+  npm run cookies:capture-interactive -- --accountId <id> [--browser chrome|edge]
   npm run cookies:import -- --accountId <id> [--autoCapture] [--cookieFile <path>] [--baseUrl <url>] [--routeAuthToken <token>] [--apiKey <key>]
   npm run cookies:verify -- --accountId <id> [--baseUrl <url>] [--routeAuthToken <token>] [--apiKey <key>]
   npm run cookies:status -- --accountId <id> [--baseUrl <url>] [--routeAuthToken <token>] [--apiKey <key>]
 
 Examples:
   npm run cookies:capture -- --accountId saikanchi130 --browser chrome --useLiveProfile
+  npm run cookies:capture-interactive -- --accountId saikanchi130
   npm run cookies:import -- --accountId saikanchi130 --autoCapture --useLiveProfile --baseUrl http://139.59.98.240:3002/api --routeAuthToken <token>
   npm run cookies:verify -- --accountId saikanchi130 --baseUrl http://127.0.0.1:3001 --apiKey <API_SECRET>`);
 }
@@ -135,7 +137,7 @@ function parseArgs(argv) {
 function ensureCommand(options) {
   if (!options.command) {
     usage();
-    throw new Error('Missing command. Use capture, import, verify, or status.');
+    throw new Error('Missing command. Use capture, capture-interactive, import, verify, or status.');
   }
 }
 
@@ -311,11 +313,56 @@ async function runCapture(options) {
 
   console.log(`Starting LinkedIn cookie capture for account '${options.accountId}'.`);
   console.log(`Cookie file will be written to: ${outputFile}`);
-  await spawnLogged(process.execPath, args);
+  try {
+    await spawnLogged(process.execPath, args);
+  } catch (error) {
+    if (options.useLiveProfile) {
+      console.error('Live profile capture failed. Use cookies:capture-interactive instead.');
+      console.error(`Suggested command: npm run cookies:capture-interactive -- --accountId ${options.accountId}`);
+    }
+    throw error;
+  }
+
+  if (!fs.existsSync(outputFile)) {
+    throw new Error(`Cookie file was not created: ${outputFile}`);
+  }
+
   console.log('');
   console.log(`Cookie capture succeeded for account '${options.accountId}'.`);
   console.log(`Saved file: ${outputFile}`);
   console.log('Next step: import the file into the worker and verify the session.');
+  return outputFile;
+}
+
+async function runCaptureInteractive(options) {
+  ensureAccountId(options);
+  const outputFile = options.cookieFile || defaultCookieFile(options.accountId);
+  const args = [
+    path.join('scripts', 'capture-linkedin-cookies-interactive.mjs'),
+    '--accountId',
+    options.accountId,
+    '--browser',
+    options.browser,
+    '--timeoutSec',
+    String(Math.max(300, options.captureTimeoutSec || 600)),
+    '--output',
+    outputFile,
+  ];
+
+  console.log(`Starting interactive LinkedIn cookie capture for account '${options.accountId}'.`);
+  console.log(`Cookie file will be written to: ${outputFile}`);
+  await spawnLogged(process.execPath, args);
+
+  if (!fs.existsSync(outputFile)) {
+    throw new Error(`Cookie file was not created: ${outputFile}`);
+  }
+
+  const cookies = loadCookiesFromFile(outputFile);
+  console.log('');
+  console.log(`Interactive cookie capture succeeded for account '${options.accountId}'.`);
+  console.log(`Saved file: ${outputFile}`);
+  console.log(`Validated cookies: ${cookies.length} entries with li_at + JSESSIONID present.`);
+  console.log('Next step: copy the file to the server and import it.');
   return outputFile;
 }
 
@@ -386,6 +433,9 @@ async function main() {
     switch (options.command) {
       case 'capture':
         await runCapture(options);
+        break;
+      case 'capture-interactive':
+        await runCaptureInteractive(options);
         break;
       case 'import':
         await runImport(options);

@@ -32,13 +32,55 @@ Open PowerShell in the repo root:
 cd "C:\Users\kanchiDhyana sai\OneDrive\Desktop\linkedin\Linkedin-Hyper-V"
 ```
 
-Run capture:
+### Preferred: Interactive Capture
+
+Use this when Chrome live-profile capture is blocked or unreliable on Windows.
+
+```powershell
+npm run cookies:capture-interactive -- --accountId saikanchi130
+```
+
+What this does:
+
+- creates a temporary Chrome profile under:
+
+```text
+artifacts\chrome-profiles\saikanchi130\
+```
+
+- launches Chrome with that temporary profile
+- opens LinkedIn
+- waits for you to log in manually
+- auto-detects successful login, or lets you press `Enter` in the terminal after login if detection is slow
+- writes a plain JSON cookie file to:
+
+```text
+artifacts\cookies\saikanchi130\linkedin-cookies-plain.json
+```
+
+The command validates that the cookie file:
+
+- exists
+- is a JSON array
+- contains both `li_at` and `JSESSIONID`
+
+### Existing Live-Profile Capture
+
+If your local Chrome profile is already signed into LinkedIn, you can still try:
 
 ```powershell
 npm run cookies:capture -- --accountId saikanchi130 --browser chrome --useLiveProfile
 ```
 
-What this does:
+If this fails with a message like:
+
+```text
+Live profile capture failed. Use cookies:capture-interactive instead.
+```
+
+switch to `cookies:capture-interactive`.
+
+What live-profile capture does:
 
 - opens a Chrome window using your local LinkedIn browser profile
 - waits for a stable authenticated LinkedIn page
@@ -47,8 +89,6 @@ What this does:
 ```text
 artifacts\cookies\saikanchi130\linkedin-cookies-plain.json
 ```
-
-If you are not already signed into LinkedIn in Chrome, log in when the window appears and wait for the script to finish.
 
 If you want a clean temporary browser profile instead of your live one:
 
