@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { createRequire } from 'node:module';
+import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const CAPTURE_STABLE_MS = Math.max(3000, Number(process.env.LI_CAPTURE_STABLE_MS || 5000));
@@ -26,7 +26,7 @@ function safeName(value) {
 
 function usage() {
   console.log(`Usage:
-  node scripts/capture-linkedin-cookies-interactive.mjs --accountId <id> [--browser chrome|edge] [--timeoutSec 600] [--output <path>] [--profileDir <path>]
+  node scripts/capture-linkedin-cookies-interactive.mjs --accountId <id> [--browser chrome|edge] [--timeoutSec 600] [--output <path>] [--profileDir <path>] [--port 9333]
 
 Example:
   node scripts/capture-linkedin-cookies-interactive.mjs --accountId saikanchi130`);
@@ -39,6 +39,7 @@ function parseArgs(argv) {
     timeoutSec: 600,
     output: '',
     profileDir: '',
+    port: 9333,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -63,6 +64,10 @@ function parseArgs(argv) {
       out.profileDir = path.resolve(String(argv[++i]).trim());
       continue;
     }
+    if (arg === '--port' && argv[i + 1]) {
+      out.port = Number(argv[++i]);
+      continue;
+    }
     if (arg === '--help' || arg === '-h') {
       usage();
       process.exit(0);
@@ -78,6 +83,9 @@ function parseArgs(argv) {
   }
   if (!Number.isFinite(out.timeoutSec) || out.timeoutSec <= 0) {
     throw new Error(`Invalid --timeoutSec value: ${out.timeoutSec}`);
+  }
+  if (!Number.isFinite(out.port) || out.port < 1024 || out.port > 65535) {
+    throw new Error(`Invalid --port value: ${out.port}`);
   }
 
   return out;
@@ -111,14 +119,6 @@ function findBrowserConfig(browser) {
   };
 }
 
-function getRequireFromWorkerPackage() {
-  const workerPkg = path.join(process.cwd(), 'worker', 'package.json');
-  if (!fs.existsSync(workerPkg)) {
-    throw new Error(`Worker package.json not found for Playwright capture: ${workerPkg}`);
-  }
-  return createRequire(workerPkg);
-}
-
 function getDefaultOutput(accountId) {
   return path.resolve(process.cwd(), 'artifacts', 'cookies', safeName(accountId), 'linkedin-cookies-plain.json');
 }
@@ -126,6 +126,14 @@ function getDefaultOutput(accountId) {
 function getDefaultProfileDir(accountId) {
   const root = path.resolve(process.cwd(), 'artifacts', 'chrome-profiles', safeName(accountId));
   return path.join(root, `interactive-${Date.now()}`);
+}
+
+function killProcessTree(pid) {
+  if (!pid || Number.isNaN(pid)) return;
+  spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
 }
 
 function extractLinkedInCookies(allCookies) {
@@ -225,68 +233,182 @@ function formatStateReason(state) {
   return 'Authenticated session detected.';
 }
 
-async function inspectPageState(context, page) {
-  const activePage = context.pages().filter((item) => !item.isClosed()).slice(-1)[0] || page;
-  const dom = await activePage.evaluate(() => {
-    const text = (document.body?.innerText || '').toLowerCase();
-    const navLinkSelectors = [
-      'a[href*="/feed"]',
-      'a[href*="/mynetwork"]',
-      'a[href*="/messaging"]',
-      'a[href*="/notifications"]',
-    ].join(', ');
-    const navLinks = Array.from(document.querySelectorAll(navLinkSelectors)).filter((element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    });
-    const hasPrimaryNavLinks = navLinks.length >= 2;
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} from ${url}`);
+  }
+  return res.json();
+}
 
-    return {
-      url: location.href,
-      title: document.title || '',
-      hasLoginForm: Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]')),
-      hasAuthwallMarkers:
-        text.includes('join linkedin') ||
-        text.includes('sign in') ||
-        text.includes('new to linkedin') ||
-        text.includes('continue to linkedin') ||
-        text.includes('unlock your profile') ||
-        text.includes('challenge'),
-      hasSignedInNav:
-        hasPrimaryNavLinks ||
-        Boolean(
+async function waitForDebuggerEndpoint(port, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const payload = await fetchJson(`http://127.0.0.1:${port}/json/version`);
+      if (payload?.webSocketDebuggerUrl) return payload.webSocketDebuggerUrl;
+    } catch {
+      // keep waiting
+    }
+    await delay(500);
+  }
+  throw new Error(`Timed out waiting for DevTools endpoint on port ${port}`);
+}
+
+async function waitForPageTargetWs(port, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
+      const pageTarget = Array.isArray(targets)
+        ? targets.find((target) => target?.type === 'page' && target?.webSocketDebuggerUrl)
+        : null;
+
+      if (pageTarget?.webSocketDebuggerUrl) {
+        return pageTarget.webSocketDebuggerUrl;
+      }
+    } catch {
+      // keep waiting
+    }
+    await delay(500);
+  }
+  throw new Error('Timed out waiting for a page target in DevTools.');
+}
+
+class CdpClient {
+  constructor(wsUrl) {
+    this.wsUrl = wsUrl;
+    this.ws = null;
+    this.seq = 0;
+    this.pending = new Map();
+  }
+
+  async connect() {
+    this.ws = new WebSocket(this.wsUrl);
+
+    await new Promise((resolve, reject) => {
+      const onOpen = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (event) => {
+        cleanup();
+        reject(new Error(`WebSocket connect error: ${String(event?.message || 'unknown error')}`));
+      };
+      const cleanup = () => {
+        this.ws.removeEventListener('open', onOpen);
+        this.ws.removeEventListener('error', onError);
+      };
+
+      this.ws.addEventListener('open', onOpen, { once: true });
+      this.ws.addEventListener('error', onError, { once: true });
+    });
+
+    this.ws.addEventListener('message', (event) => {
+      try {
+        const payload = JSON.parse(String(event.data));
+        if (payload.id && this.pending.has(payload.id)) {
+          const { resolve, reject } = this.pending.get(payload.id);
+          this.pending.delete(payload.id);
+          if (payload.error) reject(new Error(payload.error.message || 'CDP error'));
+          else resolve(payload.result || {});
+        }
+      } catch {
+        // ignore malformed frame
+      }
+    });
+
+    this.ws.addEventListener('close', () => {
+      for (const { reject } of this.pending.values()) {
+        reject(new Error('CDP socket closed'));
+      }
+      this.pending.clear();
+    });
+  }
+
+  async send(method, params = {}, timeoutMs = 15000) {
+    const id = ++this.seq;
+    const frame = JSON.stringify({ id, method, params });
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP command timed out: ${method}`));
+      }, timeoutMs);
+
+      const wrappedResolve = (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const wrappedReject = (error) => {
+        clearTimeout(timer);
+        reject(error);
+      };
+
+      this.pending.set(id, { resolve: wrappedResolve, reject: wrappedReject });
+      this.ws.send(frame);
+    });
+  }
+
+  close() {
+    if (this.ws && this.ws.readyState < 2) {
+      this.ws.close();
+    }
+  }
+}
+
+async function inspectLinkedInDomStateViaCdp(cdp) {
+  const expression = `
+    (() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      const navLinkSelectors = [
+        'a[href*="/feed"]',
+        'a[href*="/mynetwork"]',
+        'a[href*="/messaging"]',
+        'a[href*="/notifications"]'
+      ].join(', ');
+      const navLinks = Array.from(document.querySelectorAll(navLinkSelectors))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+      const hasPrimaryNavLinks = navLinks.length >= 2;
+
+      return {
+        url: location.href,
+        title: document.title || '',
+        hasLoginForm: Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]')),
+        hasAuthwallMarkers:
+          text.includes('join linkedin') ||
+          text.includes('sign in') ||
+          text.includes('new to linkedin') ||
+          text.includes('continue to linkedin') ||
+          text.includes('unlock your profile') ||
+          text.includes('challenge'),
+        hasSignedInNav:
+          hasPrimaryNavLinks ||
+          Boolean(
+            document.querySelector(
+              '.global-nav__me, .global-nav__me-photo, #global-nav-search, .search-global-typeahead, header.global-nav, .global-nav'
+            )
+          ),
+        hasMessagingShell: Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list')),
+        hasGuestCta: Boolean(
           document.querySelector(
-            '.global-nav__me, .global-nav__me-photo, #global-nav-search, .search-global-typeahead, header.global-nav, .global-nav'
+            'a[data-tracking-control-name*="guest_homepage"], .nav__button-secondary, main section a[href*="/signup"]'
           )
         ),
-      hasMessagingShell: Boolean(document.querySelector('.msg-conversations-container, .msg-overlay-list-bubble, .msg-s-message-list')),
-      hasGuestCta: Boolean(
-        document.querySelector(
-          'a[data-tracking-control-name*="guest_homepage"], .nav__button-secondary, main section a[href*="/signup"]'
-        )
-      ),
-    };
-  }).catch(() => ({
-    url: activePage.url(),
-    title: '',
-    hasLoginForm: false,
-    hasAuthwallMarkers: false,
-    hasSignedInNav: false,
-    hasMessagingShell: false,
-    hasGuestCta: false,
-  }));
+      };
+    })()
+  `;
 
-  const linkedInCookies = extractLinkedInCookies(await context.cookies());
-  const flags = computeCookieFlags(linkedInCookies);
-  const state = {
-    ...dom,
-    ...flags,
-    cookies: linkedInCookies,
-  };
-  state.blockedAuthPage = isBlockedAuthPage(state.url);
-  state.authenticated = isAuthenticatedLinkedInPage(state);
-  state.reason = formatStateReason(state);
-  return state;
+  const result = await cdp.send('Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  }, 12000);
+
+  return result?.result?.value || {};
 }
 
 function createEnterWatcher() {
@@ -333,19 +455,37 @@ function validateCapturedCookies(cookies, outputFile) {
   }
 }
 
+async function getCaptureState(cdp) {
+  const cookieResult = await cdp.send('Network.getAllCookies', {}, 20000);
+  const linkedInCookies = extractLinkedInCookies(cookieResult?.cookies || []);
+  const flags = computeCookieFlags(linkedInCookies);
+  const dom = await inspectLinkedInDomStateViaCdp(cdp).catch(() => ({
+    url: '',
+    title: '',
+    hasLoginForm: false,
+    hasAuthwallMarkers: false,
+    hasSignedInNav: false,
+    hasMessagingShell: false,
+    hasGuestCta: false,
+  }));
+
+  const state = {
+    ...dom,
+    ...flags,
+    cookies: linkedInCookies,
+  };
+  state.blockedAuthPage = isBlockedAuthPage(state.url);
+  state.authenticated = isAuthenticatedLinkedInPage(state);
+  state.reason = formatStateReason(state);
+  return state;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const browserCfg = findBrowserConfig(args.browser);
 
   if (!browserCfg.executablePath) {
     throw new Error(`Could not find ${args.browser} executable.`);
-  }
-
-  const requireFromWorker = getRequireFromWorkerPackage();
-  const rebrowser = requireFromWorker('rebrowser-playwright');
-  const chromium = rebrowser?.chromium;
-  if (!chromium || typeof chromium.launchPersistentContext !== 'function') {
-    throw new Error('Playwright interactive capture is unavailable: chromium.launchPersistentContext is missing.');
   }
 
   const outputFile = args.output || getDefaultOutput(args.accountId);
@@ -358,27 +498,33 @@ async function main() {
   console.log('A new browser window will open. Log into LinkedIn there.');
   console.log('The script will auto-detect a stable login, or you can press Enter in this terminal after login if detection is slow.');
 
-  const context = await chromium.launchPersistentContext(profileDir, {
-    headless: false,
-    executablePath: browserCfg.executablePath,
-    args: [
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--new-window',
-      '--start-maximized',
-    ],
-    viewport: { width: 1366, height: 768 },
+  const child = spawn(browserCfg.executablePath, [
+    `--remote-debugging-port=${args.port}`,
+    '--remote-allow-origins=*',
+    `--user-data-dir=${profileDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--new-window',
+    'https://www.linkedin.com/',
+  ], {
+    stdio: 'ignore',
+    windowsHide: false,
   });
 
   const enterWatcher = createEnterWatcher();
-  let page = context.pages()[0] || await context.newPage();
+  let cdp = null;
   let saved = false;
 
   try {
-    await page.goto('https://www.linkedin.com/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    }).catch(() => {});
+    await waitForDebuggerEndpoint(args.port, 30000);
+    const wsUrl = await waitForPageTargetWs(args.port, 30000);
+
+    cdp = new CdpClient(wsUrl);
+    await cdp.connect();
+    await cdp.send('Network.enable').catch(() => {});
+    await cdp.send('Runtime.enable').catch(() => {});
+    await cdp.send('Page.enable').catch(() => {});
+    await cdp.send('Page.navigate', { url: 'https://www.linkedin.com/' }, 15000).catch(() => {});
 
     const deadline = Date.now() + args.timeoutSec * 1000;
     let stableSince = 0;
@@ -387,7 +533,7 @@ async function main() {
     let finalState = null;
 
     while (Date.now() < deadline) {
-      const state = await inspectPageState(context, page);
+      const state = await getCaptureState(cdp);
 
       if (state.authenticated && state.hasLiAt && state.hasJsession && state.liAtFresh) {
         if (!stableSince) {
@@ -417,7 +563,7 @@ async function main() {
       }
 
       if (enterWatcher.wasPressed()) {
-        const stateNow = await inspectPageState(context, page);
+        const stateNow = await getCaptureState(cdp);
         logState(stateNow, 0, true);
         if (stateNow.authenticated && stateNow.hasLiAt && stateNow.hasJsession && stateNow.liAtFresh) {
           finalState = stateNow;
@@ -443,7 +589,8 @@ async function main() {
     console.log('Cookie file is a JSON array and includes li_at + JSESSIONID.');
   } finally {
     enterWatcher.close();
-    await context.close().catch(() => {});
+    cdp?.close();
+    killProcessTree(child.pid);
   }
 
   if (!saved || !fs.existsSync(outputFile)) {
