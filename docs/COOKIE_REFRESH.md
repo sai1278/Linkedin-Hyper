@@ -17,10 +17,10 @@ Refresh cookies when one or more of these are true:
 
 ## Recommended One-Command Flow
 
-If your local machine can reach the worker directly over HTTP, this is now the preferred operator flow:
+This is now the preferred operator flow from a laptop. It uses the public app on `3002/api`, then the BFF forwards only the narrow cookie-recovery endpoints to the worker with `API_SECRET`.
 
 ```powershell
-npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3001 --apiSecret <API_SECRET>
+npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3002/api --apiSecret <API_SECRET>
 ```
 
 What it does:
@@ -37,6 +37,7 @@ This avoids:
 - `scp`
 - `ssh`
 - manual cookie file upload
+- exposing worker port `3001`
 
 Expected log flow:
 
@@ -48,7 +49,7 @@ Running sync...
 SUCCESS
 ```
 
-## Production-Safe Manual Flow
+## Fallback Manual Flow
 
 Use this two-step process:
 
@@ -131,19 +132,11 @@ npm run cookies:capture -- --accountId saikanchi130 --browser chrome
 
 ## Optional Local Capture + Import In One Step
 
-This is convenient for local/dev or for production only if your deployment explicitly allows static service bearer tokens.
+This is convenient when you want to keep capture and upload separate:
 
 ```powershell
-npm run cookies:import -- --accountId saikanchi130 --autoCapture --useLiveProfile --baseUrl http://139.59.98.240:3002/api --routeAuthToken <API_ROUTE_AUTH_TOKEN>
+npm run cookies:import -- --accountId saikanchi130 --autoCapture --useLiveProfile --baseUrl http://139.59.98.240:3002/api --apiSecret <API_SECRET>
 ```
-
-If production returns:
-
-```text
-Static service bearer tokens are disabled in production
-```
-
-use the server import flow below instead.
 
 ## Copy Cookie File To Server
 
@@ -255,22 +248,23 @@ For direct worker verification from the server, prefer the `curl` command above.
 
 ## Direct Local HTTP Refresh
 
-If port `3001` is reachable from your laptop, use:
+Use the repo that contains the cookie operator scripts:
 
 ```powershell
-cd "C:\Users\kanchiDhyana sai\OneDrive\Desktop\linkedin\Linkedin-Hyper-V"
-npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3001 --apiSecret <API_SECRET>
+cd "C:\Users\kanchiDhyana sai\OneDrive\Desktop\linkedin\Linkedin-Hyper-V-inboxfix2"
+$apiSecret = "YOUR_REAL_API_SECRET"
+npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3002/api --apiSecret $apiSecret
 ```
 
 What happens:
 
 - the script first tries live-profile capture
 - if that fails, it automatically switches to interactive login
-- after capture it uploads cookies directly to the worker
+- after capture it uploads cookies through the BFF allowlist
 - then it verifies the session
 - then it runs scoped sync
 
-No `scp` or `ssh` is required for this path.
+No `scp`, `ssh`, or public worker port exposure is required for this path.
 
 ## How To Confirm The Fix Worked
 
@@ -342,8 +336,21 @@ Meaning:
 
 Action:
 
-- use the production-safe server import flow with `API_SECRET`
-- or explicitly enable `ALLOW_STATIC_SERVICE_TOKENS=true` only if your operational policy allows it
+- use `--baseUrl http://<host>:3002/api --apiSecret <API_SECRET>` for the cookie operator allowlist
+- or use the fallback manual flow below if your operational policy prefers server-local import
+
+### `fetch failed`
+
+Meaning:
+
+- the chosen base URL is not reachable from the laptop
+- the most common case is trying worker port `3001` when it is private
+
+Action:
+
+- use the public BFF URL instead:
+  - `http://<host>:3002/api`
+- keep using `--apiSecret <API_SECRET>` so the cookie operator can access only the allowlisted recovery endpoints
 
 ## What To Do Next Time LinkedIn Expires Again
 

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth/session';
 import { isStaticServiceTokenAllowed } from '@/lib/auth/runtime';
@@ -7,6 +8,11 @@ const API_SECRET = process.env.API_SECRET ?? '';
 const BACKEND_NETWORK_RETRY_COUNT = 1;
 const BACKEND_NETWORK_RETRY_DELAY_MS = 250;
 let serviceTokenWarningShown = false;
+let apiSecretOperatorWarningShown = false;
+
+interface AuthenticateCallerOptions {
+  allowApiSecret?: boolean;
+}
 
 function applyPrivateNoStore(headers: Headers): void {
   headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
@@ -89,12 +95,37 @@ export function enforceMutationProtection(req: NextRequest): NextResponse | null
   return NextResponse.json({ error: 'Forbidden: Missing same-origin proof' }, { status: 403 });
 }
 
+function secretsMatch(actual: string | null, expected: string): boolean {
+  if (!actual || !expected) return false;
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+
+  if (actualBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
 /**
  * Authenticate incoming requests to the BFF.
  * Requires either a valid dashboard session cookie or API_ROUTE_AUTH_TOKEN bearer token.
  * Enforces same-origin checks for cookie-authenticated mutation requests.
  */
-export async function authenticateCaller(req: NextRequest): Promise<NextResponse | null> {
+export async function authenticateCaller(
+  req: NextRequest,
+  options: AuthenticateCallerOptions = {}
+): Promise<NextResponse | null> {
+  const { allowApiSecret = false } = options;
+  const apiSecretHeader = req.headers.get('x-api-key');
+  if (allowApiSecret && secretsMatch(apiSecretHeader, API_SECRET)) {
+    if (!apiSecretOperatorWarningShown) {
+      apiSecretOperatorWarningShown = true;
+      console.warn('[backend-api] API_SECRET operator access used through BFF allowlist. This path is limited to cookie/session recovery endpoints.');
+    }
+    return null;
+  }
+
   const expectedToken = process.env.API_ROUTE_AUTH_TOKEN?.trim();
   const authHeader = req.headers.get('authorization');
   const bearerMatches = Boolean(expectedToken && authHeader === `Bearer ${expectedToken}`);

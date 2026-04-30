@@ -5,7 +5,7 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authError = await authenticateCaller(req);
+  const authError = await authenticateCaller(req, { allowApiSecret: true });
   if (authError) return authError;
 
   const { id: accountId } = await params;

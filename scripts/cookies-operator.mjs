@@ -22,7 +22,7 @@ function usage() {
 Examples:
   npm run cookies:capture -- --accountId saikanchi130 --browser chrome --useLiveProfile
   npm run cookies:capture-interactive -- --accountId saikanchi130
-  npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3001 --apiSecret <API_SECRET>
+  npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3002/api --apiSecret <API_SECRET>
   npm run cookies:import -- --accountId saikanchi130 --autoCapture --useLiveProfile --baseUrl http://139.59.98.240:3002/api --routeAuthToken <token>
   npm run cookies:verify -- --accountId saikanchi130 --baseUrl http://127.0.0.1:3001 --apiKey <API_SECRET>`);
 }
@@ -162,9 +162,16 @@ function isFrontendApi(baseUrl) {
 
 function buildHeaders(options) {
   if (isFrontendApi(options.baseUrl)) {
+    if (options.apiKey) {
+      return {
+        'Content-Type': 'application/json',
+        'X-Api-Key': options.apiKey,
+      };
+    }
+
     if (!options.routeAuthToken) {
       throw new Error(
-        'BaseUrl points to the public /api BFF. Provide --routeAuthToken, or import on the server directly with --baseUrl http://127.0.0.1:3001 --apiKey <API_SECRET>.'
+        'BaseUrl points to the public /api BFF. Provide --apiSecret for the cookie-operator allowlist, or use --routeAuthToken only if your deployment explicitly allows static bearer tokens.'
       );
     }
     return {
@@ -272,7 +279,11 @@ function printOperatorHint(error) {
     return;
   }
   if (/Static service bearer tokens are disabled in production/i.test(message)) {
-    console.error('Hint: this production deployment blocks static bearer tokens. Use server-local import with API_SECRET, or temporarily enable ALLOW_STATIC_SERVICE_TOKENS=true if your runbook permits it.');
+    console.error('Hint: this production deployment blocks static bearer tokens. Use --baseUrl http://<host>:3002/api --apiSecret <API_SECRET> for the cookie operator allowlist, or server-local worker access if your runbook prefers it.');
+    return;
+  }
+  if (/fetch failed/i.test(message)) {
+    console.error('Hint: the target baseUrl is unreachable from this laptop. If port 3001 is blocked, use the public BFF URL http://<host>:3002/api with --apiSecret <API_SECRET>.');
   }
 }
 
@@ -367,7 +378,7 @@ async function runCaptureInteractive(options) {
   console.log(`Interactive cookie capture succeeded for account '${options.accountId}'.`);
   console.log(`Saved file: ${outputFile}`);
   console.log(`Validated cookies: ${cookies.length} entries with li_at + JSESSIONID present.`);
-  console.log('Next step: copy the file to the server and import it.');
+  console.log('Next step: upload the file through the cookie operator or import it with your preferred runbook.');
   return outputFile;
 }
 
