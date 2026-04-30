@@ -14,6 +14,7 @@ function usage() {
   console.log(`Usage:
   npm run cookies:capture -- --accountId <id> [--browser chrome|edge] [--useLiveProfile]
   npm run cookies:capture-interactive -- --accountId <id> [--browser chrome|edge]
+  npm run cookies:refresh-direct -- --accountId <id> --baseUrl <url> --apiSecret <API_SECRET>
   npm run cookies:import -- --accountId <id> [--autoCapture] [--cookieFile <path>] [--baseUrl <url>] [--routeAuthToken <token>] [--apiKey <key>]
   npm run cookies:verify -- --accountId <id> [--baseUrl <url>] [--routeAuthToken <token>] [--apiKey <key>]
   npm run cookies:status -- --accountId <id> [--baseUrl <url>] [--routeAuthToken <token>] [--apiKey <key>]
@@ -21,6 +22,7 @@ function usage() {
 Examples:
   npm run cookies:capture -- --accountId saikanchi130 --browser chrome --useLiveProfile
   npm run cookies:capture-interactive -- --accountId saikanchi130
+  npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3001 --apiSecret <API_SECRET>
   npm run cookies:import -- --accountId saikanchi130 --autoCapture --useLiveProfile --baseUrl http://139.59.98.240:3002/api --routeAuthToken <token>
   npm run cookies:verify -- --accountId saikanchi130 --baseUrl http://127.0.0.1:3001 --apiKey <API_SECRET>`);
 }
@@ -115,6 +117,9 @@ function parseArgs(argv) {
       case '--apiKey':
         options.apiKey = String(rest[++i] || '').trim();
         break;
+      case '--apiSecret':
+        options.apiKey = String(rest[++i] || '').trim();
+        break;
       case '--autoCapture':
         options.autoCapture = true;
         break;
@@ -137,7 +142,7 @@ function parseArgs(argv) {
 function ensureCommand(options) {
   if (!options.command) {
     usage();
-    throw new Error('Missing command. Use capture, capture-interactive, import, verify, or status.');
+    throw new Error('Missing command. Use capture, capture-interactive, refresh-direct, import, verify, or status.');
   }
 }
 
@@ -390,6 +395,36 @@ async function runVerify(options, label = 'Verification') {
   return result;
 }
 
+async function runSync(options, label = 'Sync') {
+  ensureAccountId(options);
+  const headers = buildHeaders(options);
+  const baseUrl = options.baseUrl.replace(/\/$/, '');
+  const url = `${baseUrl}/sync/messages`;
+  const result = await requestJson(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ accountId: options.accountId }),
+  });
+
+  if (result?.success) {
+    console.log(`${label} completed for account '${options.accountId}'.`);
+    if (result?.completed === true) {
+      console.log('Sync finished before returning.');
+    }
+    if (result?.stats) {
+      const summary = {
+        conversationsProcessed: result.stats.conversationsProcessed,
+        newMessages: result.stats.newMessages,
+        updatedConversations: result.stats.updatedConversations,
+        durationMs: result.stats.durationMs,
+      };
+      console.log(`Sync stats: ${JSON.stringify(summary)}`);
+    }
+  }
+
+  return result;
+}
+
 async function runImport(options) {
   ensureAccountId(options);
   const cookieFile = options.autoCapture
@@ -425,6 +460,63 @@ async function runImport(options) {
   }
 }
 
+async function runRefreshDirect(options) {
+  ensureAccountId(options);
+  if (!options.baseUrl) {
+    throw new Error('Missing --baseUrl');
+  }
+  if (!options.apiKey) {
+    throw new Error('Missing --apiSecret');
+  }
+
+  const directOptions = {
+    ...options,
+    routeAuthToken: '',
+  };
+
+  let cookieFile = directOptions.cookieFile || defaultCookieFile(directOptions.accountId);
+
+  console.log(`Capturing cookies for account '${directOptions.accountId}'...`);
+  try {
+    cookieFile = await runCapture({
+      ...directOptions,
+      cookieFile,
+      useLiveProfile: true,
+    });
+  } catch {
+    console.log('Live profile capture failed. Falling back to interactive capture...');
+    cookieFile = await runCaptureInteractive({
+      ...directOptions,
+      cookieFile,
+    });
+  }
+
+  console.log('Validating cookie file...');
+  const cookies = loadCookiesFromFile(cookieFile);
+  console.log(`Validated ${cookies.length} cookies. Required LinkedIn cookies are present.`);
+
+  const headers = buildHeaders(directOptions);
+  const baseUrl = directOptions.baseUrl.replace(/\/$/, '');
+  const importUrl = `${baseUrl}/accounts/${encodeURIComponent(directOptions.accountId)}/session`;
+
+  console.log('Uploading cookies...');
+  const importResult = await requestJson(importUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(cookies),
+  });
+  console.log(`Uploaded cookies successfully for '${directOptions.accountId}'.`);
+  console.log(`Server accepted ${importResult?.cookieCount ?? cookies.length} cookies.`);
+
+  console.log('Verifying session...');
+  await runVerify(directOptions, 'Session verification');
+
+  console.log('Running sync...');
+  await runSync(directOptions, 'Sync');
+
+  console.log(`SUCCESS: cookie refresh completed for account '${directOptions.accountId}'.`);
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   ensureCommand(options);
@@ -436,6 +528,9 @@ async function main() {
         break;
       case 'capture-interactive':
         await runCaptureInteractive(options);
+        break;
+      case 'refresh-direct':
+        await runRefreshDirect(options);
         break;
       case 'import':
         await runImport(options);

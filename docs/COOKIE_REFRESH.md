@@ -15,7 +15,40 @@ Refresh cookies when one or more of these are true:
 - `POST /accounts/saikanchi130/verify` returns `SESSION_EXPIRED`, `NO_SESSION`, `LOGIN_NOT_FINISHED`, or `COOKIES_MISSING`
 - Inbox sync fails only for one LinkedIn account while `/health` and `/metrics` are otherwise healthy
 
-## Recommended Production-Safe Flow
+## Recommended One-Command Flow
+
+If your local machine can reach the worker directly over HTTP, this is now the preferred operator flow:
+
+```powershell
+npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3001 --apiSecret <API_SECRET>
+```
+
+What it does:
+
+1. captures cookies locally
+2. falls back to interactive login if live-profile capture fails
+3. validates the cookie file
+4. uploads cookies directly to `/accounts/:accountId/session`
+5. verifies the session with `/accounts/:accountId/verify`
+6. runs scoped sync with `/sync/messages`
+
+This avoids:
+
+- `scp`
+- `ssh`
+- manual cookie file upload
+
+Expected log flow:
+
+```text
+Capturing cookies...
+Uploading cookies...
+Verifying session...
+Running sync...
+SUCCESS
+```
+
+## Production-Safe Manual Flow
 
 Use this two-step process:
 
@@ -219,6 +252,25 @@ npm run cookies:verify -- --accountId saikanchi130 --baseUrl http://139.59.98.24
 ```
 
 For direct worker verification from the server, prefer the `curl` command above.
+
+## Direct Local HTTP Refresh
+
+If port `3001` is reachable from your laptop, use:
+
+```powershell
+cd "C:\Users\kanchiDhyana sai\OneDrive\Desktop\linkedin\Linkedin-Hyper-V"
+npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3001 --apiSecret <API_SECRET>
+```
+
+What happens:
+
+- the script first tries live-profile capture
+- if that fails, it automatically switches to interactive login
+- after capture it uploads cookies directly to the worker
+- then it verifies the session
+- then it runs scoped sync
+
+No `scp` or `ssh` is required for this path.
 
 ## How To Confirm The Fix Worked
 
