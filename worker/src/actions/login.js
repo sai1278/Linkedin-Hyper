@@ -51,6 +51,15 @@ function isRedirectLoopError(err) {
   return msg.includes('err_too_many_redirects') || msg.includes('redirected too many times');
 }
 
+function pushTraceUrl(trace, url) {
+  const value = String(url || '').trim();
+  if (!value) return;
+  const last = trace[trace.length - 1];
+  if (last === value) return;
+  if (trace.length >= 20) return;
+  trace.push(value);
+}
+
 async function inspectAuthState(page) {
   try {
     return await page.evaluate(() => {
@@ -285,18 +294,35 @@ async function captureFailureScreenshot(page, accountId, label) {
 }
 
 async function tryNavigate(page, url) {
+  const trace = [];
+  const onFrameNavigated = (frame) => {
+    try {
+      if (frame === page.mainFrame()) {
+        pushTraceUrl(trace, frame.url());
+      }
+    } catch (_) {
+      // Ignore trace collection failures.
+    }
+  };
+
+  page.on('framenavigated', onFrameNavigated);
   try {
     await page.goto(url, {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
-    return { ok: true, url: page.url() };
+    pushTraceUrl(trace, page.url());
+    return { ok: true, url: page.url(), trace };
   } catch (err) {
+    pushTraceUrl(trace, page.url());
     return {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
       url: page.url(),
+      trace,
     };
+  } finally {
+    page.off('framenavigated', onFrameNavigated);
   }
 }
 
@@ -481,6 +507,7 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true, allow
         `feedTitle=${JSON.stringify(feedState?.title || '')} messagingTitle=${JSON.stringify(messagingState?.title || '')} ` +
         `feedState(login=${Boolean(feedState?.hasLoginForm)},authwall=${Boolean(feedState?.hasAuthwallMarkers)},challenge=${Boolean(feedState?.hasChallengeMarkers)},nav=${Boolean(feedState?.hasSignedInNav)},msg=${Boolean(feedState?.hasMessagingShell)},guest=${Boolean(feedState?.hasGuestCta)}) ` +
         `messagingState(login=${Boolean(messagingState?.hasLoginForm)},authwall=${Boolean(messagingState?.hasAuthwallMarkers)},challenge=${Boolean(messagingState?.hasChallengeMarkers)},nav=${Boolean(messagingState?.hasSignedInNav)},msg=${Boolean(messagingState?.hasMessagingShell)},guest=${Boolean(messagingState?.hasGuestCta)}) ` +
+        `feedTrace=${JSON.stringify(feedResult.trace || [])} messagingTrace=${JSON.stringify(messagingResult.trace || [])} ` +
         `feedError=${feedResult.error || 'none'} messagingError=${messagingResult.error || 'none'} screenshot=${screenshot || 'none'}`
       );
 

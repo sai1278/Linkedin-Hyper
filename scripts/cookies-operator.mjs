@@ -65,9 +65,16 @@ const envValues = parseEnvFile(path.join(repoRoot, '.env'));
 function getConfigValue(key) {
   const envValue = process.env[key];
   if (typeof envValue === 'string' && envValue.trim()) {
-    return envValue.trim();
+    return envValue.replace(/[\u0000-\u001f\u007f]/g, '').trim();
   }
-  return envValues.get(key)?.trim() || '';
+  const fileValue = envValues.get(key);
+  return typeof fileValue === 'string'
+    ? fileValue.replace(/[\u0000-\u001f\u007f]/g, '').trim()
+    : '';
+}
+
+function sanitizeSecretValue(value) {
+  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
 }
 
 function parseArgs(argv) {
@@ -115,10 +122,10 @@ function parseArgs(argv) {
         options.routeAuthToken = String(rest[++i] || '').trim();
         break;
       case '--apiKey':
-        options.apiKey = String(rest[++i] || '').trim();
+        options.apiKey = sanitizeSecretValue(rest[++i]);
         break;
       case '--apiSecret':
-        options.apiKey = String(rest[++i] || '').trim();
+        options.apiKey = sanitizeSecretValue(rest[++i]);
         break;
       case '--autoCapture':
         options.autoCapture = true;
