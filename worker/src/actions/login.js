@@ -8,6 +8,10 @@ const path = require('path');
 
 const DEBUG_SCREENSHOT_DIR =
   process.env.LI_DEBUG_SCREENSHOT_DIR || '/tmp/linkedin-hyper-debug';
+const VERIFY_SETTLE_TIMEOUT_MS = Math.max(
+  10_000,
+  parseInt(process.env.LI_VERIFY_SETTLE_TIMEOUT_MS || '30000', 10) || 30000
+);
 
 function isBlockedAuthPage(url) {
   const value = String(url || '').toLowerCase();
@@ -16,7 +20,9 @@ function isBlockedAuthPage(url) {
     value.includes('/login') ||
     value.includes('/checkpoint') ||
     value.includes('/authwall') ||
-    value.includes('challenge')
+    value.includes('challenge') ||
+    value.includes('captcha') ||
+    value.includes('security-verification')
   );
 }
 
@@ -52,6 +58,13 @@ async function inspectAuthState(page) {
         txt.includes('continue to linkedin') ||
         txt.includes('unlock your profile') ||
         txt.includes('create your account');
+      const hasChallengeMarkers =
+        txt.includes('security verification') ||
+        txt.includes('verify your identity') ||
+        txt.includes('enter the code we sent') ||
+        txt.includes('captcha') ||
+        txt.includes('let us confirm it') ||
+        txt.includes('confirm your identity');
       const navLinkSelectors = [
         'a[href*="/feed"]',
         'a[href*="/mynetwork"]',
@@ -93,8 +106,10 @@ async function inspectAuthState(page) {
         );
 
       return {
+        title: document.title || '',
         hasLoginForm,
         hasAuthwallMarkers,
+        hasChallengeMarkers,
         hasSignedInNav,
         hasMessagingShell,
         hasGuestCta,
@@ -103,8 +118,10 @@ async function inspectAuthState(page) {
     });
   } catch (err) {
     return {
+      title: '',
       hasLoginForm: false,
       hasAuthwallMarkers: false,
+      hasChallengeMarkers: false,
       hasSignedInNav: false,
       hasMessagingShell: false,
       hasGuestCta: false,
@@ -202,6 +219,12 @@ function classifyVerifyFailure({ accountId, feedUrl, messagingUrl, feedState, me
     return {
       code: 'CHECKPOINT_INCOMPLETE',
       message: `LinkedIn checkpoint/challenge is still pending for account ${accountId}. Complete checkpoint and re-import cookies.`,
+    };
+  }
+  if (feedState?.hasChallengeMarkers || messagingState?.hasChallengeMarkers) {
+    return {
+      code: 'CHECKPOINT_INCOMPLETE',
+      message: `LinkedIn verification or captcha is still pending for account ${accountId}. Complete the challenge and re-import cookies.`,
     };
   }
   if (isBlockedAuthPage(feedUrl) || isBlockedAuthPage(messagingUrl) || isLoggedOutState(feedState) || isLoggedOutState(messagingState)) {
@@ -302,13 +325,13 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true, allow
       const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
       await delay(600, 1200);
       const feedUrl = page.url();
-      const feedState = await waitForSettledAuthState(page, 20000);
+      const feedState = await waitForSettledAuthState(page, VERIFY_SETTLE_TIMEOUT_MS);
 
       // Messaging must be accessible for automation sends.
       const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
       await delay(600, 1200);
       const messagingUrl = page.url();
-      const messagingState = await waitForSettledAuthState(page, 20000);
+      const messagingState = await waitForSettledAuthState(page, VERIFY_SETTLE_TIMEOUT_MS);
       const contextCookies = await context.cookies().catch(() => []);
       const cookieFlags = getCookieFlags(contextCookies);
       const recoverableIssue = [
@@ -377,6 +400,7 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true, allow
       }
 
       const details = {
+        accountId,
         feed: { ok: feedResult.ok, url: feedUrl, error: feedResult.error || null },
         messaging: { ok: messagingResult.ok, url: messagingUrl, error: messagingResult.error || null },
         authState: {
@@ -408,7 +432,10 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true, allow
         `[verifySession:${accountId}] attempt ${attempt}/${maxVerifyAttempts} failed code=${failure.code} ` +
         `feedUrl=${feedUrl} messagingUrl=${messagingUrl} feedOk=${feedAuthenticated} messagingOk=${messagingAuthenticated} ` +
         `cookies(li_at=${cookieFlags.hasLiAt},JSESSIONID=${cookieFlags.hasJsession},count=${cookieFlags.total}) ` +
-        `feedError=${feedResult.error || 'none'} messagingError=${messagingResult.error || 'none'}`
+        `feedTitle=${JSON.stringify(feedState?.title || '')} messagingTitle=${JSON.stringify(messagingState?.title || '')} ` +
+        `feedState(login=${Boolean(feedState?.hasLoginForm)},authwall=${Boolean(feedState?.hasAuthwallMarkers)},challenge=${Boolean(feedState?.hasChallengeMarkers)},nav=${Boolean(feedState?.hasSignedInNav)},msg=${Boolean(feedState?.hasMessagingShell)},guest=${Boolean(feedState?.hasGuestCta)}) ` +
+        `messagingState(login=${Boolean(messagingState?.hasLoginForm)},authwall=${Boolean(messagingState?.hasAuthwallMarkers)},challenge=${Boolean(messagingState?.hasChallengeMarkers)},nav=${Boolean(messagingState?.hasSignedInNav)},msg=${Boolean(messagingState?.hasMessagingShell)},guest=${Boolean(messagingState?.hasGuestCta)}) ` +
+        `feedError=${feedResult.error || 'none'} messagingError=${messagingResult.error || 'none'} screenshot=${screenshot || 'none'}`
       );
 
       // Retry once for this flaky LinkedIn state before failing.
