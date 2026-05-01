@@ -228,9 +228,6 @@ function normalizeCookieDomain(domain) {
   if (!raw) return raw;
 
   const lower = raw.toLowerCase();
-  if (lower === '.www.linkedin.com') {
-    return 'www.linkedin.com';
-  }
   if (lower === 'linkedin.com') {
     return '.linkedin.com';
   }
@@ -239,7 +236,8 @@ function normalizeCookieDomain(domain) {
 }
 
 function normaliseCookies(cookies) {
-  const normalizedList = cookies.map((c) => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const normalizedList = cookies.flatMap((c) => {
     const normalized = {
       ...c,
       domain: normalizeCookieDomain(c.domain),
@@ -256,9 +254,11 @@ function normaliseCookies(cookies) {
     const exp = Number(normalized.expires);
     if (!Number.isFinite(exp) || exp <= 0) {
       delete normalized.expires;
+    } else if (exp <= nowSeconds) {
+      return [];
     }
 
-    return normalized;
+    return [normalized];
   });
 
   const deduped = [];

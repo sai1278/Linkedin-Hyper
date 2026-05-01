@@ -46,6 +46,11 @@ function isRecoverableBrowserError(err) {
   );
 }
 
+function isRedirectLoopError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  return msg.includes('err_too_many_redirects') || msg.includes('redirected too many times');
+}
+
 async function inspectAuthState(page) {
   try {
     return await page.evaluate(() => {
@@ -208,11 +213,26 @@ function getCookieFlags(cookies) {
   };
 }
 
-function classifyVerifyFailure({ accountId, feedUrl, messagingUrl, feedState, messagingState, cookieFlags }) {
+function classifyVerifyFailure({
+  accountId,
+  feedUrl,
+  messagingUrl,
+  feedState,
+  messagingState,
+  cookieFlags,
+  feedError,
+  messagingError,
+}) {
   if (!cookieFlags.hasLiAt || !cookieFlags.hasJsession) {
     return {
       code: 'COOKIES_MISSING',
       message: `Required LinkedIn cookies (li_at/JSESSIONID) are missing for account ${accountId}. Re-import cookies.`,
+    };
+  }
+  if (isRedirectLoopError(feedError) || isRedirectLoopError(messagingError)) {
+    return {
+      code: 'NAVIGATION_REDIRECT_LOOP',
+      message: `LinkedIn redirected too many times for account ${accountId}. The imported cookies did not produce a stable member session on the worker. Re-capture cookies and retry.`,
     };
   }
   if (isCheckpointLike(feedUrl) || isCheckpointLike(messagingUrl)) {
@@ -325,13 +345,37 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true, allow
       const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
       await delay(600, 1200);
       const feedUrl = page.url();
-      const feedState = await waitForSettledAuthState(page, VERIFY_SETTLE_TIMEOUT_MS);
+      const feedState = feedResult.ok || !isRedirectLoopError(feedResult.error)
+        ? await waitForSettledAuthState(page, VERIFY_SETTLE_TIMEOUT_MS)
+        : {
+            title: '',
+            hasLoginForm: false,
+            hasAuthwallMarkers: false,
+            hasChallengeMarkers: false,
+            hasSignedInNav: false,
+            hasMessagingShell: false,
+            hasGuestCta: false,
+            url: feedUrl,
+            error: feedResult.error,
+          };
 
       // Messaging must be accessible for automation sends.
       const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
       await delay(600, 1200);
       const messagingUrl = page.url();
-      const messagingState = await waitForSettledAuthState(page, VERIFY_SETTLE_TIMEOUT_MS);
+      const messagingState = messagingResult.ok || !isRedirectLoopError(messagingResult.error)
+        ? await waitForSettledAuthState(page, VERIFY_SETTLE_TIMEOUT_MS)
+        : {
+            title: '',
+            hasLoginForm: false,
+            hasAuthwallMarkers: false,
+            hasChallengeMarkers: false,
+            hasSignedInNav: false,
+            hasMessagingShell: false,
+            hasGuestCta: false,
+            url: messagingUrl,
+            error: messagingResult.error,
+          };
       const contextCookies = await context.cookies().catch(() => []);
       const cookieFlags = getCookieFlags(contextCookies);
       const recoverableIssue = [
@@ -417,6 +461,8 @@ async function verifySession({ accountId, proxyUrl, persistCookies = true, allow
         feedState,
         messagingState,
         cookieFlags,
+        feedError: feedResult.error,
+        messagingError: messagingResult.error,
       });
 
       const screenshot = await captureFailureScreenshot(page, accountId, `verify-${failure.code.toLowerCase()}-attempt-${attempt}`);

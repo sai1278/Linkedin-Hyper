@@ -1294,6 +1294,13 @@ async function runJob(name, data, timeoutMs = 120_000) {
       ) {
         failErr.code = 'CHECKPOINT_INCOMPLETE';
         failErr.status = 401;
+      } else if (
+        reason.includes('NAVIGATION_REDIRECT_LOOP') ||
+        lowerReason.includes('redirected too many times') ||
+        lowerReason.includes('err_too_many_redirects')
+      ) {
+        failErr.code = 'NAVIGATION_REDIRECT_LOOP';
+        failErr.status = 401;
       } else if (reason.includes('LOGIN_NOT_FINISHED') || lowerReason.includes('login is not fully completed')) {
         failErr.code = 'LOGIN_NOT_FINISHED';
         failErr.status = 401;
@@ -1364,11 +1371,22 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
       message: `LinkedIn session verification succeeded for account ${accountId}.`,
     });
   } catch (err) {
-    if (['NO_SESSION', 'SESSION_EXPIRED', 'AUTHENTICATED_STATE_NOT_REACHED', 'COOKIES_MISSING'].includes(err?.code)) {
+    if ([
+      'NO_SESSION',
+      'SESSION_EXPIRED',
+      'AUTHENTICATED_STATE_NOT_REACHED',
+      'COOKIES_MISSING',
+      'CHECKPOINT_INCOMPLETE',
+      'LOGIN_NOT_FINISHED',
+      'NAVIGATION_REDIRECT_LOOP',
+    ].includes(err?.code)) {
       markSessionIssue(req.params.accountId, {
         code: err.code,
         message: toPublicOperationError(err),
       });
+    }
+    if (res.headersSent) {
+      return;
     }
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({

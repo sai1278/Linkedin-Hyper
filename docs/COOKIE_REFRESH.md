@@ -20,7 +20,9 @@ Refresh cookies when one or more of these are true:
 This is now the preferred operator flow from a laptop. It uses the public app on `3002/api`, then the BFF forwards only the narrow cookie-recovery endpoints to the worker with `API_SECRET`.
 
 ```powershell
-npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3002/api --apiSecret <API_SECRET>
+$base = "http://139.59.98.240:3002/api"
+$env:LI_COOKIE_API_SECRET = "REAL_API_SECRET_FROM_SERVER_ENV"
+npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl $base
 ```
 
 What it does:
@@ -135,7 +137,9 @@ npm run cookies:capture -- --accountId saikanchi130 --browser chrome
 This is convenient when you want to keep capture and upload separate:
 
 ```powershell
-npm run cookies:import -- --accountId saikanchi130 --autoCapture --useLiveProfile --baseUrl http://139.59.98.240:3002/api --apiSecret <API_SECRET>
+$base = "http://139.59.98.240:3002/api"
+$env:LI_COOKIE_API_SECRET = "REAL_API_SECRET_FROM_SERVER_ENV"
+npm run cookies:import -- --accountId saikanchi130 --autoCapture --useLiveProfile --baseUrl $base
 ```
 
 ## Copy Cookie File To Server
@@ -252,8 +256,9 @@ Use the repo that contains the cookie operator scripts:
 
 ```powershell
 cd "C:\Users\kanchiDhyana sai\OneDrive\Desktop\linkedin\Linkedin-Hyper-V-inboxfix2"
-$apiSecret = "YOUR_REAL_API_SECRET"
-npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl http://139.59.98.240:3002/api --apiSecret $apiSecret
+$base = "http://139.59.98.240:3002/api"
+$env:LI_COOKIE_API_SECRET = "REAL_API_SECRET_FROM_SERVER_ENV"
+npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl $base
 ```
 
 What happens:

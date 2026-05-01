@@ -84,7 +84,7 @@ function parseArgs(argv) {
     captureProfile: '',
     baseUrl: getConfigValue('COOKIE_IMPORT_BASE_URL') || 'http://localhost:3001',
     routeAuthToken: getConfigValue('API_ROUTE_AUTH_TOKEN'),
-    apiKey: getConfigValue('API_SECRET'),
+    apiKey: getConfigValue('LI_COOKIE_API_SECRET') || getConfigValue('API_SECRET'),
   };
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -171,7 +171,7 @@ function buildHeaders(options) {
 
     if (!options.routeAuthToken) {
       throw new Error(
-        'BaseUrl points to the public /api BFF. Provide --apiSecret for the cookie-operator allowlist, or use --routeAuthToken only if your deployment explicitly allows static bearer tokens.'
+        'BaseUrl points to the public /api BFF. Provide --apiSecret (or set LI_COOKIE_API_SECRET/API_SECRET), or use --routeAuthToken only if your deployment explicitly allows static bearer tokens.'
       );
     }
     return {
@@ -182,7 +182,7 @@ function buildHeaders(options) {
 
   if (!options.apiKey) {
     throw new Error(
-      'Missing API key. Provide --apiKey, or set API_SECRET in .env/environment for direct worker access.'
+      'Missing API key. Provide --apiKey/--apiSecret, or set LI_COOKIE_API_SECRET/API_SECRET in .env or the environment.'
     );
   }
 
@@ -507,7 +507,7 @@ async function runRefreshDirect(options) {
     throw new Error('Missing --baseUrl');
   }
   if (!options.apiKey) {
-    throw new Error('Missing --apiSecret');
+    throw new Error('Missing --apiSecret (or set LI_COOKIE_API_SECRET/API_SECRET)');
   }
 
   const directOptions = {
