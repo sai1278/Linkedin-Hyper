@@ -48,7 +48,6 @@ async function inspectAuthState(page) {
         Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]'));
       const hasAuthwallMarkers =
         txt.includes('join linkedin') ||
-        txt.includes('sign in') ||
         txt.includes('new to linkedin') ||
         txt.includes('continue to linkedin') ||
         txt.includes('unlock your profile') ||
@@ -123,7 +122,8 @@ function isLoggedOutState(state) {
   const guestOnlyState = Boolean(
     state?.hasGuestCta &&
     !state?.hasSignedInNav &&
-    !state?.hasMessagingShell
+    !state?.hasMessagingShell &&
+    !isStrongMemberUrl(state?.url)
   );
   return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers || guestOnlyState);
 }
@@ -150,6 +150,14 @@ function isStrongMemberUrl(url) {
 function isAuthenticatedLinkedInPage(state) {
   const hasUiSignal = Boolean(state?.hasSignedInNav || state?.hasMessagingShell);
   const hasStrongUrlSignal = isStrongMemberUrl(state?.url);
+  if (
+    state &&
+    !isBlockedAuthPage(state.url) &&
+    hasUiSignal &&
+    hasStrongUrlSignal
+  ) {
+    return true;
+  }
   return Boolean(
     state &&
     !isBlockedAuthPage(state.url) &&
