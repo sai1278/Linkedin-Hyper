@@ -284,7 +284,17 @@ function printOperatorHint(error) {
   }
   if (/fetch failed/i.test(message)) {
     console.error('Hint: the target baseUrl is unreachable from this laptop. If port 3001 is blocked, use the public BFF URL http://<host>:3002/api with --apiSecret <API_SECRET>.');
+    return;
   }
+  if (/request timed out/i.test(message) || /backend request timed out/i.test(message)) {
+    console.error('Hint: cookie import may already have succeeded. Retry verification once, or check session status before recapturing cookies.');
+  }
+}
+
+function isTimeoutLikeError(error) {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  return code.includes('timeout') || message.includes('timed out');
 }
 
 function spawnLogged(command, args, options = {}) {
@@ -406,6 +416,26 @@ async function runVerify(options, label = 'Verification') {
   return result;
 }
 
+async function runVerifyWithRetry(options, label = 'Verification', attempts = 2) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        console.log(`${label} retry ${attempt}/${attempts}...`);
+      }
+      return await runVerify(options, label);
+    } catch (error) {
+      lastError = error;
+      if (!isTimeoutLikeError(error) || attempt >= attempts) {
+        throw error;
+      }
+      console.log(`${label} timed out on attempt ${attempt}/${attempts}. Waiting 10 seconds before retrying...`);
+      await delay(10_000);
+    }
+  }
+  throw lastError || new Error(`${label} failed`);
+}
+
 async function runSync(options, label = 'Sync') {
   ensureAccountId(options);
   const headers = buildHeaders(options);
@@ -455,9 +485,9 @@ async function runImport(options) {
   console.log(`Cookie import succeeded for account '${options.accountId}'.`);
   console.log(`Imported cookies: ${importResult?.cookieCount ?? cookies.length}`);
 
-  await runVerify(options, 'Immediate verification');
+  await runVerifyWithRetry(options, 'Immediate verification');
   await delay(5000);
-  await runVerify(options, 'Persistence verification');
+  await runVerifyWithRetry(options, 'Persistence verification');
 
   const status = await getSessionStatus(options);
   if (status?.exists) {
@@ -520,7 +550,7 @@ async function runRefreshDirect(options) {
   console.log(`Server accepted ${importResult?.cookieCount ?? cookies.length} cookies.`);
 
   console.log('Verifying session...');
-  await runVerify(directOptions, 'Session verification');
+  await runVerifyWithRetry(directOptions, 'Session verification');
 
   console.log('Running sync...');
   await runSync(directOptions, 'Sync');

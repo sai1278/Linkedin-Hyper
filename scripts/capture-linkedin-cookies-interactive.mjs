@@ -205,13 +205,24 @@ function isStrongMemberUrl(url) {
 function isAuthenticatedLinkedInPage(state) {
   const hasUiSignal = Boolean(state?.hasSignedInNav || state?.hasMessagingShell);
   const hasStrongUrlSignal = isStrongMemberUrl(state?.url);
-  const guestOnlyState = Boolean(state?.hasGuestCta && !hasUiSignal);
+  const hasRequiredCookies = Boolean(state?.hasLiAt && state?.hasJsession && state?.liAtFresh);
+  const guestOnlyState = Boolean(state?.hasGuestCta && !hasUiSignal && !hasStrongUrlSignal);
+
+  if (
+    hasRequiredCookies &&
+    hasStrongUrlSignal &&
+    hasUiSignal &&
+    !state?.blockedAuthPage
+  ) {
+    return true;
+  }
+
   return Boolean(
     state &&
     !state.blockedAuthPage &&
     !state.hasLoginForm &&
-    !state.hasAuthwallMarkers &&
     !guestOnlyState &&
+    (!state.hasAuthwallMarkers || (hasStrongUrlSignal && hasUiSignal)) &&
     (hasUiSignal || hasStrongUrlSignal)
   );
 }
@@ -380,7 +391,6 @@ async function inspectLinkedInDomStateViaCdp(cdp) {
         hasLoginForm: Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]')),
         hasAuthwallMarkers:
           text.includes('join linkedin') ||
-          text.includes('sign in') ||
           text.includes('new to linkedin') ||
           text.includes('continue to linkedin') ||
           text.includes('unlock your profile') ||

@@ -16,6 +16,6 @@ export async function POST(
     method: 'POST',
     path: `/accounts/${accountId}/verify`,
     // Verify can now take longer because we wait for feed/messaging auth state to settle.
-    timeoutMs: 240_000,
+    timeoutMs: 420_000,
   });
 }
