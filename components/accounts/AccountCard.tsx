@@ -1,134 +1,104 @@
-// FILE: components/accounts/AccountCard.tsx
 'use client';
 
-import { useState } from 'react';
 import { SessionStatus } from './SessionStatus';
 import { RateLimitBar } from '../dashboard/RateLimitBar';
-import { Loader2, RefreshCw, Trash2 } from 'lucide-react';
-import toast from 'react-hot-toast';
+import { AlertTriangle, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import type { Account } from '@/types/dashboard';
-
-interface RateLimits {
-  messagesSent?: { current: number; limit: number; resetsAt?: number };
-  connectRequests?: { current: number; limit: number; resetsAt?: number };
-  searchQueries?: { current: number; limit: number; resetsAt?: number };
-}
+import type { AccountRateLimits, AccountSessionStatus } from '@/lib/api-client';
+import type { DerivedAccountHealth } from '@/lib/account-health';
+import { formatRelativeDate } from '@/lib/account-health';
 
 interface AccountCardProps {
   account: Account;
-  onRefresh: () => void;
+  label: string;
+  health: DerivedAccountHealth;
+  sessionStatus: AccountSessionStatus | null;
+  rateLimits: AccountRateLimits | null;
+  messagesSent: number;
+  lastSyncedAt: number | null;
+  isVerifying: boolean;
+  isDeleting: boolean;
+  onVerify: (accountId: string) => void;
+  onDelete: (accountId: string) => void;
   onImport: (accountId: string) => void;
 }
 
-export function AccountCard({ account, onRefresh, onImport }: AccountCardProps) {
-  const [isVerifying, setIsVerifying] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [rateLimits, setRateLimits] = useState<RateLimits | null>(null);
-  const [limitsLoading, setLimitsLoading] = useState(false);
-
-  const loadRateLimits = async () => {
-    setLimitsLoading(true);
-    try {
-      const res = await fetch(`/api/accounts/${account.id}/limits`);
-      if (res.ok) {
-        const data = await res.json();
-        setRateLimits(data);
-      }
-    } catch (err) {
-      console.error('Failed to load rate limits:', err);
-    } finally {
-      setLimitsLoading(false);
-    }
-  };
-
-  const handleVerify = async () => {
-    setIsVerifying(true);
-    try {
-      const res = await fetch(`/api/accounts/${account.id}/verify`, {
-        method: 'POST',
-      });
-      
-      if (res.ok) {
-        toast.success(`Session verified for ${account.id}`);
-        onRefresh();
-      } else {
-        const data = await res.json();
-        toast.error(data.error || 'Verification failed');
-      }
-    } catch {
-      toast.error('Network error during verification');
-    } finally {
-      setIsVerifying(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!confirm(`Delete session for ${account.id}?`)) return;
-    
-    setIsDeleting(true);
-    try {
-      const res = await fetch(`/api/accounts/${account.id}/session`, {
-        method: 'DELETE',
-      });
-      
-      if (res.ok) {
-        toast.success(`Session deleted for ${account.id}`);
-        onRefresh();
-      } else {
-        toast.error('Failed to delete session');
-      }
-    } catch {
-      toast.error('Network error during deletion');
-    } finally {
-      setIsDeleting(false);
-    }
-  };
+export function AccountCard({
+  account,
+  label,
+  health,
+  sessionStatus,
+  rateLimits,
+  messagesSent,
+  lastSyncedAt,
+  isVerifying,
+  isDeleting,
+  onVerify,
+  onDelete,
+  onImport,
+}: AccountCardProps) {
+  const hasSession = Boolean(sessionStatus?.exists);
+  const sessionAgeText = hasSession && sessionStatus?.savedAt
+    ? formatRelativeDate(sessionStatus.savedAt)
+    : 'No session';
+  const lastSyncedText = lastSyncedAt ? formatRelativeDate(lastSyncedAt) : 'Not synced yet';
 
   return (
     <div
-      className="rounded-xl border p-4 space-y-4"
+      className="space-y-4 rounded-2xl border p-5"
       style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}
     >
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h3 className="font-semibold text-lg" style={{ color: 'var(--text-primary)' }}>
-            {account.id}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="truncate text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
+            {label}
           </h3>
-          <SessionStatus
-            isActive={account.isActive}
-            hasSession={!!account.lastSeen}
-            lastSeen={account.lastSeen}
-          />
+          <p className="mt-1 text-xs uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+            {account.id}
+          </p>
         </div>
         <div
-          className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold"
-          style={{ background: 'var(--accent)', color: 'white' }}
+          className="flex h-11 w-11 items-center justify-center rounded-full text-sm font-bold"
+          style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #4c1d95 100%)', color: 'white' }}
         >
-          {account.id.substring(0, 2).toUpperCase()}
+          {label.substring(0, 2).toUpperCase()}
         </div>
       </div>
 
-      {/* Rate Limits */}
-      {!rateLimits && !limitsLoading && (
-        <button
-          onClick={loadRateLimits}
-          className="text-sm px-3 py-1.5 rounded-lg border transition-all"
-          style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+      <SessionStatus
+        label={health.label}
+        color={health.color}
+        detail={health.description}
+      />
+
+      {health.key !== 'healthy' && (
+        <div
+          className="flex items-start gap-2 rounded-xl px-3 py-3"
+          style={{
+            background: health.key === 'expired' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(245, 158, 11, 0.12)',
+            border: `1px solid ${health.key === 'expired' ? 'rgba(239, 68, 68, 0.24)' : 'rgba(245, 158, 11, 0.24)'}`,
+          }}
         >
-          Load Rate Limits
-        </button>
-      )}
-      
-      {limitsLoading && (
-        <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
-          <Loader2 size={14} className="animate-spin" />
-          Loading limits...
+          <AlertTriangle size={16} style={{ color: health.color, flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+              Action recommended
+            </p>
+            <p className="mt-1 text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+              Refresh cookies before inbox names go unknown or sends start failing silently.
+            </p>
+          </div>
         </div>
       )}
 
+      <div className="grid grid-cols-3 gap-3">
+        <MetricCard label="Cookie age" value={sessionAgeText} />
+        <MetricCard label="Last synced" value={lastSyncedText} />
+        <MetricCard label="Messages today" value={String(messagesSent)} />
+      </div>
+
       {rateLimits && (
-        <div className="space-y-3">
+        <div className="space-y-3 rounded-xl border p-3" style={{ borderColor: 'var(--border)' }}>
           {rateLimits.messagesSent && (
             <RateLimitBar
               label="Messages Sent"
@@ -145,51 +115,49 @@ export function AccountCard({ account, onRefresh, onImport }: AccountCardProps) 
               resetsAt={rateLimits.connectRequests.resetsAt}
             />
           )}
-          {rateLimits.searchQueries && (
-            <RateLimitBar
-              label="Search Queries"
-              current={rateLimits.searchQueries.current}
-              limit={rateLimits.searchQueries.limit}
-              resetsAt={rateLimits.searchQueries.resetsAt}
-            />
-          )}
         </div>
       )}
 
-      {/* Actions */}
-      <div className="flex gap-2 pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
+      <div className="flex gap-2 border-t pt-3" style={{ borderColor: 'var(--border)' }}>
         <button
           onClick={() => onImport(account.id)}
-          className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+          className="flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all"
           style={{ background: 'var(--accent)', color: 'white' }}
         >
-          Import Cookies
+          {hasSession ? 'Refresh Cookies' : 'Import Cookies'}
         </button>
         <button
-          onClick={handleVerify}
+          onClick={() => onVerify(account.id)}
           disabled={isVerifying}
-          className="px-3 py-2 rounded-lg border text-sm font-medium transition-all disabled:opacity-50"
+          className="rounded-lg border px-3 py-2 text-sm font-medium transition-all disabled:opacity-50"
           style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+          title="Verify this session"
         >
-          {isVerifying ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <RefreshCw size={16} />
-          )}
+          {isVerifying ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
         </button>
         <button
-          onClick={handleDelete}
+          onClick={() => onDelete(account.id)}
           disabled={isDeleting}
-          className="px-3 py-2 rounded-lg border text-sm font-medium transition-all disabled:opacity-50"
+          className="rounded-lg border px-3 py-2 text-sm font-medium transition-all disabled:opacity-50"
           style={{ borderColor: '#ef4444', color: '#ef4444' }}
+          title="Delete this session"
         >
-          {isDeleting ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <Trash2 size={16} />
-          )}
+          {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
         </button>
       </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl px-3 py-3" style={{ background: 'var(--bg-elevated)' }}>
+      <p className="text-[11px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+        {label}
+      </p>
+      <p className="mt-1 text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+        {value}
+      </p>
     </div>
   );
 }

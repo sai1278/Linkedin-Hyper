@@ -1,64 +1,57 @@
 'use client';
 
-import type { ComponentType } from 'react';
 import type { ActivityEntry } from '@/types/dashboard';
 import { Avatar } from '@/components/ui/Avatar';
 import { AccountBadge } from '@/components/ui/AccountBadge';
 import { timeAgo } from '@/lib/utils';
 import { deriveDisplayName } from '@/lib/display-name';
-import { MessageSquare, UserPlus, Eye, RefreshCw, Bell } from 'lucide-react';
+import { Eye, MessageSquare, RefreshCw, UserPlus } from 'lucide-react';
+import { formatAccountLabel } from '@/lib/account-label';
 
-type ActivityMeta = {
-  icon: ComponentType<{ size: number; color: string }>;
-  label: string;
-  color: string;
-};
-
-const TYPE_META: Record<string, ActivityMeta> = {
-  messageSent: { icon: MessageSquare, label: 'Message sent', color: 'var(--accent)' },
+const TYPE_META: Record<
+  string,
+  {
+    icon: React.ComponentType<{ size: number; color: string }>;
+    label: string;
+    color: string;
+  }
+> = {
+  messageSent: { icon: MessageSquare, label: 'Message sent', color: '#8b7cf8' },
   connectionSent: { icon: UserPlus, label: 'Connection sent', color: '#22c55e' },
-  profileViewed: { icon: Eye, label: 'Profile viewed', color: 'var(--accent)' },
-  sync: { icon: RefreshCw, label: 'Inbox sync', color: 'var(--accent)' },
+  profileViewed: { icon: Eye, label: 'Profile viewed', color: '#f59e0b' },
+  sync: { icon: RefreshCw, label: 'Sync completed', color: '#166fe5' },
 };
 
-const FALLBACK_META: ActivityMeta = {
-  icon: Bell,
-  label: 'Activity',
-  color: 'var(--accent)',
-};
+function formatActivityLabel(type: string): string {
+  const normalized = String(type || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+
+  if (!normalized) return 'Activity';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
 
 export function NotificationRow({ entry }: { entry: ActivityEntry }) {
-  const typeKey = String(entry.type || '');
-  const meta = TYPE_META[typeKey] ?? FALLBACK_META;
+  const meta = TYPE_META[entry.type] || {
+    icon: RefreshCw,
+    label: formatActivityLabel(entry.type),
+    color: '#6b7280',
+  };
   const Icon = meta.icon;
-
-  const isSyncEntry = typeKey === 'sync';
-  const displayName = isSyncEntry
-    ? `${entry.accountId} synchronization`
-    : deriveDisplayName(entry.targetName, entry.targetProfileUrl || '');
-
-  const summaryText = (() => {
-    if (entry.message) {
-      return ` - ${entry.message.slice(0, 80)}${entry.message.length > 80 ? '...' : ''}`;
-    }
-    if (isSyncEntry && entry.stats) {
-      const conversations = Number(entry.stats.conversations || 0);
-      const newMessages = Number(entry.stats.newMessages || 0);
-      return ` - ${conversations} conversations, ${newMessages} new messages`;
-    }
-    return '';
-  })();
+  const displayName = entry.targetName
+    ? deriveDisplayName(entry.targetName, entry.targetProfileUrl || '')
+    : formatAccountLabel(entry.accountId);
+  const messagePreview = entry.message
+    ? ` - ${entry.message.slice(0, 80)}${entry.message.length > 80 ? '...' : ''}`
+    : entry.type === 'sync'
+      ? ' - Background sync recorded for this account.'
+      : '';
 
   return (
     <div
-      className="flex items-start gap-3 px-6 py-4 transition-colors cursor-default"
+      className="interactive-row flex items-start gap-3 px-6 py-4"
       style={{ borderBottom: '1px solid var(--border)' }}
-      onMouseEnter={(e) =>
-        ((e.currentTarget as HTMLDivElement).style.background = 'var(--bg-hover)')
-      }
-      onMouseLeave={(e) =>
-        ((e.currentTarget as HTMLDivElement).style.background = 'transparent')
-      }
     >
       <div className="relative flex-shrink-0">
         <Avatar name={displayName} size="sm" />
@@ -70,34 +63,35 @@ export function NotificationRow({ entry }: { entry: ActivityEntry }) {
         </span>
       </div>
 
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
             {displayName}
           </span>
-          <AccountBadge name={entry.accountId} />
+          <AccountBadge name={formatAccountLabel(entry.accountId)} />
         </div>
-        <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+        <p className="mt-0.5 text-xs" style={{ color: 'var(--text-muted)' }}>
           <span style={{ color: meta.color }}>{meta.label}</span>
-          {summaryText}
+          {messagePreview}
         </p>
         {entry.targetProfileUrl && (
           <a
             href={entry.targetProfileUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[11px] mt-0.5 inline-block truncate max-w-[200px]"
+            className="mt-0.5 inline-block max-w-[200px] truncate text-[11px]"
             style={{ color: 'var(--text-link)' }}
           >
             {entry.targetProfileUrl
               .replace('https://linkedin.com/in/', '')
+              .replace('https://www.linkedin.com/in/', '')
               .replace(/\/$/, '')}
           </a>
         )}
       </div>
 
       <span
-        className="text-[10px] flex-shrink-0 mt-0.5"
+        className="mt-0.5 flex-shrink-0 text-[10px]"
         style={{ color: 'var(--text-muted)' }}
       >
         {timeAgo(entry.timestamp)}

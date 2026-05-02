@@ -41,7 +41,7 @@ PROXY_URL=
 ### 3. Build and launch
 
 ```bash
-docker-compose up -d --build
+make deploy
 ```
 
 Docker will:
@@ -54,14 +54,9 @@ Docker will:
 ## Startup Verification
 
 ```bash
-# All three services should show "healthy"
-docker-compose ps
-
-# Worker should log "Worker API listening on port 3001"
-docker-compose logs --tail=30 worker
-
-# Frontend should show Next.js startup
-docker-compose logs --tail=30 frontend
+make status
+make logs-worker
+make logs-frontend
 ```
 
 Send a test health request:
@@ -78,10 +73,10 @@ curl http://localhost:3001/health
 LinkedIn sessions are imported as raw cookie arrays. Get them from your browser's DevTools (Application → Cookies → linkedin.com). You need at minimum `li_at` and `JSESSIONID`.
 
 ```bash
-export API_SECRET=your_api_secret_here
+API_SECRET="$(grep -E '^API_SECRET=' .env | cut -d= -f2-)"
 
 # Import cookies for account "alice"
-curl -s -X POST http://localhost:3001/accounts/alice/session \
+curl -s -X POST http://127.0.0.1:3001/accounts/alice/session \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: $API_SECRET" \
   -d '[
@@ -90,7 +85,7 @@ curl -s -X POST http://localhost:3001/accounts/alice/session \
   ]'
 
 # Verify session is stored
-curl -s http://localhost:3001/accounts/alice/session/status \
+curl -s http://127.0.0.1:3001/accounts/alice/session/status \
   -H "X-Api-Key: $API_SECRET"
 # → {"exists":true,"accountId":"alice","savedAt":1234567890}
 ```
@@ -129,7 +124,7 @@ server {
 
 ```bash
 git pull origin main
-docker-compose up -d --build
+make deploy
 ```
 
 Containers will be rebuilt and restarted. Sessions and activity logs persist in Redis across restarts.
@@ -139,18 +134,15 @@ Containers will be rebuilt and restarted. Sessions and activity logs persist in 
 ## Monitoring
 
 ```bash
-# Follow all logs
-docker-compose logs -f
-
-# Worker only (actions, rate limits, errors)
-docker-compose logs -f worker
+make logs
+make logs-worker
 
 # Check rate limit state for an account
-docker exec -it $(docker-compose ps -q redis) \
+docker exec -it $(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q redis) \
   redis-cli -a $REDIS_PASSWORD keys "ratelimit:alice:*"
 
 # Check activity log length
-docker exec -it $(docker-compose ps -q redis) \
+docker exec -it $(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q redis) \
   redis-cli -a $REDIS_PASSWORD llen activity:log:alice
 ```
 
@@ -161,8 +153,7 @@ docker exec -it $(docker-compose ps -q redis) \
 **Backup:**
 
 ```bash
-docker exec $(docker-compose ps -q redis) redis-cli -a $REDIS_PASSWORD BGSAVE
-docker cp $(docker-compose ps -q redis):/data/dump.rdb ./redis-backup.rdb
+make backup-redis
 ```
 
 **Restore:**
@@ -262,12 +253,12 @@ Enter your domain and email when prompted. The script will:
 
 **7. Build and start services (production profile):**
 ```bash
-bash deployment/deploy-prod.sh
+make deploy
 ```
 
 **8. Verify deployment:**
 ```bash
-bash deployment/healthcheck.sh
+make status
 ```
 
 **9. Access dashboard:**
@@ -283,15 +274,10 @@ Navigate to `https://your-domain.com` and login with `DASHBOARD_PASSWORD`.
 
 **Monitor Services:**
 ```bash
-# View all logs
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f
-
-# View specific service
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f frontend
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f worker
-
-# Check health
-bash deployment/healthcheck.sh
+make logs
+make logs-frontend
+make logs-worker
+make status
 
 # Nginx logs
 sudo tail -f /var/log/nginx/linkedin-hyper-v-access.log
@@ -302,21 +288,18 @@ sudo tail -f /var/log/nginx/linkedin-hyper-v-error.log
 ```bash
 cd ~/linkedin-hyper-v
 git pull origin main
-bash deployment/deploy-prod.sh
-bash deployment/healthcheck.sh
+make deploy
+make status
 ```
 
 **Backup:**
 ```bash
-# Backup Redis data
-docker exec $(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q redis) redis-cli -a "$REDIS_PASSWORD" BGSAVE
-docker cp $(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q redis):/data/dump.rdb ./backup-$(date +%Y%m%d).rdb
+make backup-all
+```
 
-# Backup .env file
-cp .env .env.backup-$(date +%Y%m%d)
-
-# Backup both
-tar -czf linkedin-hyper-v-backup-$(date +%Y%m%d).tar.gz .env dump.rdb
+**Rollback:**
+```bash
+make rollback REF=main~1
 ```
 
 ### Troubleshooting

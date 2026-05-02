@@ -3,8 +3,8 @@
 const express    = require('express');
 const crypto     = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { getQueue, getQueueEvents }   = require('./queue');
-const { startWorker }  = require('./worker');
+const { getQueue, getQueueEvents, getQueueStats }   = require('./queue');
+const { startWorker, getWorkerStatus }  = require('./worker');
 const {
   saveCookies,
   loadCookies,
@@ -15,12 +15,21 @@ const {
 } = require('./session');
 const { verifySession } = require('./actions/login');
 const { readMessages } = require('./actions/readMessages');
+const { readConnections } = require('./actions/readConnections');
 const { readThread } = require('./actions/readThread');
-const { sendMessage } = require('./actions/sendMessage');
-const { sendMessageNew } = require('./actions/sendMessageNew');
 const { sendConnectionRequest } = require('./actions/connect');
 const { searchPeople } = require('./actions/searchPeople');
+const { runNamedJob } = require('./jobRunner');
 const { getLimits }    = require('./rateLimit');
+const { createRequestLoggerMiddleware, logger } = require('./utils/logger');
+const { getMetricsSnapshot, recordMessageSent, recordSendFailure, recordSessionExpired, recordSyncResult } = require('./utils/metrics');
+const { DB_READ_TIMEOUT_MS, DB_WRITE_TIMEOUT_MS, isDatabaseUnavailable, recordDatabaseIssue, withTimeout } = require('./utils/database');
+const { registerPublicHealthRoute, registerInternalHealthRoutes } = require('./routes/health');
+const { registerMetricsRoutes } = require('./routes/metrics');
+const { registerSyncRoutes } = require('./routes/sync');
+const { registerInboxRoutes } = require('./routes/inbox');
+const { registerSendRoutes } = require('./routes/send');
+const { createInboxFallbackService } = require('./services/inboxFallbackService');
 const {
   sanitizeText,
   sanitizeNote,
@@ -40,6 +49,7 @@ if (process.env.ACCOUNT_IDS) {
   }
 }
 
+app.use(createRequestLoggerMiddleware());
 app.use(express.json({ limit: '2mb' }));
 
 // Return JSON for malformed request bodies instead of Express HTML error page.
@@ -80,37 +90,13 @@ function requireApiKey(req, res, next) {
   next();
 }
 
-function isDatabaseUnavailable(err) {
-  if (!err) return false;
-  const code = err.code || err?.meta?.code;
-  const message = err instanceof Error ? err.message : String(err);
-  return (
-    code === 'DB_TIMEOUT' ||
-    code === 'ECONNREFUSED' ||
-    code === 'P1001' ||
-    code === 'P2021' || // table does not exist
-    code === 'P2022' || // column does not exist
-    message.includes('ECONNREFUSED') ||
-    message.includes("Can't reach database server") ||
-    message.includes('does not exist in the current database')
-  );
-}
-
-async function withTimeout(promise, timeoutMs, code = 'DB_TIMEOUT') {
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      const err = new Error(`Operation timed out after ${timeoutMs}ms`);
-      err.code = code;
-      reject(err);
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    clearTimeout(timeoutId);
+function applyRetryAfterHeader(res, err) {
+  const retryAfterSec = Number.parseInt(String(err?.retryAfterSec ?? ''), 10);
+  if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+    res.set('Retry-After', String(retryAfterSec));
+    return retryAfterSec;
   }
+  return null;
 }
 
 function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
@@ -129,9 +115,15 @@ function toPublicOperationError(err, fallbackMessage = 'Operation failed') {
     'AUTHENTICATED_STATE_NOT_REACHED',
     'NOT_MESSAGEABLE',
     'SEND_NOT_CONFIRMED',
+    'NAVIGATION_REDIRECT_LOOP',
+    'PROFILE_NAVIGATION_TIMEOUT',
+    'PROFILE_NAVIGATION_FAILED',
     'RATE_LIMIT_EXCEEDED',
     'QUEUE_UNAVAILABLE',
     'READ_INBOX_TIMEOUT',
+    'THREAD_NOT_REPLYABLE',
+    'UNKNOWN_CHAT',
+    'CHAT_ACCOUNT_MISMATCH',
   ]);
 
   if (err?.code && safeCodes.has(err.code) && err?.message) {
@@ -150,12 +142,122 @@ function normalizeThreadId(accountId, conversationId) {
   return raw;
 }
 
+function isSyntheticPublicMessageId(value) {
+  const id = String(value || '').trim();
+  if (!id) return true;
+  return (
+    id.startsWith('opt-') ||
+    id.startsWith('preview-') ||
+    id.startsWith('live-') ||
+    id.startsWith('sent-') ||
+    id.startsWith('msg-')
+  );
+}
+
+function getPublicMessageTimestampBucket(item, windowMs = 60 * 1000) {
+  const timestamp = getApiItemTimestamp(item);
+  return timestamp > 0 ? Math.floor(timestamp / windowMs) : 0;
+}
+
+function buildStablePublicMessageFallbackId(item, fallbackChatId = '', accountId = '') {
+  return [
+    'msg',
+    String(accountId || ''),
+    String(item?.chatId || fallbackChatId || ''),
+    isApiItemSentByMe(item) ? '__self__' : normalizeWhitespace(item?.senderName || '').toLowerCase(),
+    normalizeWhitespace(item?.text || '').toLowerCase(),
+    String(getPublicMessageTimestampBucket(item)),
+  ].join('|');
+}
+
+function getPublicMessageDedupKey(item, context = {}) {
+  const stableId = String(item?.linkedinMessageId || item?.id || '').trim();
+  if (stableId && !isSyntheticPublicMessageId(stableId)) {
+    return `id:${stableId}`;
+  }
+
+  return [
+    'fp',
+    String(context.accountId || ''),
+    String(context.conversationId || item?.chatId || ''),
+    isApiItemSentByMe(item) ? '1' : '0',
+    normalizeWhitespace(item?.senderName || '').toLowerCase(),
+    normalizeWhitespace(item?.text || '').toLowerCase(),
+    String(getPublicMessageTimestampBucket(item)),
+  ].join('|');
+}
+
+function scorePublicMessageItem(item) {
+  let score = 0;
+  const stableId = String(item?.linkedinMessageId || item?.id || '').trim();
+  if (stableId && !isSyntheticPublicMessageId(stableId)) score += 30;
+  if (item?.createdAt) score += 10;
+  if (normalizeWhitespace(item?.senderName || '') && item?.senderName !== 'Unknown') score += 5;
+  if (normalizeWhitespace(item?.text || '')) score += 3;
+  if (item?.chatId) score += 2;
+  return score;
+}
+
+function preferPublicMessageItem(existing, candidate) {
+  const preferred = scorePublicMessageItem(candidate) >= scorePublicMessageItem(existing) ? candidate : existing;
+  const secondary = preferred === candidate ? existing : candidate;
+
+  return {
+    ...secondary,
+    ...preferred,
+    id: preferred?.id || secondary?.id,
+    chatId: preferred?.chatId || secondary?.chatId,
+    senderId: preferred?.senderId || secondary?.senderId,
+    text: preferred?.text || secondary?.text || '',
+    createdAt: preferred?.createdAt || secondary?.createdAt,
+    sentAt: preferred?.sentAt || secondary?.sentAt || preferred?.createdAt || secondary?.createdAt,
+    isSentByMe: preferred?.isSentByMe ?? secondary?.isSentByMe,
+    senderName: preferred?.senderName || secondary?.senderName || 'Unknown',
+    linkedinMessageId: preferred?.linkedinMessageId || secondary?.linkedinMessageId || null,
+  };
+}
+
+function mergePublicMessages(existingItems, incomingItems, context = {}, label = 'mergePublicMessages') {
+  const beforeCount = (existingItems?.length || 0) + (incomingItems?.length || 0);
+  const merged = [];
+  let duplicateSkippedCount = 0;
+
+  for (const item of [...(existingItems || []), ...(incomingItems || [])]) {
+    if (!item) continue;
+
+    const normalizedItem = {
+      ...item,
+      text: String(item?.text || ''),
+      senderName: item?.senderName || 'Unknown',
+      sentAt: item?.sentAt || item?.createdAt,
+    };
+    const dedupKey = getPublicMessageDedupKey(normalizedItem, context);
+    const existingIndex = merged.findIndex((current) => (
+      getPublicMessageDedupKey(current, context) === dedupKey
+    ));
+
+    if (existingIndex >= 0) {
+      duplicateSkippedCount += 1;
+      merged[existingIndex] = preferPublicMessageItem(merged[existingIndex], normalizedItem);
+      continue;
+    }
+
+    merged.push(normalizedItem);
+  }
+
+  const sorted = merged.sort((left, right) => getApiItemTimestamp(left) - getApiItemTimestamp(right));
+  console.debug(
+    `[InboxDedup][${label}] before=${beforeCount} after=${sorted.length} duplicatesSkipped=${duplicateSkippedCount}`
+  );
+  return sorted;
+}
+
 function mapDbMessagesToApiItems(messages) {
   return messages.map((msg) => {
     const createdAt = new Date(msg.sentAt).toISOString();
     const isSentByMe = Boolean(msg.isSentByMe);
     return {
-      id: msg.id,
+      id: msg.linkedinMessageId || msg.id,
       chatId: msg.conversationId,
       senderId: isSentByMe ? '__self__' : (msg.senderId || 'other'),
       text: msg.text || '',
@@ -164,27 +266,70 @@ function mapDbMessagesToApiItems(messages) {
       sentAt: createdAt,
       isSentByMe,
       senderName: msg.senderName || (isSentByMe ? msg.accountId : 'Unknown'),
+      linkedinMessageId: msg.linkedinMessageId || null,
     };
   });
 }
 
 function mapLiveMessagesToApiItems(messages, fallbackChatId, accountId) {
-  return (messages || []).map((msg, idx) => {
-    const createdAt = msg.createdAt || new Date().toISOString();
+  return (messages || []).map((msg) => {
+    const createdAt = msg.createdAt || msg.sentAt || new Date().toISOString();
     const isSentByMe = msg.senderId === '__self__' || msg.isSentByMe === true;
-    return {
-      id: msg.id || `live-${Date.now()}-${idx}`,
+    const normalizedItem = {
+      ...msg,
       chatId: msg.chatId || fallbackChatId,
       senderId: isSentByMe ? '__self__' : (msg.senderId || 'other'),
       text: msg.text || '',
       createdAt,
+      sentAt: createdAt,
+      isSentByMe,
+      senderName: msg.senderName || (isSentByMe ? accountId : 'Unknown'),
+    };
+    const stableFallbackId = buildStablePublicMessageFallbackId(normalizedItem, fallbackChatId, accountId);
+    return {
+      id: msg.linkedinMessageId || msg.id || stableFallbackId,
+      chatId: normalizedItem.chatId,
+      senderId: normalizedItem.senderId,
+      text: normalizedItem.text,
+      createdAt,
       // Compatibility fields for older consumers
       sentAt: createdAt,
       isSentByMe,
-      senderName:
-        msg.senderName || (isSentByMe ? accountId : 'Unknown'),
+      senderName: normalizedItem.senderName,
+      linkedinMessageId: msg.linkedinMessageId || msg.id || stableFallbackId,
+      hasExactTimestamp: msg.hasExactTimestamp === true,
+      rawTimeLabel: msg.rawTimeLabel || '',
     };
   });
+}
+
+function getApiItemTimestamp(item) {
+  const raw = item?.createdAt || item?.sentAt || 0;
+  const parsed = new Date(raw).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isApiItemSentByMe(item) {
+  return item?.senderId === '__self__' || item?.isSentByMe === true;
+}
+
+function areEquivalentApiThreadItems(left, right) {
+  const leftId = String(left?.id || '').trim();
+  const rightId = String(right?.id || '').trim();
+  if (leftId && rightId && leftId === rightId) {
+    return true;
+  }
+
+  return (
+    isApiItemSentByMe(left) === isApiItemSentByMe(right) &&
+    normalizeWhitespace(left?.senderName || '') === normalizeWhitespace(right?.senderName || '') &&
+    normalizeWhitespace(left?.text || '') === normalizeWhitespace(right?.text || '') &&
+    Math.abs(getApiItemTimestamp(left) - getApiItemTimestamp(right)) <= 2 * 60 * 1000
+  );
+}
+
+function mergeApiThreadItems(...itemSets) {
+  return mergePublicMessages(itemSets[0] || [], itemSets.slice(1).flatMap((set) => set || []), {}, 'mergeApiThreadItems');
 }
 
 function normalizeWhitespace(value) {
@@ -202,10 +347,16 @@ function isGenericUiLabel(value) {
   const blocked = [
     'unknown',
     'inbox',
+    'message',
+    'messaging',
     'messages',
     'activity',
     'notifications',
     'notifications total',
+    'linkedin member',
+    'member',
+    'conversation',
+    'view profile',
     'loading',
     'linkedin',
     'feed',
@@ -287,6 +438,257 @@ function dedupeRecentActivity(entries, windowMs = 10 * 60 * 1000) {
   return deduped;
 }
 
+async function getRecentActivityEntries(accountId, limit = 500) {
+  const redis = getRedis();
+
+  try {
+    const rows = await redis.lrange(`activity:log:${accountId}`, 0, limit);
+    return rows
+      .map((raw) => {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function deriveHealthSeverity({ hasSession, sessionIssue, lastSyncStatus, lastSyncedAt, staleThresholdMs }) {
+  if (!hasSession) return 'critical';
+  if (sessionIssue) return 'critical';
+  if (lastSyncStatus === 'failed') return 'critical';
+  if (lastSyncStatus === 'warning') return 'warning';
+  if (lastSyncStatus === 'running') return 'warning';
+  if (lastSyncedAt && Date.now() - lastSyncedAt > staleThresholdMs) return 'warning';
+  return 'healthy';
+}
+
+async function buildHealthSummary() {
+  const syncIntervalMinutes = Math.max(1, parseInt(process.env.SYNC_INTERVAL_MINUTES || '10', 10) || 10);
+  const staleThresholdMs = syncIntervalMinutes * 60_000 * 3;
+  const healthState = getHealthStateSnapshot();
+  const knownIds = Array.from(await getKnownAccountIdsSet()).sort((a, b) => a.localeCompare(b));
+
+  let dbAccounts = [];
+  try {
+    dbAccounts = await withTimeout(accountRepo.getAllAccounts(), DB_READ_TIMEOUT_MS);
+  } catch (err) {
+    if (!isDatabaseUnavailable(err)) {
+      throw err;
+    }
+  }
+
+  const dbAccountsById = new Map(
+    (dbAccounts || []).map((account) => [String(account?.id || '').trim(), account])
+  );
+
+  const accounts = await Promise.all(
+    knownIds.map(async (accountId) => {
+      const meta = await sessionMeta(accountId).catch(() => null);
+      const state = healthState.accounts[accountId] || {};
+      const dbAccount = dbAccountsById.get(accountId);
+      const lastSyncedAt = dbAccount?.lastSyncedAt ? new Date(dbAccount.lastSyncedAt).getTime() : null;
+      const hasSession = Boolean(meta?.savedAt);
+      const severity = deriveHealthSeverity({
+        hasSession,
+        sessionIssue: state.sessionIssue,
+        lastSyncStatus: state.lastSyncStatus,
+        lastSyncedAt,
+        staleThresholdMs,
+      });
+
+      return {
+        accountId,
+        displayName: String(dbAccount?.displayName || accountId),
+        hasSession,
+        lastSessionSavedAt: Number(meta?.savedAt) || null,
+        sessionAgeSeconds: Number(meta?.ageSeconds) || null,
+        lastSyncedAt,
+        lastSyncStatus: state.lastSyncStatus || 'idle',
+        lastSyncSource: state.lastSyncSource || null,
+        lastSyncStartedAt: Number(state.lastSyncStartedAt) || null,
+        lastSyncCompletedAt: Number(state.lastSyncCompletedAt) || null,
+        lastSyncError: state.lastSyncError || null,
+        lastSyncStats: state.lastSyncStats || null,
+        sessionIssue: state.sessionIssue || null,
+        severity,
+      };
+    })
+  );
+
+  const alerts = [];
+  for (const account of accounts) {
+    if (!account.hasSession) {
+      alerts.push({
+        id: `session-missing-${account.accountId}`,
+        severity: 'critical',
+        kind: 'session',
+        accountId: account.accountId,
+        title: `${account.displayName}: session missing`,
+        message: 'Open Accounts and import fresh LinkedIn cookies before sending or syncing.',
+      });
+      continue;
+    }
+
+    if (account.sessionIssue) {
+      alerts.push({
+        id: `session-issue-${account.accountId}`,
+        severity: 'critical',
+        kind: 'session',
+        accountId: account.accountId,
+        title: `${account.displayName}: session needs attention`,
+        message: account.sessionIssue.message,
+      });
+    }
+
+    if (account.lastSyncStatus === 'failed') {
+      alerts.push({
+        id: `sync-failed-${account.accountId}`,
+        severity: 'critical',
+        kind: 'sync',
+        accountId: account.accountId,
+        title: `${account.displayName}: sync failed`,
+        message: account.lastSyncError || 'The latest sync did not complete successfully.',
+      });
+    } else if (
+      account.lastSyncedAt &&
+      Date.now() - account.lastSyncedAt > staleThresholdMs
+    ) {
+      alerts.push({
+        id: `sync-stale-${account.accountId}`,
+        severity: 'warning',
+        kind: 'sync',
+        accountId: account.accountId,
+        title: `${account.displayName}: sync looks stale`,
+        message: `No successful sync recorded in the last ${syncIntervalMinutes * 3} minutes.`,
+      });
+    }
+  }
+
+  const totals = {
+    totalAccounts: accounts.length,
+    accountsWithSession: accounts.filter((account) => account.hasSession).length,
+    accountsNeedingAttention: accounts.filter((account) => account.severity !== 'healthy').length,
+    criticalAlerts: alerts.filter((alert) => alert.severity === 'critical').length,
+    warningAlerts: alerts.filter((alert) => alert.severity === 'warning').length,
+  };
+
+  return {
+    status: totals.criticalAlerts > 0 ? 'critical' : totals.warningAlerts > 0 ? 'warning' : 'healthy',
+    generatedAt: Date.now(),
+    syncIntervalMinutes,
+    totals,
+    alerts,
+    accounts,
+    bulkSync: healthState.bulkSync,
+  };
+}
+
+async function buildStartupValidationReport() {
+  const checks = [];
+  const redis = getRedis();
+
+  try {
+    const result = await withTimeout(redis.ping(), 2000, 'REDIS_TIMEOUT');
+    checks.push({
+      id: 'redis',
+      label: 'Redis connectivity',
+      status: String(result).toUpperCase() === 'PONG' ? 'pass' : 'fail',
+      detail: String(result),
+    });
+  } catch (err) {
+    checks.push({
+      id: 'redis',
+      label: 'Redis connectivity',
+      status: 'fail',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), DB_READ_TIMEOUT_MS);
+    checks.push({
+      id: 'database',
+      label: 'Database connectivity',
+      status: 'pass',
+      detail: `${dbAccounts.length} account row(s) readable`,
+    });
+  } catch (err) {
+    checks.push({
+      id: 'database',
+      label: 'Database connectivity',
+      status: 'fail',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  let knownIds = [];
+  try {
+    knownIds = Array.from(await getKnownAccountIdsSet());
+    checks.push({
+      id: 'accounts',
+      label: 'Configured account registry',
+      status: knownIds.length > 0 ? 'pass' : 'warn',
+      detail: knownIds.length > 0 ? `${knownIds.length} account(s) available` : 'No accounts configured yet',
+    });
+  } catch (err) {
+    checks.push({
+      id: 'accounts',
+      label: 'Configured account registry',
+      status: 'fail',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  let sessionCount = 0;
+  for (const accountId of knownIds) {
+    const meta = await sessionMeta(accountId).catch(() => null);
+    if (meta?.savedAt) {
+      sessionCount += 1;
+    }
+  }
+
+  checks.push({
+    id: 'sessions',
+    label: 'Imported LinkedIn sessions',
+    status: sessionCount > 0 ? 'pass' : (knownIds.length > 0 ? 'warn' : 'pass'),
+    detail: knownIds.length > 0
+      ? `${sessionCount}/${knownIds.length} account(s) have saved cookies`
+      : 'No accounts configured yet',
+  });
+
+  checks.push({
+    id: 'scheduler',
+    label: 'Automatic sync scheduler',
+    status: process.env.DISABLE_MESSAGE_SYNC === '1' ? 'warn' : 'pass',
+    detail: process.env.DISABLE_MESSAGE_SYNC === '1'
+      ? 'DISABLE_MESSAGE_SYNC=1'
+      : `Runs every ${Math.max(1, parseInt(process.env.SYNC_INTERVAL_MINUTES || '10', 10) || 10)} minute(s)`,
+  });
+
+  const healthSummary = await buildHealthSummary();
+
+  return {
+    status: checks.some((check) => check.status === 'fail')
+      ? 'fail'
+      : checks.some((check) => check.status === 'warn')
+        ? 'warn'
+        : 'pass',
+    generatedAt: Date.now(),
+    checks,
+    healthSummary: {
+      status: healthSummary.status,
+      criticalAlerts: healthSummary.totals.criticalAlerts,
+      warningAlerts: healthSummary.totals.warningAlerts,
+      accountsNeedingAttention: healthSummary.totals.accountsNeedingAttention,
+    },
+  };
+}
+
 // â”€â”€ Health (no auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function connectionKey(accountId, name, profileUrl) {
@@ -294,6 +696,14 @@ function connectionKey(accountId, name, profileUrl) {
   const normalizedName = normalizeWhitespace(name).toLowerCase();
   return `${accountId}|${normalizedUrl || normalizedName}`;
 }
+
+const CONNECTION_LIVE_SCRAPE_SESSION_COOLDOWN_MS = Math.max(
+  0,
+  parseInt(
+    process.env.CONNECTION_LIVE_SCRAPE_SESSION_COOLDOWN_MS || String(15 * 60_000),
+    10
+  ) || 15 * 60_000
+);
 
 function pushLatestConnection(latestByConnection, item) {
   if (!item?.accountId) return;
@@ -307,7 +717,7 @@ function pushLatestConnection(latestByConnection, item) {
 }
 
 function mapActivityEntryToConnection(accountId, entry) {
-  if (!entry || (entry.type !== 'connectionSent' && entry.type !== 'messageSent')) {
+  if (!entry || entry.type !== 'connectionSent') {
     return null;
   }
   const profileUrl = String(entry.targetProfileUrl || '');
@@ -323,82 +733,172 @@ function mapActivityEntryToConnection(accountId, entry) {
   };
 }
 
-async function buildUnifiedConnections(limit = 300) {
+function finalizeUnifiedConnections(latestByConnection, limit = 300) {
+  return Array.from(latestByConnection.values())
+    .sort((a, b) => {
+      const tsDiff = (Number(b.connectedAt) || 0) - (Number(a.connectedAt) || 0);
+      if (tsDiff !== 0) return tsDiff;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    })
+    .slice(0, limit);
+}
+
+function mergeConnectionList(latestByConnection, items = []) {
+  for (const item of items || []) {
+    const profileUrl = String(item?.profileUrl || '');
+    const name = normalizeParticipantName(item?.name, profileUrl);
+    if (!name || name === 'Unknown') continue;
+
+    pushLatestConnection(latestByConnection, {
+      accountId: item.accountId,
+      name,
+      profileUrl,
+      headline: item?.headline || '',
+      connectedAt: Number(item?.connectedAt) || undefined,
+      source: item?.source || 'linkedin',
+    });
+  }
+}
+
+async function seedUnifiedConnectionsFromActivity() {
   const ids = await listKnownAccountIds();
   const latestByConnection = new Map();
-  const redis = getRedis();
 
   for (const accountId of ids) {
-    try {
-      const rows = await redis.lrange(`activity:log:${accountId}`, 0, 1000);
-      for (const raw of rows) {
-        try {
-          const parsed = JSON.parse(raw);
-          const mapped = mapActivityEntryToConnection(accountId, parsed);
-          if (mapped) {
-            pushLatestConnection(latestByConnection, mapped);
-          }
-        } catch {
-          // Ignore malformed activity rows.
-        }
-      }
-    } catch {
-      // Ignore Redis activity-read issues.
-    }
-
-    try {
-      const messageRepo = require('./db/repositories/MessageRepository');
-      const conversations = await withTimeout(
-        messageRepo.getConversationsByAccount(accountId, 500, 0),
-        4000
-      );
-      for (const conv of conversations || []) {
-        const profileUrl = String(conv?.participantProfileUrl || '');
-        const name = normalizeParticipantName(conv?.participantName, profileUrl);
-        if (!name || name === 'Unknown') continue;
+    const activityEntries = await getRecentActivityEntries(accountId, 1000);
+    for (const entry of activityEntries) {
+      const mapped = mapActivityEntryToConnection(accountId, entry);
+      if (mapped) {
         pushLatestConnection(latestByConnection, {
-          accountId,
-          name,
-          profileUrl,
-          connectedAt: Number(new Date(conv?.lastMessageAt || Date.now()).getTime()) || Date.now(),
-          source: 'conversation',
+          ...mapped,
         });
-      }
-    } catch (err) {
-      if (!isDatabaseUnavailable(err)) {
-        console.warn(`[Connections] DB fallback failed for ${accountId}:`, err?.message || String(err));
       }
     }
   }
 
-  const connections = Array.from(latestByConnection.values())
-    .sort((a, b) => (Number(b.connectedAt) || 0) - (Number(a.connectedAt) || 0))
-    .slice(0, limit)
-    .map(({ source, ...rest }) => rest);
-
-  return { connections };
+  return { ids, latestByConnection };
 }
 
-const UNIFIED_CONNECTIONS_CACHE_TTL_MS = 60_000;
+async function getLiveScrapeEligibleAccountIds(accountIds = []) {
+  const healthState = getHealthStateSnapshot();
+  const eligible = [];
+
+  for (const accountId of accountIds) {
+    const state = healthState.accounts[accountId] || {};
+    if (state.sessionIssue) {
+      console.warn(
+        `[Connections] Skipping live scrape for ${accountId}; session issue is active (${state.sessionIssue.code || 'unknown'}).`
+      );
+      continue;
+    }
+
+    const meta = await sessionMeta(accountId).catch(() => null);
+    const ageMs = Number(meta?.ageSeconds) > 0 ? Number(meta.ageSeconds) * 1000 : 0;
+    if (
+      CONNECTION_LIVE_SCRAPE_SESSION_COOLDOWN_MS > 0 &&
+      ageMs > 0 &&
+      ageMs < CONNECTION_LIVE_SCRAPE_SESSION_COOLDOWN_MS
+    ) {
+      console.warn(
+        `[Connections] Skipping live scrape for ${accountId}; session was refreshed ${Math.round(ageMs / 1000)}s ago.`
+      );
+      continue;
+    }
+
+    eligible.push(accountId);
+  }
+
+  return eligible;
+}
+
+async function buildUnifiedConnections(limit = 300, { includeLive = true } = {}) {
+  const { ids, latestByConnection } = await seedUnifiedConnectionsFromActivity();
+
+  if (!includeLive) {
+    return { connections: finalizeUnifiedConnections(latestByConnection, limit) };
+  }
+
+  const eligibleIds = await getLiveScrapeEligibleAccountIds(ids);
+  if (eligibleIds.length === 0) {
+    return { connections: finalizeUnifiedConnections(latestByConnection, limit) };
+  }
+
+  const proxyUrl = process.env.PROXY_URL || null;
+  const liveResults = await Promise.allSettled(
+    eligibleIds.map(async (accountId) => {
+      try {
+        const result = await runJob(
+          'readConnections',
+          { accountId, proxyUrl, limit: Math.min(limit, 200) },
+          90_000
+        );
+        return { accountId, items: result?.items || [] };
+      } catch (queueErr) {
+        const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+        const isRedisConnectivityError =
+          msg.includes('Connection is closed') ||
+          msg.includes('ECONNREFUSED') ||
+          msg.includes('ENOTFOUND') ||
+          msg.includes('getaddrinfo');
+
+        if (!isRedisConnectivityError) {
+          throw queueErr;
+        }
+
+        const directResult = await readConnections({
+          accountId,
+          proxyUrl,
+          limit: Math.min(limit, 200),
+        });
+        return { accountId, items: directResult?.items || [] };
+      }
+    })
+  );
+
+  for (const result of liveResults) {
+    if (result.status !== 'fulfilled') {
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      console.warn(`[Connections] Live connections scrape failed: ${reason}`);
+      continue;
+    }
+
+    mergeConnectionList(
+      latestByConnection,
+      (result.value.items || []).map((item) => ({
+        ...item,
+        accountId: result.value.accountId,
+        source: 'linkedin',
+      }))
+    );
+  }
+
+  return { connections: finalizeUnifiedConnections(latestByConnection, limit) };
+}
+
+const UNIFIED_CONNECTIONS_CACHE_TTL_MS = 300_000;
 let unifiedConnectionsCache = {
   expiresAt: 0,
   payload: { connections: [] },
 };
 let unifiedConnectionsInFlight = null;
 
-async function getUnifiedConnectionsWithCache(limit = 300) {
-  const now = Date.now();
-  if (unifiedConnectionsCache.expiresAt > now) {
-    return { connections: unifiedConnectionsCache.payload.connections.slice(0, limit) };
+async function getUnifiedConnectionsWithCache(limit = 300, { refresh = false } = {}) {
+  if (refresh) {
+    unifiedConnectionsCache.expiresAt = 0;
   }
 
-  if (unifiedConnectionsInFlight) {
-    const payload = await unifiedConnectionsInFlight;
-    return { connections: payload.connections.slice(0, limit) };
+  if (!refresh) {
+    const latestByConnection = new Map();
+    mergeConnectionList(latestByConnection, unifiedConnectionsCache.payload.connections || []);
+
+    const activityPayload = await buildUnifiedConnections(limit, { includeLive: false });
+    mergeConnectionList(latestByConnection, activityPayload.connections || []);
+
+    return { connections: finalizeUnifiedConnections(latestByConnection, limit) };
   }
 
   unifiedConnectionsInFlight = (async () => {
-    const payload = await buildUnifiedConnections(limit);
+    const payload = await buildUnifiedConnections(limit, { includeLive: true });
     unifiedConnectionsCache = {
       expiresAt: Date.now() + UNIFIED_CONNECTIONS_CACHE_TTL_MS,
       payload,
@@ -414,409 +914,171 @@ async function getUnifiedConnectionsWithCache(limit = 300) {
   }
 }
 
-async function buildUnifiedInboxFromActivity(limit = 100) {
-  const ids = await listKnownAccountIds();
-  const redis = getRedis();
-  const latestByConversation = new Map();
-
-  for (const accountId of ids) {
-    let entries = [];
-    try {
-      entries = await redis.lrange(`activity:log:${accountId}`, 0, 500);
-    } catch {
-      continue;
-    }
-
-    for (const raw of entries) {
-      try {
-        const item = JSON.parse(raw);
-        if (item?.type !== 'messageSent') continue;
-
-        const participantProfileUrl = String(item.targetProfileUrl || '');
-        const participantName = normalizeParticipantName(item.targetName, participantProfileUrl);
-        const sentAt = Number(item.timestamp) || Date.now();
-        const textPreview = typeof item.textPreview === 'string' && item.textPreview.length > 0
-          ? item.textPreview
-          : `Sent message (${Number(item.messageLength) || 0} chars)`;
-
-        const key = `${accountId}|${participantName}|${participantProfileUrl}`;
-        const previous = latestByConversation.get(key);
-        if (previous && previous.lastMessage?.sentAt >= sentAt) continue;
-
-        latestByConversation.set(key, {
-          conversationId: `activity-${Buffer.from(key).toString('base64url')}`,
-          accountId,
-          participant: {
-            name: participantName,
-            profileUrl: participantProfileUrl,
-          },
-          lastMessage: {
-            text: textPreview,
-            sentAt,
-            sentByMe: true,
-          },
-          unreadCount: 0,
-          messages: [
-            {
-              id: `activity-msg-${sentAt}`,
-              text: textPreview,
-              sentAt,
-              sentByMe: true,
-              senderName: accountId,
-            },
-          ],
-        });
-      } catch {
-        // Ignore malformed activity rows.
-      }
-    }
-  }
-
-  const conversations = Array.from(latestByConversation.values())
-    .sort((a, b) => (b.lastMessage?.sentAt || 0) - (a.lastMessage?.sentAt || 0))
-    .slice(0, limit);
-
-  return { conversations };
-}
-
-const UNIFIED_INBOX_CACHE_TTL_MS = 60_000;
-let unifiedInboxCache = {
-  expiresAt: 0,
-  payload: { conversations: [] },
-};
-let unifiedInboxInFlight = null;
-
-function normalizeConversationFromInboxItem(accountId, item) {
-  const participantProfileUrl = String(item?.participants?.[0]?.profileUrl || '');
-  const participantName = normalizeParticipantName(item?.participants?.[0]?.name, participantProfileUrl);
-  const rawId = String(item?.id || `unknown-${Date.now()}`);
-  const createdAt = item?.lastMessage?.createdAt || item?.createdAt || new Date().toISOString();
-  const sentAt = Number(new Date(createdAt).getTime()) || Date.now();
-
-  return {
-    conversationId: `${accountId}:${rawId}`,
-    accountId,
-    participant: {
-      name: participantName,
-      profileUrl: participantProfileUrl,
-    },
-    lastMessage: {
-      text: String(item?.lastMessage?.text || ''),
-      sentAt,
-      sentByMe: item?.lastMessage?.senderId === '__self__',
-    },
-    unreadCount: Number(item?.unreadCount) || 0,
-    messages: [],
-  };
-}
-
-function getConversationSentAt(conv) {
-  return Number(conv?.lastMessage?.sentAt) || 0;
-}
-
-function getConversationText(conv) {
-  return normalizeWhitespace(conv?.lastMessage?.text || '');
-}
-
-function getConversationProfileUrl(conv) {
-  return normalizeProfileUrlForCompare(conv?.participant?.profileUrl || '');
-}
-
-function getConversationNameToken(conv) {
-  return normalizeWhitespace(conv?.participant?.name || '').toLowerCase();
-}
-
-function conversationQualityScore(conv) {
-  const hasProfile = Boolean(getConversationProfileUrl(conv));
-  const hasText = Boolean(getConversationText(conv));
-  const hasMessages = Array.isArray(conv?.messages) && conv.messages.length > 0;
-  const conversationId = String(conv?.conversationId || '');
-  const isFallbackId = conversationId.startsWith('fallback-');
-  const isActivityId = conversationId.startsWith('activity-');
-
-  let score = 0;
-  if (hasProfile) score += 40;
-  if (hasText) score += 20;
-  if (hasMessages) score += 10;
-  if (isActivityId) score += 5;
-  if (isFallbackId) score -= 15;
-  return score;
-}
-
-function isLowSignalFallbackConversation(conv) {
-  const conversationId = String(conv?.conversationId || '');
-  const hasProfile = Boolean(getConversationProfileUrl(conv));
-  const hasText = Boolean(getConversationText(conv));
-  return conversationId.startsWith('fallback-') && !hasProfile && !hasText;
-}
-
-function shouldReplaceConversation(previous, current) {
-  const previousScore = conversationQualityScore(previous);
-  const currentScore = conversationQualityScore(current);
-  if (currentScore !== previousScore) {
-    return currentScore > previousScore;
-  }
-
-  const previousSentAt = getConversationSentAt(previous);
-  const currentSentAt = getConversationSentAt(current);
-  if (currentSentAt !== previousSentAt) {
-    return currentSentAt > previousSentAt;
-  }
-
-  const previousUnread = Number(previous?.unreadCount) || 0;
-  const currentUnread = Number(current?.unreadCount) || 0;
-  return currentUnread > previousUnread;
-}
-
-function dedupeAndSortConversations(conversations) {
-  const profileAliasByName = new Map();
-
-  for (const conv of conversations) {
-    if (!conv?.accountId) continue;
-    const profileUrl = getConversationProfileUrl(conv);
-    const nameToken = getConversationNameToken(conv);
-    if (!profileUrl || !nameToken) continue;
-
-    const aliasKey = `${conv.accountId}|${nameToken}`;
-    const previous = profileAliasByName.get(aliasKey);
-    if (!previous || getConversationSentAt(conv) >= previous.sentAt) {
-      profileAliasByName.set(aliasKey, {
-        profileUrl,
-        sentAt: getConversationSentAt(conv),
-      });
-    }
-  }
-
-  const latestByConversation = new Map();
-
-  for (const conv of conversations) {
-    if (!conv?.accountId) continue;
-
-    const nameToken = getConversationNameToken(conv);
-    const directProfileUrl = getConversationProfileUrl(conv);
-    const aliasProfileUrl = nameToken
-      ? profileAliasByName.get(`${conv.accountId}|${nameToken}`)?.profileUrl || ''
-      : '';
-    const resolvedProfileUrl = directProfileUrl || aliasProfileUrl;
-    const key = resolvedProfileUrl
-      ? `${conv.accountId}|profile|${resolvedProfileUrl}`
-      : `${conv.accountId}|name|${nameToken || String(conv?.conversationId || '').toLowerCase()}`;
-
-    const previous = latestByConversation.get(key);
-    if (!previous || shouldReplaceConversation(previous, conv)) {
-      latestByConversation.set(key, conv);
-    }
-  }
-
-  const sorted = Array.from(latestByConversation.values()).sort(
-    (a, b) => (Number(b?.lastMessage?.sentAt) || 0) - (Number(a?.lastMessage?.sentAt) || 0)
-  );
-
-  const hasHighSignalRows = sorted.some(
-    (conv) => Boolean(getConversationProfileUrl(conv)) || Boolean(getConversationText(conv))
-  );
-
-  if (!hasHighSignalRows) {
-    return sorted;
-  }
-
-  const cleaned = sorted.filter((conv) => !isLowSignalFallbackConversation(conv));
-  return cleaned.length > 0 ? cleaned : sorted;
-}
-
-async function persistOptimisticSendNewResult({ accountId, profileUrl, text, result }) {
-  let messageRepo;
-  try {
-    messageRepo = require('./db/repositories/MessageRepository');
-  } catch {
-    return;
-  }
-
-  const participantProfileUrl = String(profileUrl || '');
-  const participantName = normalizeParticipantName('', participantProfileUrl);
-  const rawChatId = String(result?.chatId || '').trim();
-  const fallbackKey = `${accountId}|${participantName}|${participantProfileUrl}`;
-  const conversationId =
-    rawChatId && rawChatId !== 'new'
-      ? normalizeThreadId(accountId, rawChatId)
-      : `activity-${Buffer.from(fallbackKey).toString('base64url')}`;
-
-  const parsedCreatedAt = new Date(result?.createdAt || Date.now());
-  const createdAt = Number.isNaN(parsedCreatedAt.getTime()) ? new Date() : parsedCreatedAt;
-  const messageId = String(result?.id || `optimistic-${Date.now()}`);
-
-  try {
-    await withTimeout(
-      messageRepo.upsertConversation({
-        id: conversationId,
-        accountId,
-        participantName,
-        participantProfileUrl,
-        participantAvatarUrl: null,
-        lastMessageAt: createdAt,
-        lastMessageText: text,
-        lastMessageSentByMe: true,
-      }),
-      4000
-    );
-
-    await withTimeout(
-      messageRepo.upsertMessage({
-        conversationId,
-        accountId,
-        senderId: '__self__',
-        senderName: accountId,
-        text,
-        sentAt: createdAt.toISOString(),
-        isSentByMe: true,
-        linkedinMessageId: messageId,
-      }),
-      4000
-    );
-  } catch (err) {
-    if (!isDatabaseUnavailable(err)) {
-      console.warn('[send-new] Optimistic DB persistence failed:', err?.message || String(err));
-    }
-  }
-}
-
-async function buildUnifiedInboxFromLive(limit = 100) {
-  const ids = await listKnownAccountIds();
-  const proxyUrl = process.env.PROXY_URL || null;
-  const perAccountLimit = Math.max(10, Math.ceil(limit / Math.max(ids.length, 1)) * 2);
-  const conversations = [];
-  const sessionFailures = [];
-
-  for (const accountId of ids) {
-    try {
-      const inbox = await withTimeout(
-        readMessages({ accountId, limit: perAccountLimit, proxyUrl }),
-        30_000,
-        'READ_INBOX_TIMEOUT'
-      );
-      for (const item of inbox?.items || []) {
-        conversations.push(normalizeConversationFromInboxItem(accountId, item));
-      }
-    } catch (err) {
-      const code = err?.code;
-      if (code === 'NO_SESSION' || code === 'SESSION_EXPIRED') {
-        sessionFailures.push({ accountId, code });
-      } else if (code !== 'READ_INBOX_TIMEOUT') {
-        console.warn(`[Inbox] Live read failed for ${accountId}:`, err?.message || String(err));
-      }
-    }
-  }
-
-  return {
-    conversations: dedupeAndSortConversations(conversations).slice(0, limit),
-    sessionFailures,
-    attemptedAccounts: ids.length,
-  };
-}
-
-async function buildUnifiedInboxWithFallback(limit = 100) {
-  const now = Date.now();
-  if (unifiedInboxCache.expiresAt > now) {
-    return { conversations: unifiedInboxCache.payload.conversations.slice(0, limit) };
-  }
-
-  if (unifiedInboxInFlight) {
-    const payload = await unifiedInboxInFlight;
-    return { conversations: payload.conversations.slice(0, limit) };
-  }
-
-  unifiedInboxInFlight = (async () => {
-    const activityPayload = await buildUnifiedInboxFromActivity(limit);
-    let combined = activityPayload.conversations;
-    let liveMeta = { sessionFailures: [], attemptedAccounts: 0 };
-
-    if (combined.length < limit) {
-      const livePayload = await buildUnifiedInboxFromLive(limit);
-      liveMeta = {
-        sessionFailures: livePayload.sessionFailures || [],
-        attemptedAccounts: livePayload.attemptedAccounts || 0,
-      };
-      combined = dedupeAndSortConversations([...combined, ...livePayload.conversations]);
-    } else {
-      combined = dedupeAndSortConversations(combined);
-    }
-
-    if (
-      combined.length === 0 &&
-      liveMeta.attemptedAccounts > 0 &&
-      liveMeta.sessionFailures.length === liveMeta.attemptedAccounts
-    ) {
-      const err = new Error('All LinkedIn sessions are missing or expired. Re-import cookies for each account.');
-      err.status = 401;
-      err.code = 'NO_ACTIVE_SESSION';
-      throw err;
-    }
-
-    const payload = { conversations: combined.slice(0, limit) };
-    unifiedInboxCache = {
-      expiresAt: Date.now() + UNIFIED_INBOX_CACHE_TTL_MS,
-      payload,
-    };
-    return payload;
-  })();
-
-  try {
-    const payload = await unifiedInboxInFlight;
-    return { conversations: payload.conversations.slice(0, limit) };
-  } finally {
-    unifiedInboxInFlight = null;
-  }
-}
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', ts: new Date().toISOString() });
-});
-
-// â”€â”€ All routes below require API key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-app.use(requireApiKey);
-
-const { getRedis } = require('./redisClient');
-const { cleanupContext } = require('./browser');
+const { getRedis, getRedisRuntimeState } = require('./redisClient');
+const { cleanupContext, getBrowserStats, isBrowserManagerReady } = require('./browser');
 const accountRepo = require('./db/repositories/AccountRepository');
 const exportRoutes = require('./routes/export');
 const { syncAccount, syncAllAccounts } = require('./services/messageSyncService');
+const {
+  clearSessionIssue,
+  getHealthStateSnapshot,
+  markBulkSyncStarted,
+  markSessionIssue,
+  markSyncStarted,
+} = require('./healthState');
+const messageRepo = require('./db/repositories/MessageRepository');
+const {
+  buildUnifiedInboxFromActivity,
+  buildUnifiedInboxWithFallback,
+  dedupeAndSortConversations,
+  dedupeInFlightFallback,
+  getUnifiedInboxCacheState,
+  invalidateUnifiedInboxCache,
+  persistOptimisticSendNewResult,
+} = createInboxFallbackService({
+  logger,
+  getRedis,
+  listKnownAccountIds,
+  readMessages,
+  normalizeParticipantName,
+  normalizeWhitespace,
+  normalizeProfileUrlForCompare,
+  mergePublicMessages,
+  withTimeout,
+  recordSessionExpired,
+  markSessionIssue,
+  clearSessionIssue,
+  messageRepo,
+  normalizeThreadId,
+  dbWriteTimeoutMs: DB_WRITE_TIMEOUT_MS,
+  isDatabaseUnavailable,
+  recordDatabaseIssue,
+});
+
+registerPublicHealthRoute(app, {
+  getRedis,
+  getRedisRuntimeState,
+  withTimeout,
+  accountRepo,
+  getWorkerStatus,
+  getBrowserStats,
+  isBrowserManagerReady,
+  getQueueStats,
+  logger,
+});
+
+app.use(requireApiKey);
+
+async function getKnownAccountIdsSet() {
+  const ids = new Set(
+    (await listKnownAccountIds())
+      .map((id) => String(id || '').trim())
+      .filter(Boolean)
+  );
+
+  try {
+    const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), DB_READ_TIMEOUT_MS);
+    for (const account of dbAccounts || []) {
+      const id = String(account?.id || '').trim();
+      if (id) ids.add(id);
+    }
+  } catch (err) {
+    if (!isDatabaseUnavailable(err)) {
+      throw err;
+    }
+    if (ids.size === 0) {
+      const lookupErr = new Error('Account registry is unavailable. Retry after database connectivity is restored.');
+      lookupErr.status = 503;
+      lookupErr.code = 'ACCOUNT_LOOKUP_UNAVAILABLE';
+      throw lookupErr;
+    }
+  }
+
+  return ids;
+}
+
+async function assertKnownAccountId(accountId) {
+  const normalizedAccountId = validateId(accountId, { field: 'accountId' });
+  const knownIds = await getKnownAccountIdsSet();
+  if (knownIds.has(normalizedAccountId)) {
+    return normalizedAccountId;
+  }
+
+  const err = new Error(`Unknown accountId: ${normalizedAccountId}`);
+  err.status = 404;
+  err.code = 'UNKNOWN_ACCOUNT';
+  throw err;
+}
+
+async function assertConversationBelongsToAccount(accountId, conversationId) {
+  const rawChatId = validateId(conversationId, { field: 'chatId' });
+  const normalizedChatId = normalizeThreadId(accountId, rawChatId);
+
+  if (normalizedChatId.startsWith('activity-') || normalizedChatId === 'new') {
+    return normalizedChatId;
+  }
+
+  const messageRepo = require('./db/repositories/MessageRepository');
+  let conversation = null;
+
+  try {
+    conversation = await withTimeout(messageRepo.getConversationById(rawChatId), DB_READ_TIMEOUT_MS);
+    if (!conversation && normalizedChatId !== rawChatId) {
+      conversation = await withTimeout(messageRepo.getConversationById(normalizedChatId), DB_READ_TIMEOUT_MS);
+    }
+  } catch (err) {
+    if (!isDatabaseUnavailable(err)) {
+      throw err;
+    }
+    const lookupErr = new Error('Conversation lookup unavailable. Retry after database connectivity is restored.');
+    lookupErr.status = 503;
+    lookupErr.code = 'CONVERSATION_LOOKUP_UNAVAILABLE';
+    throw lookupErr;
+  }
+
+  if (!conversation) {
+    const err = new Error(`Unknown chatId for account ${accountId}`);
+    err.status = 404;
+    err.code = 'UNKNOWN_CHAT';
+    throw err;
+  }
+
+  if (String(conversation.accountId || '') !== String(accountId)) {
+    const err = new Error(`chatId does not belong to account ${accountId}`);
+    err.status = 403;
+    err.code = 'CHAT_ACCOUNT_MISMATCH';
+    throw err;
+  }
+
+  return normalizedChatId;
+}
 
 // Mount export routes
 app.use('/export', exportRoutes);
 
-// POST /sync/messages - Manual message sync trigger
-app.post('/sync/messages', async (req, res) => {
-  try {
-    const { accountId } = req.body;
-    const proxyUrl = process.env.PROXY_URL || null;
+registerInternalHealthRoutes(app, {
+  buildHealthSummary,
+  buildStartupValidationReport,
+  logger,
+});
 
-    console.log('[API] Manual sync triggered', accountId ? `for account ${accountId}` : 'for all accounts');
+registerMetricsRoutes(app, {
+  getMetricsSnapshot,
+  getBrowserStats,
+  getWorkerStatus,
+  getQueueStats,
+});
 
-    // Trigger sync in background (don't wait for completion)
-    if (accountId) {
-      syncAccount(accountId, proxyUrl)
-        .then(stats => console.log('[API] Manual sync completed:', stats))
-        .catch(err => console.error('[API] Manual sync failed:', err));
-      
-      res.json({ 
-        success: true, 
-        message: `Sync started for account ${accountId}`,
-        accountId,
-      });
-    } else {
-      syncAllAccounts(proxyUrl)
-        .then(stats => console.log('[API] Manual sync completed:', stats))
-        .catch(err => console.error('[API] Manual sync failed:', err));
-      
-      res.json({ 
-        success: true, 
-        message: 'Sync started for all accounts',
-      });
-    }
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+registerSyncRoutes(app, {
+  assertKnownAccountId,
+  applyRetryAfterHeader,
+  syncAccount,
+  syncAllAccounts,
+  invalidateUnifiedInboxCache,
+  markBulkSyncStarted,
+  recordSyncResult,
+  recordSessionExpired,
+  logger,
 });
 
 // GET /accounts
@@ -825,13 +1087,20 @@ app.get('/accounts', async (_req, res) => {
     const ids = new Set(await listKnownAccountIds());
 
     try {
-      const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), 4000);
+      const dbAccounts = await withTimeout(accountRepo.getAllAccounts(), DB_READ_TIMEOUT_MS);
       for (const acc of dbAccounts) {
         if (acc?.id) ids.add(acc.id);
       }
     } catch (dbErr) {
       if (!isDatabaseUnavailable(dbErr)) {
-        console.warn('[Accounts] Could not read account list from database:', dbErr.message);
+        logger.warn('accounts.list_db_read_failed', {
+          errorCode: dbErr?.code || 'ACCOUNTS_DB_READ_FAILED',
+          error: dbErr,
+        });
+      } else {
+        recordDatabaseIssue(logger.child({ route: '/accounts' }), dbErr, {
+          stage: 'get-all-accounts',
+        });
       }
     }
 
@@ -869,16 +1138,34 @@ app.post('/accounts/:accountId/session', async (req, res) => {
       });
     }
     await saveCookies(accountId, cookies, { requireAuthCookies: true, source: 'api-import' });
+    clearSessionIssue(accountId);
     try {
-      await withTimeout(accountRepo.upsertAccount(accountId, accountId), 4000);
+      await withTimeout(accountRepo.upsertAccount(accountId, accountId), DB_WRITE_TIMEOUT_MS);
     } catch (dbErr) {
       if (!isDatabaseUnavailable(dbErr)) {
-        console.warn('[Session Import] Failed to upsert account in database:', dbErr.message);
+        logger.warn('session_import.account_upsert_failed', {
+          accountId,
+          errorCode: dbErr?.code || 'SESSION_IMPORT_DB_WRITE_FAILED',
+          error: dbErr,
+        });
+      } else {
+        recordDatabaseIssue(logger.child({ accountId, route: '/accounts/:accountId/session' }), dbErr, {
+          stage: 'session-import-upsert',
+        });
       }
     }
-    res.json({ success: true, accountId, cookieCount: cookies.length });
+    res.json({
+      success: true,
+      accountId,
+      cookieCount: cookies.length,
+      message: `LinkedIn cookies imported successfully for account ${accountId}. Run verify next.`,
+    });
   } catch (err) {
-    console.error('[Session Import]', err.message);
+    logger.error('session_import.failed', {
+      accountId: String(req.params.accountId || ''),
+      errorCode: err?.code || 'SESSION_IMPORT_FAILED',
+      error: err,
+    });
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
   }
 });
@@ -910,7 +1197,7 @@ app.delete('/accounts/:accountId/session', async (req, res) => {
 // GET /accounts/:accountId/limits
 app.get('/accounts/:accountId/limits', async (req, res) => {
   try {
-    const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    const accountId = await assertKnownAccountId(req.params.accountId);
     const limits = await getLimits(accountId);
     res.json(limits);
   } catch (err) {
@@ -929,7 +1216,8 @@ async function runJob(name, data, timeoutMs = 120_000) {
   const accountId   = data.accountId || 'default';
   const queue       = getQueue(accountId);
   const queueEvents = getQueueEvents(accountId);
-  const nonIdempotentJobs = new Set(['sendMessage', 'sendMessageNew', 'sendConnectionRequest']);
+  const nonIdempotentJobs = new Set(['sendMessageNew', 'sendConnectionRequest']);
+  const selfRetryingJobs = new Set(['verifySession', 'readConnections', 'readMessages', 'readThread', 'searchPeople']);
   const dedupeWindowJobs = new Set(['messageSync']);
 
   const toQueueUnavailableError = (originalErr) => {
@@ -959,7 +1247,7 @@ async function runJob(name, data, timeoutMs = 120_000) {
 
   let job;
   try {
-    const retryOptions = nonIdempotentJobs.has(name)
+    const retryOptions = (nonIdempotentJobs.has(name) || selfRetryingJobs.has(name))
       ? { attempts: 1 }
       : {
           // Retry once with exponential backoff (5 s, then 10 s).
@@ -1005,6 +1293,13 @@ async function runJob(name, data, timeoutMs = 120_000) {
         lowerReason.includes('checkpoint/challenge is still pending')
       ) {
         failErr.code = 'CHECKPOINT_INCOMPLETE';
+        failErr.status = 401;
+      } else if (
+        reason.includes('NAVIGATION_REDIRECT_LOOP') ||
+        lowerReason.includes('redirected too many times') ||
+        lowerReason.includes('err_too_many_redirects')
+      ) {
+        failErr.code = 'NAVIGATION_REDIRECT_LOOP';
         failErr.status = 401;
       } else if (reason.includes('LOGIN_NOT_FINISHED') || lowerReason.includes('login is not fully completed')) {
         failErr.code = 'LOGIN_NOT_FINISHED';
@@ -1053,60 +1348,46 @@ async function runJob(name, data, timeoutMs = 120_000) {
 }
 
 async function runDirectJob(name, data) {
-  switch (name) {
-    case 'verifySession':
-      return verifySession(data);
-    case 'readMessages':
-      return readMessages(data);
-    case 'readThread':
-      return readThread(data);
-    case 'sendMessage':
-      return sendMessage(data);
-    case 'sendMessageNew':
-      return sendMessageNew(data);
-    case 'sendConnectionRequest':
-      return sendConnectionRequest(data);
-    case 'searchPeople':
-      return searchPeople(data);
-    case 'messageSync':
-      return syncAllAccounts(data.proxyUrl);
-    default:
-      throw new Error(`Unknown job type: ${name}`);
-  }
+  return runNamedJob(name, data);
 }
 
 // â”€â”€ LinkedIn action endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 app.post('/accounts/:accountId/verify', async (req, res) => {
   try {
-    const accountId = req.params.accountId;
+    const accountId = await assertKnownAccountId(req.params.accountId);
     const proxyUrl = process.env.PROXY_URL || null;
+    res.setTimeout(230_000, () => {
+      if (!res.headersSent) res.status(504).json({ error: 'Request timed out' });
+    });
 
-    // Local dev mode: bypass BullMQ queue so verification can run without Redis.
-    const useDirectVerify = process.env.DIRECT_VERIFY === '1' || process.env.DISABLE_MESSAGE_SYNC === '1';
-    let result;
-    if (useDirectVerify) {
-      result = await verifySession({ accountId, proxyUrl });
-    } else {
-      try {
-        result = await runJob('verifySession', { accountId, proxyUrl });
-      } catch (queueErr) {
-        const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
-        const isRedisConnectivityError =
-          msg.includes('Connection is closed') ||
-          msg.includes('ECONNREFUSED') ||
-          msg.includes('ENOTFOUND') ||
-          msg.includes('getaddrinfo');
+    // Verification is operator-triggered and already does its own retry/cleanup loop.
+    // Running it directly avoids queue backoff stacking on top of browser retries.
+    const result = await verifySession({ accountId, proxyUrl });
 
-        if (!isRedisConnectivityError) throw queueErr;
-
-        console.warn('[Verify] Queue unavailable, falling back to direct verification:', msg);
-        result = await verifySession({ accountId, proxyUrl });
-      }
-    }
-
-    res.json(result);
+    clearSessionIssue(accountId);
+    res.json({
+      ...result,
+      message: `LinkedIn session verification succeeded for account ${accountId}.`,
+    });
   } catch (err) {
+    if ([
+      'NO_SESSION',
+      'SESSION_EXPIRED',
+      'AUTHENTICATED_STATE_NOT_REACHED',
+      'COOKIES_MISSING',
+      'CHECKPOINT_INCOMPLETE',
+      'LOGIN_NOT_FINISHED',
+      'NAVIGATION_REDIRECT_LOOP',
+    ].includes(err?.code)) {
+      markSessionIssue(req.params.accountId, {
+        code: err.code,
+        message: toPublicOperationError(err),
+      });
+    }
+    if (res.headersSent) {
+      return;
+    }
     const status = err.status || (err.message ? 400 : 500);
     res.status(status).json({
       error: toPublicOperationError(err),
@@ -1117,7 +1398,7 @@ app.post('/accounts/:accountId/verify', async (req, res) => {
 
 app.get('/messages/inbox', async (req, res) => {
   try {
-    const accountId = validateId(req.query.accountId, { field: 'accountId' });
+    const accountId = await assertKnownAccountId(req.query.accountId);
     const limit     = parseLimit(req.query.limit, 20);
     const result    = await runJob('readMessages', {
       accountId, limit, proxyUrl: process.env.PROXY_URL || null,
@@ -1136,34 +1417,44 @@ app.get('/messages/inbox', async (req, res) => {
 app.get('/messages/thread', async (req, res) => {
   try {
     const messageRepo = require('./db/repositories/MessageRepository');
-    const accountId = validateId(req.query.accountId, { field: 'accountId' });
-    const chatId    = validateId(req.query.chatId,    { field: 'chatId' });
-    const normalizedChatId = normalizeThreadId(accountId, chatId);
-    const limit     = parseLimit(req.query.limit, 100);
+    const accountId = await assertKnownAccountId(req.query.accountId);
+    const chatId    = validateId(req.query.chatId, { field: 'chatId' });
+    const normalizedChatId = await assertConversationBelongsToAccount(accountId, chatId);
+    const limit     = parseLimit(req.query.limit, 250, 500);
     const offset    = parseInt(req.query.offset) || 0;
+    const refresh   = String(req.query.refresh || '') === '1';
     const proxyUrl  = process.env.PROXY_URL || null;
 
     let dbMessages = [];
     try {
       dbMessages = await withTimeout(
         messageRepo.getMessagesByConversation(chatId, limit, offset),
-        4000
+        DB_READ_TIMEOUT_MS
       );
 
       // Support prefixed IDs from unified fallback (accountId:rawChatId).
       if (dbMessages.length === 0 && normalizedChatId !== chatId) {
         dbMessages = await withTimeout(
           messageRepo.getMessagesByConversation(normalizedChatId, limit, offset),
-          4000
+          DB_READ_TIMEOUT_MS
         );
       }
     } catch (dbErr) {
       if (!isDatabaseUnavailable(dbErr)) throw dbErr;
     }
 
-    if (dbMessages.length > 0) {
+    const dbItems = mapDbMessagesToApiItems(dbMessages);
+
+    if (dbItems.length > 0 && !refresh) {
+      logger.debug('thread.cached_db_returned', {
+        accountId,
+        threadId: normalizedChatId,
+        dbCount: dbItems.length,
+        refresh: 0,
+        limit,
+      });
       return res.json({
-        items: mapDbMessagesToApiItems(dbMessages),
+        items: dbItems,
         cursor: null,
         hasMore: dbMessages.length === limit,
       });
@@ -1229,34 +1520,67 @@ app.get('/messages/thread', async (req, res) => {
     }
 
     // Live fallback: fetch directly from LinkedIn when DB thread is empty.
-    let liveThread;
-    try {
-      liveThread = await runJob('readThread', {
+    // Synthetic fallback ids are preview-only placeholders, so avoid opening bogus
+    // /messaging/thread/fallback-... URLs that create noisy browser failures.
+    let liveThread = null;
+    let liveItems = [];
+    if (normalizedChatId.startsWith('fallback-')) {
+      logger.debug('thread.live_fetch_skipped_unresolved', {
         accountId,
-        chatId: normalizedChatId,
-        proxyUrl,
-        limit,
+        threadId: normalizedChatId,
       });
-    } catch (queueErr) {
-      const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
-      const isQueueConnectivityError =
-        msg.includes('Connection is closed') ||
-        msg.includes('ECONNREFUSED') ||
-        msg.includes('ENOTFOUND') ||
-        msg.includes('getaddrinfo');
+    } else {
+      const liveFallbackKey = `${accountId}|${normalizedChatId}|${limit}`;
+      const resolvedLiveThread = await dedupeInFlightFallback(
+        liveThreadFallbacksInFlight,
+        liveFallbackKey,
+        async () => {
+          try {
+            return await runJob('readThread', {
+              accountId,
+              chatId: normalizedChatId,
+              proxyUrl,
+              limit,
+            });
+          } catch (queueErr) {
+            const msg = queueErr instanceof Error ? queueErr.message : String(queueErr);
+            const isQueueConnectivityError =
+              msg.includes('Connection is closed') ||
+              msg.includes('ECONNREFUSED') ||
+              msg.includes('ENOTFOUND') ||
+              msg.includes('getaddrinfo');
 
-      if (!isQueueConnectivityError) throw queueErr;
-      console.warn('[Thread] Queue unavailable, falling back to direct readThread:', msg);
-      liveThread = await readThread({ accountId, chatId: normalizedChatId, proxyUrl, limit });
+            if (!isQueueConnectivityError) throw queueErr;
+            logger.warn('thread.queue_fallback_direct_read', {
+              accountId,
+              threadId: normalizedChatId,
+              errorCode: 'QUEUE_UNAVAILABLE',
+              detail: msg,
+            });
+            return readThread({ accountId, chatId: normalizedChatId, proxyUrl, limit });
+          }
+        }
+      );
+
+      liveThread = resolvedLiveThread;
+      liveItems = mapLiveMessagesToApiItems(liveThread?.items, normalizedChatId, accountId);
     }
 
-    const liveItems = mapLiveMessagesToApiItems(liveThread?.items, normalizedChatId, accountId);
+    const mergedThreadItems = mergeApiThreadItems(dbItems, liveItems);
+    logger.info('thread.merge_summary', {
+      accountId,
+      threadId: normalizedChatId,
+      existingDbMessageCount: dbItems.length,
+      incomingMessageCount: liveItems.length,
+      finalMessageCount: mergedThreadItems.length,
+      refresh: refresh ? 1 : 0,
+    });
 
     // Best-effort persistence so next load comes from DB.
     if (liveItems.length > 0) {
       try {
         const participantName =
-          (liveThread?.participant?.name && liveThread.participant.name !== 'Unknown')
+          (liveThread?.participant?.name && !isGenericUiLabel(liveThread.participant.name))
             ? liveThread.participant.name
             : (liveItems.find((m) => m.senderId !== '__self__' && m.senderName !== 'Unknown')?.senderName || 'Unknown');
         const participantProfileUrl = liveThread?.participant?.profileUrl || null;
@@ -1271,7 +1595,7 @@ app.get('/messages/thread', async (req, res) => {
           lastMessageAt: new Date(latestLive.createdAt),
           lastMessageText: latestLive.text || '',
           lastMessageSentByMe: latestLive.senderId === '__self__',
-        }), 4000);
+        }), DB_WRITE_TIMEOUT_MS);
 
         for (const item of liveItems) {
           await withTimeout(messageRepo.upsertMessage({
@@ -1283,11 +1607,91 @@ app.get('/messages/thread', async (req, res) => {
             sentAt: item.createdAt,
             isSentByMe: item.senderId === '__self__',
             linkedinMessageId: item.id,
-          }), 4000);
+            timestampInferred: item.hasExactTimestamp !== true,
+          }), DB_WRITE_TIMEOUT_MS);
         }
       } catch (persistErr) {
         if (!isDatabaseUnavailable(persistErr)) {
-          console.warn('[Thread] Live fallback persistence failed:', persistErr.message || String(persistErr));
+          logger.warn('thread.live_persist_failed', {
+            accountId,
+            threadId: normalizedChatId,
+            errorCode: persistErr?.code || 'THREAD_PERSIST_FAILED',
+            error: persistErr,
+          });
+        } else {
+          recordDatabaseIssue(logger.child({ accountId, threadId: normalizedChatId }), persistErr, {
+            stage: 'thread-live-persist',
+          });
+        }
+      }
+    }
+
+    if (mergedThreadItems.length > 0) {
+      logger.debug('thread.merged_returned', {
+        accountId,
+        threadId: normalizedChatId,
+        existingDbMessageCount: dbItems.length,
+        incomingMessageCount: liveItems.length,
+        finalMessageCount: mergedThreadItems.length,
+        limit,
+      });
+      return res.json({
+        items: mergedThreadItems,
+        cursor: null,
+        hasMore: mergedThreadItems.length >= limit,
+      });
+    }
+
+    if (liveItems.length === 0) {
+      try {
+        let conversation = await withTimeout(
+          messageRepo.getConversationById(chatId),
+          DB_READ_TIMEOUT_MS
+        );
+
+        if (!conversation && normalizedChatId !== chatId) {
+          conversation = await withTimeout(
+            messageRepo.getConversationById(normalizedChatId),
+            DB_READ_TIMEOUT_MS
+          );
+        }
+
+        const previewText = normalizeWhitespace(conversation?.lastMessageText || '');
+        if (previewText) {
+          const previewCreatedAt = new Date(conversation?.lastMessageAt || Date.now()).toISOString();
+          const previewSentByMe = Boolean(conversation?.lastMessageSentByMe);
+          return res.json({
+            items: [{
+              id: `preview-${normalizedChatId}`,
+              chatId: normalizedChatId,
+              senderId: previewSentByMe ? '__self__' : 'other',
+              text: previewText,
+              createdAt: previewCreatedAt,
+              sentAt: previewCreatedAt,
+              isSentByMe: previewSentByMe,
+              senderName: previewSentByMe
+                ? accountId
+                : normalizeParticipantName(
+                    conversation?.participantName,
+                    conversation?.participantProfileUrl || ''
+                  ),
+            }],
+            cursor: null,
+            hasMore: false,
+          });
+        }
+      } catch (previewErr) {
+        if (!isDatabaseUnavailable(previewErr)) {
+          logger.warn('thread.preview_fallback_failed', {
+            accountId,
+            threadId: normalizedChatId,
+            errorCode: previewErr?.code || 'THREAD_PREVIEW_FALLBACK_FAILED',
+            error: previewErr,
+          });
+        } else {
+          recordDatabaseIssue(logger.child({ accountId, threadId: normalizedChatId }), previewErr, {
+            stage: 'thread-preview-fallback',
+          });
         }
       }
     }
@@ -1306,112 +1710,27 @@ app.get('/messages/thread', async (req, res) => {
   }
 });
 
-app.post('/messages/send', async (req, res) => {
-  try {
-    const accountId = validateId(req.body?.accountId, { field: 'accountId' });
-    const chatId    = validateId(req.body?.chatId,    { field: 'chatId' });
-    const normalizedChatId = normalizeThreadId(accountId, chatId);
-    const text      = sanitizeText(req.body?.text, { maxLength: 3000 });
-    if (!text) return res.status(400).json({ error: 'text is required' });
-    if (normalizedChatId.startsWith('activity-')) {
-      return res.status(400).json({
-        error: 'This conversation is activity-only and cannot be replied yet. Run sync and retry.',
-        code: 'THREAD_NOT_REPLYABLE',
-      });
-    }
-
-    const result = await runJob('sendMessage', {
-      accountId, chatId: normalizedChatId, text, proxyUrl: process.env.PROXY_URL || null,
-    });
-    if (!res.headersSent) {
-      res.json(result);
-    }
-  } catch (err) {
-    if (res.headersSent) return;
-    const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({
-      error: toPublicOperationError(err),
-      code: err.code,
-    });
-  }
-});
-
-app.post('/messages/send-new', async (req, res) => {
-  try {
-    const accountId  = validateId(req.body?.accountId, { field: 'accountId' });
-    const profileUrl = validateProfileUrl(req.body?.profileUrl);
-    const text       = sanitizeText(req.body?.text, { maxLength: 3000 });
-    if (!text) return res.status(400).json({ error: 'text is required' });
-
-    let result;
-    try {
-      result = await runJob('sendMessageNew', {
-        accountId, profileUrl, text, proxyUrl: process.env.PROXY_URL || null,
-      });
-    } catch (sendNewErr) {
-      // Always try thread fallback before failing send-new.
-      // This helps when profile composer flow is flaky but an existing thread works.
-      const reason = String(sendNewErr?.message || sendNewErr || '');
-      console.warn(`[API] send-new failed for ${accountId}; trying thread fallback: ${reason}`);
-
-      // Reset browser context before inbox fallback to avoid stale/half-closed sessions.
-      await cleanupContext(accountId).catch(() => {});
-
-      let inboxResult;
-      try {
-        inboxResult = await runJob('readMessages', {
-          accountId,
-          limit: 100,
-          proxyUrl: process.env.PROXY_URL || null,
-        });
-      } catch (fallbackErr) {
-        const fallbackReason = String(fallbackErr?.message || fallbackErr || '');
-        console.warn(`[API] thread fallback inbox read failed for ${accountId}: ${fallbackReason}`);
-        throw sendNewErr;
-      }
-
-      const normalizedTarget = normalizeProfileUrlForCompare(profileUrl);
-      const matchedConversation = (inboxResult?.items || []).find((item) => {
-        const participantUrl = item?.participants?.[0]?.profileUrl || '';
-        return (
-          participantUrl &&
-          normalizeProfileUrlForCompare(participantUrl) === normalizedTarget
-        );
-      });
-
-      if (!matchedConversation?.id) throw sendNewErr;
-
-      result = await runJob('sendMessage', {
-        accountId,
-        chatId: matchedConversation.id,
-        text,
-        proxyUrl: process.env.PROXY_URL || null,
-      });
-    }
-
-    await persistOptimisticSendNewResult({
-      accountId,
-      profileUrl,
-      text,
-      result,
-    });
-
-    if (!res.headersSent) {
-      res.json(result);
-    }
-  } catch (err) {
-    if (res.headersSent) return;
-    const status = err.status || (err.message ? 400 : 500);
-    res.status(status).json({
-      error: toPublicOperationError(err),
-      code: err.code,
-    });
-  }
+registerSendRoutes(app, {
+  logger,
+  assertKnownAccountId,
+  validateProfileUrl,
+  assertConversationBelongsToAccount,
+  sanitizeText,
+  runJob,
+  cleanupContext,
+  normalizeProfileUrlForCompare,
+  normalizeThreadId,
+  persistOptimisticSendNewResult,
+  recordMessageSent,
+  applyRetryAfterHeader,
+  recordSendFailure,
+  recordSessionExpired,
+  toPublicOperationError,
 });
 
 app.post('/connections/send', async (req, res) => {
   try {
-    const accountId  = validateId(req.body?.accountId, { field: 'accountId' });
+    const accountId  = await assertKnownAccountId(req.body?.accountId);
     const profileUrl = validateProfileUrl(req.body?.profileUrl);
     const note       = req.body?.note == null ? '' : sanitizeNote(req.body.note);
 
@@ -1432,95 +1751,41 @@ app.post('/connections/send', async (req, res) => {
 app.get('/connections/unified', async (req, res) => {
   try {
     const limit = parseLimit(req.query.limit, 300, 1000);
-    const payload = await getUnifiedConnectionsWithCache(limit);
+    const refresh = String(req.query.refresh || '') === '1';
+    const payload = await getUnifiedConnectionsWithCache(limit, { refresh });
     res.json(payload);
   } catch (err) {
     if (err?.status) {
+      const retryAfterSec = applyRetryAfterHeader(res, err);
       return res.status(err.status).json({
         error: toPublicOperationError(err),
         code: err.code,
+        retryAfterSec,
       });
     }
 
-    console.error('[API] Error fetching unified connections:', err);
+    logger.error('connections.unified_failed', {
+      errorCode: err?.code || 'UNIFIED_CONNECTIONS_FAILED',
+      error: err,
+    });
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
   }
 });
 
-app.get('/inbox/unified', async (req, res) => {
-  try {
-    const messageRepo = require('./db/repositories/MessageRepository');
-    const limit = parseLimit(req.query.limit, 100, 200);
-    const offset = parseInt(req.query.offset) || 0;
-
-    // Query all conversations from database
-    const conversations = await withTimeout(
-      messageRepo.getAllConversations(limit, offset),
-      4000
-    );
-
-    // Transform to match expected frontend format
-    const payload = {
-      conversations: conversations.map(conv => ({
-        conversationId: conv.id,
-        accountId: conv.accountId,
-        participant: {
-          name: conv.participantName,
-          profileUrl: conv.participantProfileUrl || '',
-        },
-        lastMessage: {
-          text: conv.lastMessageText,
-          sentAt: new Date(conv.lastMessageAt).getTime(),
-          sentByMe: conv.lastMessageSentByMe,
-        },
-        unreadCount: 0, // We don't track unread in database yet
-        messages: [],
-      })),
-    };
-
-    // Merge DB-backed conversations with recent activity so newly sent messages
-    // show in the UI even before full thread sync catches up.
-    const activityPayload = await buildUnifiedInboxFromActivity(limit);
-    const mergedConversations = dedupeAndSortConversations([
-      ...payload.conversations,
-      ...(activityPayload?.conversations || []),
-    ]).slice(0, limit);
-
-    if (mergedConversations.length === 0) {
-      const livePayload = await buildUnifiedInboxWithFallback(limit);
-      return res.json(livePayload);
-    }
-
-    res.json({ conversations: mergedConversations });
-  } catch (err) {
-    if (isDatabaseUnavailable(err)) {
-      try {
-        const livePayload = await buildUnifiedInboxWithFallback(parseLimit(req.query.limit, 100, 200));
-        return res.json(livePayload);
-      } catch (fallbackErr) {
-        if (fallbackErr?.status) {
-          return res.status(fallbackErr.status).json({
-            error: toPublicOperationError(fallbackErr),
-            code: fallbackErr.code,
-          });
-        }
-        console.error('[API] Error in fallback unified inbox:', fallbackErr);
-        return res.status(500).json({
-          error: process.env.NODE_ENV === 'production' ? 'Internal error' : fallbackErr.message,
-        });
-      }
-    }
-
-    if (err?.status) {
-      return res.status(err.status).json({
-        error: toPublicOperationError(err),
-        code: err.code,
-      });
-    }
-
-    console.error('[API] Error fetching unified inbox:', err);
-    res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
-  }
+registerInboxRoutes(app, {
+  messageRepo,
+  parseLimit,
+  withTimeout,
+  isDatabaseUnavailable,
+  buildUnifiedInboxFromActivity,
+  dedupeAndSortConversations,
+  buildUnifiedInboxWithFallback,
+  getUnifiedInboxCacheState,
+  recordDatabaseIssue,
+  applyRetryAfterHeader,
+  toPublicOperationError,
+  logger,
+  readTimeoutMs: DB_READ_TIMEOUT_MS,
 });
 
 // !! IMPORTANT: /stats/all/summary MUST be declared BEFORE /stats/:accountId/summary
@@ -1533,6 +1798,7 @@ app.get('/stats/all/summary', async (_req, res) => {
 
     let totalMessages    = 0;
     let totalConnections = 0;
+    const recentActivityEntries = [];
 
     const accountStats = await Promise.all(
       ids.map(async (id) => {
@@ -1544,14 +1810,38 @@ app.get('/stats/all/summary', async (_req, res) => {
         const parsedConns = parseInt(conns || '0', 10);
         totalMessages    += parsedMsgs;
         totalConnections += parsedConns;
+
+        const activityEntries = await getRecentActivityEntries(id, 50);
+        for (const entry of activityEntries) {
+          if (!['messageSent', 'connectionSent', 'profileViewed'].includes(entry?.type)) {
+            continue;
+          }
+
+          const profileUrl = String(entry.targetProfileUrl || '');
+          recentActivityEntries.push({
+            ...entry,
+            targetName: normalizeParticipantName(entry.targetName, profileUrl),
+            message:
+              typeof entry.message === 'string' && entry.message.trim()
+                ? entry.message
+                : (typeof entry.textPreview === 'string' ? entry.textPreview : undefined),
+          });
+        }
+
         return { id, totalActivity: parsedMsgs + parsedConns };
       })
     );
+
+    const recentActivity = dedupeRecentActivity(recentActivityEntries)
+      .sort((a, b) => (Number(b?.timestamp) || 0) - (Number(a?.timestamp) || 0))
+      .slice(0, 10);
 
     res.json({
       accounts: Object.fromEntries(accountStats.map(a => [a.id, a])),
       totalMessages,
       totalConnections,
+      totalActivity: totalMessages + totalConnections,
+      recentActivity,
     });
   } catch (err) {
     res.status(500).json({ error: process.env.NODE_ENV === 'production' ? 'Internal error' : err.message });
@@ -1560,7 +1850,7 @@ app.get('/stats/all/summary', async (_req, res) => {
 
 app.get('/stats/:accountId/summary', async (req, res) => {
   try {
-    const { accountId } = req.params;
+    const accountId = await assertKnownAccountId(req.params.accountId);
     const redis = getRedis();
     const key   = `activity:log:${accountId}`;
     const total = await redis.llen(key).catch(() => 0);
@@ -1572,7 +1862,7 @@ app.get('/stats/:accountId/summary', async (req, res) => {
 
 app.get('/stats/:accountId/activity', async (req, res) => {
   try {
-    const accountId = validateId(req.params.accountId, { field: 'accountId' });
+    const accountId = await assertKnownAccountId(req.params.accountId);
     const page  = parseInt(req.query.page  ?? '0',  10);
     const limit = Math.min(parseInt(req.query.limit ?? '50', 10), 200);
     const redis = getRedis();
@@ -1589,6 +1879,10 @@ app.get('/stats/:accountId/activity', async (req, res) => {
       return {
         ...entry,
         targetName: normalizeParticipantName(entry.targetName, profileUrl),
+        message:
+          typeof entry.message === 'string' && entry.message.trim()
+            ? entry.message
+            : (typeof entry.textPreview === 'string' ? entry.textPreview : undefined),
       };
     });
 
@@ -1602,7 +1896,7 @@ app.get('/stats/:accountId/activity', async (req, res) => {
 
 app.get('/people/search', async (req, res) => {
   try {
-    const accountId = validateId(req.query.accountId, { field: 'accountId' });
+    const accountId = await assertKnownAccountId(req.query.accountId);
     const { limit } = req.query;
     const q = sanitizeText(req.query.q, { maxLength: 200 });
     if (!q) return res.status(400).json({ error: 'q is required' });
@@ -1629,6 +1923,7 @@ const server = http.createServer(app);
 initializeWebSocket(server);
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[API] Worker API listening on port ${PORT}`);
-  console.log(`[WebSocket] WebSocket server ready on port ${PORT}`);
+  logger.info('worker.api_listening', { port: PORT });
+  logger.info('worker.websocket_ready', { port: PORT });
 });
+

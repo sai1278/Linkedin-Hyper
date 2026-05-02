@@ -24,6 +24,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         className="font-body antialiased"
         style={{ background: "var(--bg-base)", color: "var(--text-primary)" }}
       >
+        <noscript>
+          <div
+            style={{
+              background: 'var(--bg-panel)',
+              borderBottom: '1px solid var(--border)',
+              padding: '12px 16px',
+              fontSize: '14px',
+            }}
+          >
+            JavaScript is disabled. Interactive dashboard screens will stay in read-only fallback mode.
+          </div>
+        </noscript>
         <AuthProvider>
           <WebSocketProvider>
             {children}

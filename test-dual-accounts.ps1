@@ -4,13 +4,51 @@ param(
   [string]$Text = "",
   [string]$CookieDir = ".",
   [string]$CookieFileMapJson = "",
-  [string]$ApiKey = "dev-api-secret-key-change-in-production",
+  [string]$ApiKey = "",
   [string]$RouteAuthToken = "",
   [string]$BaseUrl = "http://localhost:3001"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+function Get-ConfigValue {
+  param([Parameter(Mandatory = $true)][string]$Key)
+
+  $envValue = [Environment]::GetEnvironmentVariable($Key)
+  if (-not [string]::IsNullOrWhiteSpace($envValue)) {
+    return $envValue.Trim()
+  }
+
+  $envFile = Join-Path $repoRoot ".env"
+  if (-not (Test-Path -LiteralPath $envFile)) {
+    return ""
+  }
+
+  $pattern = "^\s*$([regex]::Escape($Key))=(.*)$"
+  $line = Get-Content -LiteralPath $envFile | Where-Object { $_ -match $pattern } | Select-Object -Last 1
+  if (-not $line) {
+    return ""
+  }
+
+  return ($line -replace $pattern, '$1').Trim().Trim('"').Trim("'")
+}
+
+if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+  $ApiKey = Get-ConfigValue -Key "API_SECRET"
+}
+if ([string]::IsNullOrWhiteSpace($RouteAuthToken)) {
+  $RouteAuthToken = Get-ConfigValue -Key "API_ROUTE_AUTH_TOKEN"
+}
+
+$isFrontendApi = $BaseUrl -match '/api/?$'
+if ($isFrontendApi -and [string]::IsNullOrWhiteSpace($RouteAuthToken)) {
+  throw "BaseUrl points to the public /api BFF. Provide -RouteAuthToken or set API_ROUTE_AUTH_TOKEN in .env/environment."
+}
+if ((-not $isFrontendApi) -and [string]::IsNullOrWhiteSpace($ApiKey)) {
+  throw "Missing API key. Provide -ApiKey or set API_SECRET in .env/environment."
+}
 
 if ([string]::IsNullOrWhiteSpace($CookieDir) -or $CookieDir.Trim() -eq ".") {
   $CookieDir = (Get-Location).Path

@@ -108,6 +108,17 @@ function Test-TcpPort {
   }
 }
 
+function New-LocalSecret {
+  param([int]$Bytes = 32, [switch]$Hex)
+
+  $bytes = New-Object byte[] $Bytes
+  [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+  if ($Hex) {
+    return ([System.BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
+  }
+  return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workerRoot = Join-Path $repoRoot "worker"
 
@@ -119,12 +130,27 @@ $envMap = @{}
 Load-EnvFile -Path (Join-Path $repoRoot ".env") -Target $envMap
 Load-EnvFile -Path (Join-Path $repoRoot ".env.local") -Target $envMap
 
-$databaseUrl = if ($envMap.ContainsKey("DATABASE_URL")) { $envMap["DATABASE_URL"] } else { "postgresql://linkedinuser:dev-postgres-password-change-me@localhost:5432/linkedin_db" }
+$resolvedDbPassword = if ($envMap.ContainsKey("DB_PASSWORD")) {
+  $envMap["DB_PASSWORD"]
+} elseif ($baseEnv.ContainsKey("DB_PASSWORD")) {
+  $baseEnv["DB_PASSWORD"]
+} elseif ([Environment]::GetEnvironmentVariable("LINKEDIN_HYPER_DB_PASSWORD")) {
+  [Environment]::GetEnvironmentVariable("LINKEDIN_HYPER_DB_PASSWORD")
+} else {
+  ""
+}
+$databaseUrl = if ($envMap.ContainsKey("DATABASE_URL")) {
+  $envMap["DATABASE_URL"]
+} elseif (-not [string]::IsNullOrWhiteSpace($resolvedDbPassword)) {
+  "postgresql://linkedinuser:$resolvedDbPassword@localhost:5432/linkedin_db"
+} else {
+  "postgresql://linkedinuser@localhost:5432/linkedin_db"
+}
 $redisHost = if ($envMap.ContainsKey("REDIS_HOST")) { $envMap["REDIS_HOST"] } else { "localhost" }
 $redisPort = if ($envMap.ContainsKey("REDIS_PORT")) { $envMap["REDIS_PORT"] } else { "6379" }
-$redisPassword = if ($envMap.ContainsKey("REDIS_PASSWORD")) { $envMap["REDIS_PASSWORD"] } elseif ($baseEnv.ContainsKey("REDIS_PASSWORD")) { $baseEnv["REDIS_PASSWORD"] } else { "redis-dev-password-change-in-prod" }
-$apiSecret = if ($envMap.ContainsKey("API_SECRET")) { $envMap["API_SECRET"] } else { "dev-api-secret-key-change-in-production" }
-$sessionKey = if ($envMap.ContainsKey("SESSION_ENCRYPTION_KEY")) { $envMap["SESSION_ENCRYPTION_KEY"] } else { "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+$redisPassword = if ($envMap.ContainsKey("REDIS_PASSWORD")) { $envMap["REDIS_PASSWORD"] } elseif ($baseEnv.ContainsKey("REDIS_PASSWORD")) { $baseEnv["REDIS_PASSWORD"] } else { New-LocalSecret -Bytes 18 }
+$apiSecret = if ($envMap.ContainsKey("API_SECRET")) { $envMap["API_SECRET"] } else { New-LocalSecret -Bytes 32 -Hex }
+$sessionKey = if ($envMap.ContainsKey("SESSION_ENCRYPTION_KEY")) { $envMap["SESSION_ENCRYPTION_KEY"] } else { New-LocalSecret -Bytes 32 -Hex }
 $accountIds = if ($envMap.ContainsKey("ACCOUNT_IDS") -and $envMap["ACCOUNT_IDS"].Trim().Length -gt 0) { $envMap["ACCOUNT_IDS"] } else { "saikanchi130" }
 $redisPortInt = 6379
 if (-not [int]::TryParse($redisPort, [ref]$redisPortInt)) {

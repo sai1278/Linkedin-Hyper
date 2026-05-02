@@ -1,13 +1,17 @@
 'use strict';
 
 const { getAccountContext, cleanupContext, withAccountLock } = require('../browser');
-const { loadCookies, saveCookies } = require('../session');
+const { loadCookies, saveCookies, rememberRecentVerify, getRecentVerify } = require('../session');
 const { delay }                    = require('../humanBehavior');
 const fs = require('fs');
 const path = require('path');
 
 const DEBUG_SCREENSHOT_DIR =
   process.env.LI_DEBUG_SCREENSHOT_DIR || '/tmp/linkedin-hyper-debug';
+const VERIFY_SETTLE_TIMEOUT_MS = Math.max(
+  10_000,
+  parseInt(process.env.LI_VERIFY_SETTLE_TIMEOUT_MS || '30000', 10) || 30000
+);
 
 function isBlockedAuthPage(url) {
   const value = String(url || '').toLowerCase();
@@ -16,13 +20,44 @@ function isBlockedAuthPage(url) {
     value.includes('/login') ||
     value.includes('/checkpoint') ||
     value.includes('/authwall') ||
-    value.includes('challenge')
+    value.includes('challenge') ||
+    value.includes('captcha') ||
+    value.includes('security-verification')
   );
 }
 
 function isCheckpointLike(url) {
   const value = String(url || '').toLowerCase();
   return value.includes('/checkpoint') || value.includes('challenge');
+}
+
+function isRecoverableBrowserError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  if (!msg) return false;
+
+  return (
+    msg.includes('session closed') ||
+    msg.includes('target page, context or browser has been closed') ||
+    msg.includes('frame was detached') ||
+    msg.includes('net::err_aborted') ||
+    msg.includes('protocol error (page.addscripttoevaluateonnewdocument)') ||
+    msg.includes('protocol error (page.createisolatedworld)') ||
+    msg.includes('operation failed')
+  );
+}
+
+function isRedirectLoopError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  return msg.includes('err_too_many_redirects') || msg.includes('redirected too many times');
+}
+
+function pushTraceUrl(trace, url) {
+  const value = String(url || '').trim();
+  if (!value) return;
+  const last = trace[trace.length - 1];
+  if (last === value) return;
+  if (trace.length >= 20) return;
+  trace.push(value);
 }
 
 async function inspectAuthState(page) {
@@ -33,11 +68,17 @@ async function inspectAuthState(page) {
         Boolean(document.querySelector('input[name="session_key"], input[name="session_password"], form[action*="login"]'));
       const hasAuthwallMarkers =
         txt.includes('join linkedin') ||
-        txt.includes('sign in') ||
         txt.includes('new to linkedin') ||
         txt.includes('continue to linkedin') ||
         txt.includes('unlock your profile') ||
         txt.includes('create your account');
+      const hasChallengeMarkers =
+        txt.includes('security verification') ||
+        txt.includes('verify your identity') ||
+        txt.includes('enter the code we sent') ||
+        txt.includes('captcha') ||
+        txt.includes('let us confirm it') ||
+        txt.includes('confirm your identity');
       const navLinkSelectors = [
         'a[href*="/feed"]',
         'a[href*="/mynetwork"]',
@@ -79,8 +120,10 @@ async function inspectAuthState(page) {
         );
 
       return {
+        title: document.title || '',
         hasLoginForm,
         hasAuthwallMarkers,
+        hasChallengeMarkers,
         hasSignedInNav,
         hasMessagingShell,
         hasGuestCta,
@@ -89,8 +132,10 @@ async function inspectAuthState(page) {
     });
   } catch (err) {
     return {
+      title: '',
       hasLoginForm: false,
       hasAuthwallMarkers: false,
+      hasChallengeMarkers: false,
       hasSignedInNav: false,
       hasMessagingShell: false,
       hasGuestCta: false,
@@ -108,7 +153,8 @@ function isLoggedOutState(state) {
   const guestOnlyState = Boolean(
     state?.hasGuestCta &&
     !state?.hasSignedInNav &&
-    !state?.hasMessagingShell
+    !state?.hasMessagingShell &&
+    !isStrongMemberUrl(state?.url)
   );
   return Boolean(state?.hasLoginForm || state?.hasAuthwallMarkers || guestOnlyState);
 }
@@ -119,18 +165,13 @@ function isStrongMemberUrl(url) {
   if (isBlockedAuthPage(value)) return false;
   try {
     const parsed = new URL(value);
-    const memberPath = String(parsed.pathname || '/').toLowerCase();
+    const path = String(parsed.pathname || '/').toLowerCase();
     return (
-      memberPath === '/feed/' ||
-      memberPath.startsWith('/feed') ||
-      memberPath.startsWith('/messaging') ||
-      memberPath.startsWith('/mynetwork') ||
-      memberPath.startsWith('/notifications') ||
-      memberPath.startsWith('/jobs') ||
-      memberPath.startsWith('/search') ||
-      memberPath.startsWith('/in/') ||
-      memberPath.startsWith('/sales/') ||
-      memberPath.startsWith('/groups/')
+      path === '/feed/' ||
+      path.startsWith('/feed') ||
+      path.startsWith('/messaging') ||
+      path.startsWith('/mynetwork') ||
+      path.startsWith('/me')
     );
   } catch {
     return false;
@@ -140,6 +181,14 @@ function isStrongMemberUrl(url) {
 function isAuthenticatedLinkedInPage(state) {
   const hasUiSignal = Boolean(state?.hasSignedInNav || state?.hasMessagingShell);
   const hasStrongUrlSignal = isStrongMemberUrl(state?.url);
+  if (
+    state &&
+    !isBlockedAuthPage(state.url) &&
+    hasUiSignal &&
+    hasStrongUrlSignal
+  ) {
+    return true;
+  }
   return Boolean(
     state &&
     !isBlockedAuthPage(state.url) &&
@@ -173,17 +222,38 @@ function getCookieFlags(cookies) {
   };
 }
 
-function classifyVerifyFailure({ accountId, feedUrl, messagingUrl, feedState, messagingState, cookieFlags }) {
+function classifyVerifyFailure({
+  accountId,
+  feedUrl,
+  messagingUrl,
+  feedState,
+  messagingState,
+  cookieFlags,
+  feedError,
+  messagingError,
+}) {
   if (!cookieFlags.hasLiAt || !cookieFlags.hasJsession) {
     return {
       code: 'COOKIES_MISSING',
       message: `Required LinkedIn cookies (li_at/JSESSIONID) are missing for account ${accountId}. Re-import cookies.`,
     };
   }
+  if (isRedirectLoopError(feedError) || isRedirectLoopError(messagingError)) {
+    return {
+      code: 'NAVIGATION_REDIRECT_LOOP',
+      message: `LinkedIn redirected too many times for account ${accountId}. The imported cookies did not produce a stable member session on the worker. Re-capture cookies and retry.`,
+    };
+  }
   if (isCheckpointLike(feedUrl) || isCheckpointLike(messagingUrl)) {
     return {
       code: 'CHECKPOINT_INCOMPLETE',
       message: `LinkedIn checkpoint/challenge is still pending for account ${accountId}. Complete checkpoint and re-import cookies.`,
+    };
+  }
+  if (feedState?.hasChallengeMarkers || messagingState?.hasChallengeMarkers) {
+    return {
+      code: 'CHECKPOINT_INCOMPLETE',
+      message: `LinkedIn verification or captcha is still pending for account ${accountId}. Complete the challenge and re-import cookies.`,
     };
   }
   if (isBlockedAuthPage(feedUrl) || isBlockedAuthPage(messagingUrl) || isLoggedOutState(feedState) || isLoggedOutState(messagingState)) {
@@ -224,30 +294,59 @@ async function captureFailureScreenshot(page, accountId, label) {
 }
 
 async function tryNavigate(page, url) {
+  const trace = [];
+  const onFrameNavigated = (frame) => {
+    try {
+      if (frame === page.mainFrame()) {
+        pushTraceUrl(trace, frame.url());
+      }
+    } catch (_) {
+      // Ignore trace collection failures.
+    }
+  };
+
+  page.on('framenavigated', onFrameNavigated);
   try {
     await page.goto(url, {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
-    return { ok: true, url: page.url() };
+    pushTraceUrl(trace, page.url());
+    return { ok: true, url: page.url(), trace };
   } catch (err) {
+    pushTraceUrl(trace, page.url());
     return {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
       url: page.url(),
+      trace,
     };
+  } finally {
+    page.off('framenavigated', onFrameNavigated);
   }
 }
 
-async function verifySession({ accountId, proxyUrl }) {
+async function verifySession({ accountId, proxyUrl, persistCookies = true, allowCachedSuccess = true }) {
   return withAccountLock(accountId, async () => {
-  // Always verify from a fresh browser context to avoid false positives from
-  // previously authenticated in-memory contexts.
-  await cleanupContext(accountId).catch(() => {});
-  const { context } = await getAccountContext(accountId, proxyUrl);
   let page;
+  let context;
 
   try {
+    if (allowCachedSuccess) {
+      const cached = await getRecentVerify(accountId).catch(() => null);
+      if (cached?.ok) {
+        console.log(
+          `[verifySession:${accountId}] returning cached success url=${cached.url || 'n/a'} via=${cached.via || 'cached'}`
+        );
+        return {
+          ok: true,
+          url: cached.url || 'https://www.linkedin.com/messaging/',
+          via: cached.via || 'cached',
+          cached: true,
+        };
+      }
+    }
+
     const cookies = await loadCookies(accountId);
     if (!cookies || cookies.length === 0) {
       const err = new Error(`No session for account ${accountId}. Import cookies first via POST /accounts/${accountId}/session`);
@@ -256,81 +355,122 @@ async function verifySession({ accountId, proxyUrl }) {
       throw err;
     }
 
-    await context.addCookies(cookies);
     let lastVerifyError = null;
-    const maxVerifyAttempts = 2;
+    const maxVerifyAttempts = 3;
 
     for (let attempt = 1; attempt <= maxVerifyAttempts; attempt += 1) {
+      console.log(`[verifySession:${accountId}] attempt ${attempt}/${maxVerifyAttempts} starting`);
+      // Always verify from a fresh browser context to avoid false positives from
+      // previously authenticated in-memory contexts and to recover from stale CDP sessions.
+      await cleanupContext(accountId).catch(() => {});
+      ({ context } = await getAccountContext(accountId, proxyUrl));
+      await context.addCookies(cookies);
       page = await context.newPage();
 
       // Check feed first for baseline auth signal.
       const feedResult = await tryNavigate(page, 'https://www.linkedin.com/feed/');
       await delay(600, 1200);
       const feedUrl = page.url();
-      const feedState = await waitForSettledAuthState(page, 20000);
+      const feedState = feedResult.ok || !isRedirectLoopError(feedResult.error)
+        ? await waitForSettledAuthState(page, VERIFY_SETTLE_TIMEOUT_MS)
+        : {
+            title: '',
+            hasLoginForm: false,
+            hasAuthwallMarkers: false,
+            hasChallengeMarkers: false,
+            hasSignedInNav: false,
+            hasMessagingShell: false,
+            hasGuestCta: false,
+            url: feedUrl,
+            error: feedResult.error,
+          };
 
       // Messaging must be accessible for automation sends.
       const messagingResult = await tryNavigate(page, 'https://www.linkedin.com/messaging/');
       await delay(600, 1200);
       const messagingUrl = page.url();
-      const messagingState = await waitForSettledAuthState(page, 20000);
+      const messagingState = messagingResult.ok || !isRedirectLoopError(messagingResult.error)
+        ? await waitForSettledAuthState(page, VERIFY_SETTLE_TIMEOUT_MS)
+        : {
+            title: '',
+            hasLoginForm: false,
+            hasAuthwallMarkers: false,
+            hasChallengeMarkers: false,
+            hasSignedInNav: false,
+            hasMessagingShell: false,
+            hasGuestCta: false,
+            url: messagingUrl,
+            error: messagingResult.error,
+          };
       const contextCookies = await context.cookies().catch(() => []);
       const cookieFlags = getCookieFlags(contextCookies);
+      const recoverableIssue = [
+        feedResult.error,
+        messagingResult.error,
+        feedState?.error,
+        messagingState?.error,
+      ].find((value) => isRecoverableBrowserError(value));
+
+      if (recoverableIssue) {
+        const recoverableErr = new Error(`Recoverable browser error during verify for ${accountId}: ${recoverableIssue}`);
+        recoverableErr.code = 'BROWSER_CONTEXT_CLOSED';
+        recoverableErr.status = 503;
+        lastVerifyError = recoverableErr;
+
+        if (attempt < maxVerifyAttempts) {
+          await page.close().catch(() => {});
+          page = null;
+          await cleanupContext(accountId).catch(() => {});
+          await delay(1200, 1800);
+          continue;
+        }
+
+        throw recoverableErr;
+      }
 
       // LinkedIn UI markers can be flaky; accept strong member URL signal when required cookies exist.
+      // LinkedIn can report navigation errors while still landing on an authenticated page.
+      // Trust strong URL/UI member signals when required cookies are present.
       const feedAuthenticated = (
-        feedResult.ok &&
         !isBlockedAuthPage(feedUrl) &&
         hasRequiredAuthCookies(cookieFlags) &&
-        !isLoggedOutState(feedState) &&
         (isAuthenticatedLinkedInPage(feedState) || isStrongMemberUrl(feedUrl))
       );
 
       const messagingAuthenticated = (
-        messagingResult.ok &&
         !isBlockedAuthPage(messagingUrl) &&
         hasRequiredAuthCookies(cookieFlags) &&
-        !isLoggedOutState(messagingState) &&
         (isAuthenticatedLinkedInPage(messagingState) || isStrongMemberUrl(messagingUrl))
       );
 
-      // Soft fallback: member cookies + no logged-out markers + non-blocked page.
-      const feedSoftAuthenticated = (
-        feedResult.ok &&
-        !isBlockedAuthPage(feedUrl) &&
-        hasRequiredAuthCookies(cookieFlags) &&
-        !isLoggedOutState(feedState)
-      );
-
-      const messagingSoftAuthenticated = (
-        messagingResult.ok &&
-        !isBlockedAuthPage(messagingUrl) &&
-        hasRequiredAuthCookies(cookieFlags) &&
-        !isLoggedOutState(messagingState)
-      );
-
-      if (messagingAuthenticated || feedAuthenticated || messagingSoftAuthenticated || feedSoftAuthenticated) {
-        if (process.env.REFRESH_SESSION_COOKIES === '1') {
+      if (messagingAuthenticated || feedAuthenticated) {
+        const result = {
+          ok: true,
+          url: messagingAuthenticated ? messagingUrl : feedUrl,
+          via: messagingAuthenticated
+            ? (feedAuthenticated ? 'feed+messaging' : 'messaging-only')
+            : 'feed-only',
+        };
+        if (persistCookies) {
           await saveCookies(accountId, await context.cookies(), {
-            skipIfMissingAuthCookies: true,
+            requireAuthCookies: true,
+            mergeExisting: false,
             source: 'verifySession',
           });
         }
-        const via = messagingAuthenticated
-          ? (feedAuthenticated ? 'feed+messaging' : 'messaging-only')
-          : messagingSoftAuthenticated
-            ? 'messaging-soft'
-            : feedAuthenticated
-              ? 'feed-only'
-              : 'feed-soft';
-        return {
-          ok: true,
-          url: (messagingAuthenticated || messagingSoftAuthenticated) ? messagingUrl : feedUrl,
-          via,
-        };
+        if (allowCachedSuccess) {
+          await rememberRecentVerify(accountId, result).catch(() => {});
+        }
+        console.log(
+          `[verifySession:${accountId}] success via=${
+            result.via
+          } feedUrl=${feedUrl} messagingUrl=${messagingUrl} cookies=${cookieFlags.total}`
+        );
+        return result;
       }
 
       const details = {
+        accountId,
         feed: { ok: feedResult.ok, url: feedUrl, error: feedResult.error || null },
         messaging: { ok: messagingResult.ok, url: messagingUrl, error: messagingResult.error || null },
         authState: {
@@ -347,6 +487,8 @@ async function verifySession({ accountId, proxyUrl }) {
         feedState,
         messagingState,
         cookieFlags,
+        feedError: feedResult.error,
+        messagingError: messagingResult.error,
       });
 
       const screenshot = await captureFailureScreenshot(page, accountId, `verify-${failure.code.toLowerCase()}-attempt-${attempt}`);
@@ -358,11 +500,22 @@ async function verifySession({ accountId, proxyUrl }) {
       err.status = 401;
       err.details = details;
       lastVerifyError = err;
+      console.warn(
+        `[verifySession:${accountId}] attempt ${attempt}/${maxVerifyAttempts} failed code=${failure.code} ` +
+        `feedUrl=${feedUrl} messagingUrl=${messagingUrl} feedOk=${feedAuthenticated} messagingOk=${messagingAuthenticated} ` +
+        `cookies(li_at=${cookieFlags.hasLiAt},JSESSIONID=${cookieFlags.hasJsession},count=${cookieFlags.total}) ` +
+        `feedTitle=${JSON.stringify(feedState?.title || '')} messagingTitle=${JSON.stringify(messagingState?.title || '')} ` +
+        `feedState(login=${Boolean(feedState?.hasLoginForm)},authwall=${Boolean(feedState?.hasAuthwallMarkers)},challenge=${Boolean(feedState?.hasChallengeMarkers)},nav=${Boolean(feedState?.hasSignedInNav)},msg=${Boolean(feedState?.hasMessagingShell)},guest=${Boolean(feedState?.hasGuestCta)}) ` +
+        `messagingState(login=${Boolean(messagingState?.hasLoginForm)},authwall=${Boolean(messagingState?.hasAuthwallMarkers)},challenge=${Boolean(messagingState?.hasChallengeMarkers)},nav=${Boolean(messagingState?.hasSignedInNav)},msg=${Boolean(messagingState?.hasMessagingShell)},guest=${Boolean(messagingState?.hasGuestCta)}) ` +
+        `feedTrace=${JSON.stringify(feedResult.trace || [])} messagingTrace=${JSON.stringify(messagingResult.trace || [])} ` +
+        `feedError=${feedResult.error || 'none'} messagingError=${messagingResult.error || 'none'} screenshot=${screenshot || 'none'}`
+      );
 
       // Retry once for this flaky LinkedIn state before failing.
       if (failure.code === 'AUTHENTICATED_STATE_NOT_REACHED' && attempt < maxVerifyAttempts) {
         await page.close().catch(() => {});
         page = null;
+        await cleanupContext(accountId).catch(() => {});
         await delay(1200, 1800);
         continue;
       }

@@ -6,6 +6,10 @@
 const { getPrisma } = require('../prisma');
 
 class MessageRepository {
+  normalizeMessageText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
   /**
    * Upsert a conversation (create if not exists, update if exists)
    * @param {Object} data - Conversation data
@@ -67,30 +71,92 @@ class MessageRepository {
       sentAt,
       isSentByMe,
       linkedinMessageId,
+      timestampInferred = false,
     } = data;
 
+    const normalizedText = this.normalizeMessageText(text);
+    const normalizedSentAt = new Date(sentAt);
+    const sentAtDate = Number.isNaN(normalizedSentAt.getTime()) ? new Date() : normalizedSentAt;
+    const stableLinkedinMessageId = String(linkedinMessageId || '').trim() || null;
+
     try {
+      if (stableLinkedinMessageId) {
+        const existingByLinkedinId = await prisma.message.findFirst({
+          where: {
+            accountId,
+            conversationId,
+            linkedinMessageId: stableLinkedinMessageId,
+          },
+        });
+
+        if (existingByLinkedinId) {
+          await prisma.message.update({
+            where: { id: existingByLinkedinId.id },
+            data: {
+              senderName,
+              linkedinMessageId: stableLinkedinMessageId,
+            },
+          });
+          console.log(
+            `[MessageRepository] Duplicate skipped by linkedinMessageId for conversation ${conversationId}: ${stableLinkedinMessageId}`
+          );
+          return null;
+        }
+      }
+
+      if (timestampInferred) {
+        const duplicateWindowMs = 60 * 1000;
+        const existingNearMatch = await prisma.message.findFirst({
+          where: {
+            accountId,
+            conversationId,
+            senderId,
+            text: normalizedText,
+            sentAt: {
+              gte: new Date(sentAtDate.getTime() - duplicateWindowMs),
+              lte: new Date(sentAtDate.getTime() + duplicateWindowMs),
+            },
+          },
+          orderBy: { sentAt: 'asc' },
+        });
+
+        if (existingNearMatch) {
+          await prisma.message.update({
+            where: { id: existingNearMatch.id },
+            data: {
+              senderName,
+              linkedinMessageId: stableLinkedinMessageId || existingNearMatch.linkedinMessageId,
+            },
+          });
+          console.log(
+            `[MessageRepository] Duplicate skipped by inferred-time fuzzy match for conversation ${conversationId}: sender=${senderId} sentAt=${sentAtDate.toISOString()}`
+          );
+          return null;
+        }
+      }
+
       return await prisma.message.upsert({
         where: {
           conversationId_sentAt_text: {
             conversationId,
-            sentAt: new Date(sentAt),
-            text,
+            sentAt: sentAtDate,
+            text: normalizedText,
           },
         },
         update: {
           // Update metadata if needed (typically we don't update messages)
           senderName,
+          linkedinMessageId: stableLinkedinMessageId || undefined,
         },
         create: {
           conversationId,
           accountId,
           senderId,
           senderName,
-          text,
-          sentAt: new Date(sentAt),
+          text: normalizedText,
+          sentAt: sentAtDate,
           isSentByMe,
-          linkedinMessageId: linkedinMessageId || null,
+          linkedinMessageId: stableLinkedinMessageId,
         },
       });
     } catch (error) {
@@ -137,6 +203,35 @@ class MessageRepository {
             id: true,
             displayName: true,
           },
+        },
+      },
+      orderBy: { lastMessageAt: 'desc' },
+      take: limit,
+      skip: offset,
+    });
+  }
+
+  /**
+   * Get all conversations with full persisted message history.
+   * Used by the unified inbox API so refreshes can rebuild the same thread state
+   * from the database instead of falling back to preview-only rows.
+   * @param {number} limit - Number of conversations to return
+   * @param {number} offset - Offset for pagination
+   * @returns {Promise<Array>} Array of conversations with messages
+   */
+  async getAllConversationsWithMessages(limit = 100, offset = 0) {
+    const prisma = getPrisma();
+
+    return await prisma.conversation.findMany({
+      include: {
+        account: {
+          select: {
+            id: true,
+            displayName: true,
+          },
+        },
+        messages: {
+          orderBy: { sentAt: 'asc' },
         },
       },
       orderBy: { lastMessageAt: 'desc' },

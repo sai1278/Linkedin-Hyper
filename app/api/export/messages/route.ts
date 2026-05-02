@@ -4,7 +4,7 @@ import { authenticateCaller, badRequest, forwardToBackend } from '@/lib/server/b
 const ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
 
 export async function POST(req: NextRequest) {
-  const authError = authenticateCaller(req);
+  const authError = await authenticateCaller(req);
   if (authError) return authError;
 
   try {

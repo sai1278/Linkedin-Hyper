@@ -6,28 +6,28 @@
   /* Modern Design System - Professional Color Palette */
   
   /* Primary Colors (Blue) */
-  --color-primary-50: #e7f3ff;
-  --color-primary-100: #d8ebff;
-  --color-primary-200: #bddcff;
-  --color-primary-300: #93c2ff;
-  --color-primary-400: #5da0ff;
-  --color-primary-500: #1877f2;
-  --color-primary-600: #166fe5;
-  --color-primary-700: #125dc0;
-  --color-primary-800: #0f4b9a;
-  --color-primary-900: #0b3a77;
+  --color-primary-50: #eff6ff;
+  --color-primary-100: #dbeafe;
+  --color-primary-200: #bfdbfe;
+  --color-primary-300: #93c5fd;
+  --color-primary-400: #60a5fa;
+  --color-primary-500: #3b82f6;
+  --color-primary-600: #2563eb;
+  --color-primary-700: #1d4ed8;
+  --color-primary-800: #1e40af;
+  --color-primary-900: #1e3a8a;
   
   /* Gray/Neutral Colors */
-  --color-gray-50: #f0f2f5;
-  --color-gray-100: #eef0f2;
-  --color-gray-200: #dadde1;
-  --color-gray-300: #ccd0d5;
-  --color-gray-400: #b0b3b8;
-  --color-gray-500: #65676b;
-  --color-gray-600: #4e4f50;
-  --color-gray-700: #3a3b3c;
-  --color-gray-800: #242526;
-  --color-gray-900: #050505;
+  --color-gray-50: #f9fafb;
+  --color-gray-100: #f3f4f6;
+  --color-gray-200: #e5e7eb;
+  --color-gray-300: #d1d5db;
+  --color-gray-400: #9ca3af;
+  --color-gray-500: #6b7280;
+  --color-gray-600: #4b5563;
+  --color-gray-700: #374151;
+  --color-gray-800: #1f2937;
+  --color-gray-900: #111827;
   
   /* Semantic Colors */
   --color-success-50: #f0fdf4;
@@ -42,36 +42,36 @@
   --color-warning-500: #f59e0b;
   --color-warning-700: #b45309;
   
-  --color-info-50: #e7f3ff;
-  --color-info-500: #1877f2;
-  --color-info-700: #166fe5;
+  --color-info-50: #eff6ff;
+  --color-info-500: #3b82f6;
+  --color-info-700: #1d4ed8;
   
-  /* Legacy Variables */
-  --bg-base:       #f0f2f5;
-  --bg-panel:      #ffffff;
-  --bg-card:       #ffffff;
-  --bg-elevated:   #e7f3ff;
-  --bg-hover:      #e7f3ff;
-  --border:        #dadde1;
-  --text-primary:  #050505;
-  --text-muted:    #65676b;
-  --text-link:     #1877f2;
-  --accent:        #1877f2;
-  --accent-hover:  #166fe5;
-  --unread-dot:    #1877f2;
-  --badge-purple:  #e7f3ff;
-  --badge-text:    #1877f2;
+  /* Legacy Variables (Dark Theme - keeping for backward compatibility) */
+  --bg-base:       #0a0a0f;
+  --bg-panel:      #111118;
+  --bg-card:       #1a1a24;
+  --bg-hover:      #22222e;
+  --border:        #2a2a38;
+  --text-primary:  #e8e8f0;
+  --text-muted:    #7a7a9a;
+  --text-link:     #8b7cf8;
+  --accent:        #6c63ff;
+  --accent-hover:  #7c73ff;
+  --unread-dot:    #3b82f6;
+  --badge-purple:  #4c1d95;
+  --badge-text:    #c4b5fd;
   
-  /* Semantic Surface Variables */
-  --bg-primary: #f0f2f5;
+  /* New Semantic Variables (Light Theme - can be toggled) */
+  --bg-primary: var(--color-gray-50);
   --bg-secondary: #ffffff;
-  --bg-tertiary: #ffffff;
-  --border-color: #dadde1;
-  --border-color-hover: #ccd0d5;
+  --bg-tertiary: var(--color-gray-100);
+  /* Legacy alias: prefer --border everywhere so borders share one source token. */
+  --border-color: var(--border);
+  --border-color-hover: var(--border);
   
-  --text-primary-new: #050505;
-  --text-secondary: #65676b;
-  --text-muted-new: #65676b;
+  --text-primary-new: var(--color-gray-900);
+  --text-secondary: var(--color-gray-700);
+  --text-muted-new: var(--color-gray-500);
   
   /* Typography Scale */
   --font-size-xs: 0.75rem;    /* 12px */
@@ -147,21 +147,8 @@ html, body {
 body {
   background-color: var(--bg-base);
   color: var(--text-primary);
-  font-family: var(--font-body), 'Segoe UI', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
-}
-
-h1, h2, h3, h4 {
-  font-family: var(--font-display), var(--font-body), sans-serif;
-  letter-spacing: -0.02em;
-}
-
-.font-body {
-  font-family: var(--font-body), 'Segoe UI', sans-serif;
-}
-
-.font-display {
-  font-family: var(--font-display), var(--font-body), sans-serif;
 }
 
 /* Scrollbar styling */
@@ -191,8 +178,9 @@ html {
 
 /* Focus styles */
 *:focus-visible {
-  outline: 2px solid var(--color-primary-500);
+  outline: 3px solid var(--color-primary-500);
   outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
 }
 
 /* Animation utilities */
@@ -238,4 +226,80 @@ html {
   transition-property: background-color, border-color, color;
   transition-duration: var(--transition-fast);
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.button-primary,
+.button-secondary,
+.button-outline,
+.button-ghost,
+.menu-button,
+.interactive-row,
+.interactive-card {
+  transition-property: background-color, border-color, color, box-shadow, transform;
+  transition-duration: var(--transition-fast);
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.button-primary {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.button-secondary {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.button-secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.button-outline {
+  background: transparent;
+  color: var(--text-primary-new, var(--text-primary));
+  border: 1px solid var(--border);
+}
+
+.button-outline:hover:not(:disabled) {
+  background: var(--color-gray-50, var(--bg-hover));
+}
+
+.button-ghost {
+  background: transparent;
+  color: var(--text-muted-new, var(--text-muted));
+}
+
+.button-ghost:hover:not(:disabled) {
+  background: var(--color-gray-50, var(--bg-hover));
+  color: var(--text-primary-new, var(--text-primary));
+}
+
+.menu-button {
+  width: 100%;
+  background: transparent;
+  color: var(--text-primary-new, var(--text-primary));
+}
+
+.menu-button:hover:not(:disabled) {
+  background: var(--color-gray-50, var(--bg-hover));
+}
+
+.interactive-row:hover {
+  background: var(--color-gray-50, var(--bg-hover));
+}
+
+.interactive-row[data-selected='true'],
+.interactive-row[data-selected='true']:hover {
+  background: var(--color-primary-50, var(--bg-hover));
+}
+
+.interactive-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
 }

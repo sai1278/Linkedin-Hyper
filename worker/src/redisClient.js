@@ -2,6 +2,8 @@
 
 const Redis = require('ioredis');
 const { EventEmitter } = require('events');
+const { logger } = require('./utils/logger');
+const { recordRedisError } = require('./utils/metrics');
 
 let _redis = null;
 let _memoryRedis = null;
@@ -9,6 +11,17 @@ const _memoryStrings = new Map();
 const _memoryLists = new Map();
 const _memorySets = new Map();
 const _memoryExpiry = new Map();
+const sharedRedisState = {
+  label: 'shared',
+  mode: 'network',
+  status: 'idle',
+  ready: false,
+  reconnectDelayMs: null,
+  lastReadyAt: null,
+  lastError: null,
+};
+const dedicatedRedisStates = new Map();
+let dedicatedRedisCounter = 0;
 
 function isRedisDisabled() {
   return process.env.DISABLE_REDIS === '1';
@@ -209,8 +222,85 @@ function createInMemoryRedis() {
   };
 
   _memoryRedis = client;
-  console.log('[Redis] DISABLE_REDIS=1 enabled, using in-memory fallback store');
+  Object.assign(sharedRedisState, {
+    mode: 'memory',
+    status: 'ready',
+    ready: true,
+    reconnectDelayMs: null,
+    lastReadyAt: Date.now(),
+    lastError: null,
+  });
+  logger.warn('redis.memory_fallback.enabled', { mode: 'in-memory' });
   return _memoryRedis;
+}
+
+function getRedisRetryDelay(attemptNumber) {
+  const attempt = Number.parseInt(String(attemptNumber || 0), 10) || 0;
+  return Math.min(Math.max(attempt, 1) * 250, 5_000);
+}
+
+function sanitizeRedisError(error) {
+  if (!error) return null;
+  return {
+    code: error.code || 'REDIS_ERROR',
+    message: error.message || String(error),
+  };
+}
+
+function attachRedisLifecycle(client, state, eventPrefix) {
+  client.on('connect', () => {
+    state.status = 'connecting';
+    state.ready = false;
+    state.reconnectDelayMs = null;
+    logger.info(`${eventPrefix}.connecting`, { label: state.label });
+  });
+
+  client.on('ready', () => {
+    state.status = 'ready';
+    state.ready = true;
+    state.reconnectDelayMs = null;
+    state.lastReadyAt = Date.now();
+    state.lastError = null;
+    logger.info(`${eventPrefix}.ready`, { label: state.label });
+  });
+
+  client.on('reconnecting', (delayMs) => {
+    state.status = 'reconnecting';
+    state.ready = false;
+    state.reconnectDelayMs = Number.isFinite(delayMs) ? delayMs : null;
+    logger.warn(`${eventPrefix}.reconnecting`, {
+      label: state.label,
+      delayMs: state.reconnectDelayMs,
+    });
+  });
+
+  client.on('close', () => {
+    state.status = 'closed';
+    state.ready = false;
+    logger.warn(`${eventPrefix}.closed`, { label: state.label });
+  });
+
+  client.on('end', () => {
+    state.status = 'ended';
+    state.ready = false;
+    logger.warn(`${eventPrefix}.ended`, { label: state.label });
+  });
+
+  client.on('error', (err) => {
+    state.status = 'error';
+    state.ready = false;
+    state.lastError = sanitizeRedisError(err);
+    recordRedisError(err?.code || 'REDIS_CONNECTION_ERROR');
+    logger.error(`${eventPrefix}.error`, {
+      label: state.label,
+      errorCode: err?.code || 'REDIS_CONNECTION_ERROR',
+      error: err,
+    });
+  });
+}
+
+function isClientReusable(client) {
+  return Boolean(client) && !['end', 'close'].includes(String(client.status || '').toLowerCase());
 }
 
 /**
@@ -222,7 +312,14 @@ function getRedis() {
     return createInMemoryRedis();
   }
 
-  if (_redis) return _redis;
+  if (_redis && isClientReusable(_redis)) return _redis;
+
+  if (_redis && !isClientReusable(_redis)) {
+    try {
+      _redis.disconnect();
+    } catch (_) {}
+    _redis = null;
+  }
 
   _redis = new Redis({
     host:     process.env.REDIS_HOST     || '127.0.0.1',
@@ -234,14 +331,14 @@ function getRedis() {
     enableOfflineQueue: true,
     connectTimeout: 3000,
     commandTimeout: 3000,
-    retryStrategy: () => null,
+    retryStrategy: getRedisRetryDelay,
     lazyConnect: false,
     enableReadyCheck: false,
   });
-
-  _redis.on('error', (err) => {
-    console.error('[Redis] Connection error:', err.message);
-  });
+  sharedRedisState.mode = 'network';
+  sharedRedisState.status = 'initializing';
+  sharedRedisState.ready = false;
+  attachRedisLifecycle(_redis, sharedRedisState, 'redis.shared');
 
   return _redis;
 }
@@ -254,6 +351,16 @@ function createRedisClient() {
     throw new Error('Redis is disabled by DISABLE_REDIS=1. Set DISABLE_QUEUE=1 for local mode, or enable Redis for queue workers.');
   }
 
+  const state = {
+    label: `dedicated-${++dedicatedRedisCounter}`,
+    mode: 'network',
+    status: 'initializing',
+    ready: false,
+    reconnectDelayMs: null,
+    lastReadyAt: null,
+    lastError: null,
+  };
+
   const client = new Redis({
     host:     process.env.REDIS_HOST     || '127.0.0.1',
     port:     parseInt(process.env.REDIS_PORT || '6379', 10),
@@ -262,16 +369,26 @@ function createRedisClient() {
     maxRetriesPerRequest: null,
     enableOfflineQueue: true,
     connectTimeout: 3000,
-    retryStrategy: () => null,
+    retryStrategy: getRedisRetryDelay,
     lazyConnect: false,
     enableReadyCheck: false,
   });
-
-  client.on('error', (err) => {
-    console.error('[Redis Client] Connection error:', err.message);
+  dedicatedRedisStates.set(state.label, state);
+  attachRedisLifecycle(client, state, 'redis.client');
+  client.on('end', () => {
+    dedicatedRedisStates.delete(state.label);
   });
 
   return client;
 }
 
-module.exports = { getRedis, createRedisClient };
+function getRedisRuntimeState() {
+  return {
+    shared: {
+      ...sharedRedisState,
+    },
+    dedicated: Array.from(dedicatedRedisStates.values()).map((state) => ({ ...state })),
+  };
+}
+
+module.exports = { getRedis, createRedisClient, getRedisRuntimeState };

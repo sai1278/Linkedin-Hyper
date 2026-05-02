@@ -3,22 +3,28 @@
 const { Worker } = require('bullmq');
 const { createRedisClient }             = require('./redisClient');
 const { getQueueName } = require('./queue');
-
-const { verifySession }         = require('./actions/login');
-const { readMessages }          = require('./actions/readMessages');
-const { readThread }            = require('./actions/readThread');
-const { sendMessage }           = require('./actions/sendMessage');
-const { sendMessageNew }        = require('./actions/sendMessageNew');
-const { sendConnectionRequest } = require('./actions/connect');
-const { searchPeople }          = require('./actions/searchPeople');
-const { syncAllAccounts }       = require('./services/messageSyncService');
+const { logger } = require('./utils/logger');
+const { runNamedJob } = require('./jobRunner');
 
 // Concurrency 1 per account: LinkedIn triggers bans on parallel browser instances for the same IP/account.
 const CONCURRENCY = 1;
+const workerState = {
+  startedAt: null,
+  directExecution: process.env.DIRECT_EXECUTION === '1',
+  queueDisabled: process.env.DISABLE_QUEUE === '1',
+  schedulerEnabled: process.env.DISABLE_MESSAGE_SYNC !== '1',
+  activeWorkers: 0,
+  workerAccounts: [],
+  lastSchedulerSetupAt: null,
+  lastSchedulerError: null,
+  ready: false,
+};
 
 function startWorker() {
   if (process.env.DISABLE_QUEUE === '1') {
-    console.log('[Worker] Queue workers disabled by DISABLE_QUEUE=1');
+    workerState.startedAt = Date.now();
+    workerState.ready = true;
+    logger.warn('worker.queue_disabled', { mode: 'direct-execution' });
     return [];
   }
 
@@ -32,20 +38,12 @@ function startWorker() {
       getQueueName(accountId),
       async (job) => {
         const { name, data } = job;
-        console.log(`[Worker:${accountId}] Processing job ${job.id}: ${name}`);
-
-        switch (name) {
-          case 'verifySession':         return verifySession(data);
-          case 'readMessages':          return readMessages(data);
-          case 'readThread':            return readThread(data);
-          case 'sendMessage':           return sendMessage(data);
-          case 'sendMessageNew':        return sendMessageNew(data);
-          case 'sendConnectionRequest': return sendConnectionRequest(data);
-          case 'searchPeople':          return searchPeople(data);
-          case 'messageSync':           return syncAllAccounts(data.proxyUrl);
-          default:
-            throw new Error(`Unknown job type: ${name}`);
-        }
+        logger.info('worker.job_processing', {
+          accountId,
+          jobId: job.id,
+          jobName: name,
+        });
+        return runNamedJob(name, data);
       },
       {
         connection:    createRedisClient(), // dedicated connection for BullMQ worker
@@ -56,30 +54,46 @@ function startWorker() {
     );
 
     worker.on('completed', (job) => {
-      console.log(`[Worker:${accountId}] Job ${job.id} (${job.name}) completed`);
+      logger.info('worker.job_completed', {
+        accountId,
+        jobId: job.id,
+        jobName: job.name,
+      });
     });
 
     worker.on('failed', (job, err) => {
-      console.error(
-        `[Worker:${accountId}] Job ${job.id} (${job?.name}) failed:`,
-        err?.message || String(err)
-      );
-      if (err?.stack) {
-        console.error(`[Worker:${accountId}] Failure stack:\n${err.stack}`);
-      }
+      logger.error('worker.job_failed', {
+        accountId,
+        jobId: job?.id,
+        jobName: job?.name,
+        errorCode: err?.code || 'WORKER_JOB_FAILED',
+        error: err,
+      });
     });
 
     worker.on('error', (err) => {
-      console.error(`[Worker:${accountId}] Worker error:`, err);
+      logger.error('worker.runtime_error', {
+        accountId,
+        errorCode: err?.code || 'WORKER_RUNTIME_ERROR',
+        error: err,
+      });
     });
     
     workers.push(worker);
   }
 
-  console.log(`[Worker] Started ${workers.length} worker threads with concurrency ${CONCURRENCY} per worker.`);
+  workerState.startedAt = Date.now();
+  workerState.activeWorkers = workers.length;
+  workerState.workerAccounts = ids;
+  workerState.ready = workers.length > 0;
+  logger.info('worker.started', {
+    activeWorkers: workers.length,
+    concurrency: CONCURRENCY,
+  });
   
   if (process.env.DISABLE_MESSAGE_SYNC === '1') {
-    console.log('[Worker] Message sync scheduler disabled by DISABLE_MESSAGE_SYNC=1');
+    workerState.schedulerEnabled = false;
+    logger.warn('worker.scheduler_disabled', { reason: 'DISABLE_MESSAGE_SYNC=1' });
     return workers;
   }
 
@@ -106,14 +120,14 @@ async function scheduleMessageSync() {
     for (const job of existingJobs) {
       if (job.name === 'messageSync') {
         await queue.removeRepeatableByKey(job.key);
-        console.log('[Worker] Removed existing messageSync job');
+        logger.info('worker.scheduler_removed_existing', { jobName: 'messageSync' });
       }
     }
 
     // Add recurring message sync job
     await queue.add(
       'messageSync',
-      { proxyUrl },
+      { proxyUrl, source: 'scheduler' },
       {
         repeat: {
           pattern: `*/${syncIntervalMinutes} * * * *`, // Every N minutes
@@ -122,21 +136,38 @@ async function scheduleMessageSync() {
       }
     );
 
-    console.log(`[Worker] Scheduled message sync every ${syncIntervalMinutes} minutes`);
+    workerState.lastSchedulerSetupAt = Date.now();
+    workerState.lastSchedulerError = null;
+    logger.info('worker.scheduler_configured', {
+      syncIntervalMinutes,
+    });
 
     // Trigger initial sync after 30 seconds (give system time to start)
     setTimeout(async () => {
       try {
-        await queue.add('messageSync', { proxyUrl }, { jobId: 'messageSync-initial' });
-        console.log('[Worker] Triggered initial message sync');
+        await queue.add('messageSync', { proxyUrl, source: 'scheduler' }, { jobId: 'messageSync-initial' });
+        logger.info('worker.scheduler_initial_sync_triggered');
       } catch (error) {
-        console.error('[Worker] Initial message sync skipped:', error.message);
+        logger.warn('worker.scheduler_initial_sync_skipped', {
+          errorCode: error?.code || 'INITIAL_SYNC_SKIPPED',
+          error: error,
+        });
       }
     }, 30000);
 
   } catch (error) {
-    console.error('[Worker] Failed to schedule message sync:', error);
+    workerState.lastSchedulerError = error?.message || String(error);
+    logger.error('worker.scheduler_failed', {
+      errorCode: error?.code || 'SCHEDULER_FAILED',
+      error,
+    });
   }
 }
 
-module.exports = { startWorker };
+function getWorkerStatus() {
+  return {
+    ...workerState,
+  };
+}
+
+module.exports = { startWorker, getWorkerStatus };
