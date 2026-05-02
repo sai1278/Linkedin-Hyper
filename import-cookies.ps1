@@ -194,7 +194,8 @@ function Validate-CookieShape {
 function Invoke-AutoCapture {
   param(
     [Parameter(Mandatory = $true)][string]$OutputFile,
-    [switch]$ForceLiveProfile
+    [switch]$ForceLiveProfile,
+    [switch]$ForceTempProfileCopy
   )
 
   $captureScript = Join-Path $repoRoot "scripts\\capture-linkedin-cookies.mjs"
@@ -314,7 +315,7 @@ function Invoke-AutoCapture {
   }
   $browserCandidates = $browserCandidates | Select-Object -Unique
 
-  $effectiveUseLiveProfile = $UseLiveProfile -or $ForceLiveProfile
+  $effectiveUseLiveProfile = ($UseLiveProfile -or $ForceLiveProfile) -and (-not $ForceTempProfileCopy)
 
   foreach ($browserName in $browserCandidates) {
     if ($browserName -ne $Browser) {
@@ -375,13 +376,13 @@ function Invoke-ImportAndVerify {
 
   Write-Host ""
   Write-Host "Verifying session..."
-  $verify = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify" -Headers $headers
+  $verify = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify?fresh=1" -Headers $headers
   $verify | ConvertTo-Json -Depth 6 | Write-Host
 
   Write-Host ""
   Write-Host "Re-verifying persisted session..."
   Start-Sleep -Seconds 5
-  $verifyPersisted = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify" -Headers $headers
+  $verifyPersisted = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify?fresh=1" -Headers $headers
   $verifyPersisted | ConvertTo-Json -Depth 6 | Write-Host
 
   Write-Host ""
@@ -402,6 +403,21 @@ function Should-RetryWithLiveProfile {
   return ($text -match 'SESSION_EXPIRED|Session expired|AUTHENTICATED_STATE_NOT_REACHED|LOGIN_NOT_FINISHED|COOKIES_MISSING')
 }
 
+function Should-RetryWithoutLiveProfile {
+  param([Parameter(Mandatory = $true)]$ErrorRecord)
+
+  if (-not $ErrorRecord) { return $false }
+  $text = ""
+  if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+    $text += [string]$ErrorRecord.ErrorDetails.Message
+  }
+  if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Message) {
+    $text += "`n" + [string]$ErrorRecord.Exception.Message
+  }
+
+  return ($text -match 'Timed out waiting for DevTools endpoint|Timed out waiting for a LinkedIn page target in DevTools|CDP capture failed')
+}
+
 try {
   $selected = $null
   if ($AutoCapture) {
@@ -411,7 +427,16 @@ try {
     } else {
       Join-Path $repoRoot "linkedin-cookies-plain.json"
     }
-    Invoke-AutoCapture -OutputFile $capturedPath
+    try {
+      Invoke-AutoCapture -OutputFile $capturedPath
+    } catch {
+      if ($UseLiveProfile -and (Should-RetryWithoutLiveProfile -ErrorRecord $_)) {
+        Write-Warning "Live-profile capture could not attach to Chrome DevTools. Retrying automatically with temp-profile-copy mode..."
+        Invoke-AutoCapture -OutputFile $capturedPath -ForceTempProfileCopy
+      } else {
+        throw
+      }
+    }
     $selected = Try-LoadCookiesFromFile -Path $capturedPath
   }
 

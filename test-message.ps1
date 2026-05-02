@@ -219,7 +219,7 @@ $status | ConvertTo-Json -Depth 6 | Write-Host
 
 Write-Host ""
 Write-Host "2) Verify session"
-$verify = Invoke-Api -Method "POST" -Uri "$BaseUrl/accounts/$resolvedAccountId/verify"
+$verify = Invoke-Api -Method "POST" -Uri "$BaseUrl/accounts/$resolvedAccountId/verify?fresh=1"
 $verify | ConvertTo-Json -Depth 6 | Write-Host
 
 Write-Host ""

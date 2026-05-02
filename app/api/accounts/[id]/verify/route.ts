@@ -10,11 +10,17 @@ export async function POST(
   if (authError) return authError;
   
   const { id: accountId } = await params;
+  const query = new URLSearchParams();
+  const fresh = req.nextUrl.searchParams.get('fresh');
+  if (fresh) {
+    query.set('fresh', fresh);
+  }
   
   // This endpoint takes 10-30 seconds as it launches a browser
   return forwardToBackend({
     method: 'POST',
     path: `/accounts/${accountId}/verify`,
+    query,
     // Verify can now take longer because we wait for feed/messaging auth state to settle.
     timeoutMs: 420_000,
   });
