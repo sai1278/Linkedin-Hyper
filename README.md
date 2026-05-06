@@ -5,6 +5,21 @@
 
 ---
 
+## Canonical Docs
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+- [DEPLOYMENT.md](./DEPLOYMENT.md)
+- [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md)
+- [SECURITY_ROTATION.md](./SECURITY_ROTATION.md)
+- [MIGRATION_STATIC_TOKENS.md](./MIGRATION_STATIC_TOKENS.md)
+
+## Current Auth Model
+
+- Dashboard login uses registered **email + password** only.
+- Passwords are stored as bcrypt hashes.
+- Set `INITIAL_ADMIN_EMAILS` before first registration if you need bootstrap admin accounts.
+- Legacy shared dashboard passwords are deprecated and should not be used for production access.
+
 ## What It Does
 
 | Feature | Details |
@@ -96,10 +111,10 @@ redirects to `/inbox` automatically.
 |---|---|---|---|
 | `API_SECRET` | ✅ | — | Shared secret between frontend and worker |
 | `API_URL` | ✅ | `http://localhost:3001` | Internal URL of the worker API |
-| `NEXT_PUBLIC_API_URL` | ✅ | `http://localhost:3001` | Client-side base URL |
-| `PROXY_AUTH_TOKENS` | ✅ for proxy | — | JSON: `{"<token>":"user","<token>":"admin"}` |
-| `API_ROUTE_AUTH_TOKEN` | ❌ | — | Bearer token to protect Next.js API routes |
-| `PROXY_AUTH_COOKIE_NAME` | ❌ | `proxy_session` | Cookie name for proxy session |
+| `NEXT_PUBLIC_API_URL` | Yes | `/api` | Client-side base URL |
+| `PROXY_AUTH_TOKENS` | No | - | Legacy static proxy tokens. Compatibility only. |
+| `SERVICE_AUTH_TOKENS` | No | `[]` | Preferred expiring hashed service tokens for proxy/BFF automation |
+| `INITIAL_ADMIN_EMAILS` | No | - | Comma-separated emails that should receive the `admin` role at registration |
 
 ### Worker (`.env`)
 
@@ -141,7 +156,7 @@ Limits are enforced atomically in Redis before any browser action.
 
 The Next.js frontend exposes `/api/proxy/[...path]` as an authenticated reverse proxy for external callers. Supports:
 
-- **Bearer token** auth via `Authorization` header (token defined in `PROXY_AUTH_TOKENS`)
+- **Bearer token** auth via `Authorization` header (`SERVICE_AUTH_TOKENS` preferred, `PROXY_AUTH_TOKENS` compatibility-only)
 - **Cookie** auth via `PROXY_AUTH_COOKIE_NAME`
 - **Role-based access control**: `user` can access read routes; `admin` can access all routes
 - An allowlist of safe paths — requests outside the allowlist return 403
@@ -197,3 +212,36 @@ Redis :6379
 | `RATE_LIMIT` error | Account hit its daily action cap — wait for TTL to expire |
 | `Backend unreachable` in UI | Worker container not healthy — `docker-compose logs worker` |
 | Redis auth errors | Verify `REDIS_PASSWORD` matches `--requirepass` in compose |
+
+---
+
+## Local Scripts
+
+### Bash
+
+```bash
+./start-dev.sh
+LI_COOKIE_API_SECRET='<set in shell>' ./import-cookies.sh --account-id alice --base-url http://127.0.0.1:3001
+LI_COOKIE_API_SECRET='<set in shell>' ./test-message.sh --account-id alice --profile-url https://www.linkedin.com/in/example/
+```
+
+### PowerShell
+
+```powershell
+.\start-dev.ps1
+.\import-cookies.ps1 -AccountId alice -BaseUrl http://127.0.0.1:3001
+.\test-message.ps1 -AccountId alice -ProfileUrl https://www.linkedin.com/in/example/
+```
+
+### Automated Checks
+
+```bash
+npm run lint
+npx tsc --noEmit --pretty false
+npm run build
+npm test
+```
+
+See [MIGRATION_STATIC_TOKENS.md](./MIGRATION_STATIC_TOKENS.md) for the static-to-expiring token migration plan.
+
+

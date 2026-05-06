@@ -8,6 +8,7 @@ import { Eye, EyeOff, Loader2 } from 'lucide-react';
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
@@ -20,7 +21,7 @@ export default function LoginPage() {
     setIsLoading(true);
     
     try {
-      await login(password, rememberMe);
+      await login(email, password, rememberMe);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -65,6 +66,26 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+              Email
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-4 py-2 rounded-lg border transition-all focus:outline-none focus:ring-2"
+              style={{
+                background: 'var(--bg-base)',
+                borderColor: error ? '#ef4444' : 'var(--border)',
+                color: 'var(--text-primary)',
+              }}
+              placeholder="name@example.com"
+              disabled={isLoading}
+              autoComplete="username"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
               Password
             </label>
             <div className="relative">
@@ -78,9 +99,9 @@ export default function LoginPage() {
                   borderColor: error ? '#ef4444' : 'var(--border)',
                   color: 'var(--text-primary)',
                 }}
-                placeholder="Enter dashboard password"
+                placeholder="Enter your password"
                 disabled={isLoading}
-                autoFocus
+                autoComplete="current-password"
               />
               <button
                 type="button"
@@ -115,7 +136,7 @@ export default function LoginPage() {
           
           <button
             type="submit"
-            disabled={isLoading || !password}
+            disabled={isLoading || !email.trim() || !password}
             className="w-full py-2 rounded-lg font-medium transition-all disabled:opacity-50"
             style={{
               background: 'var(--accent)',

@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "cookies:capture": "node scripts/cookies-operator.mjs capture",
     "cookies:capture-interactive": "node scripts/cookies-operator.mjs capture-interactive",
     "cookies:refresh-direct": "node scripts/cookies-operator.mjs refresh-direct",
@@ -46,6 +48,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

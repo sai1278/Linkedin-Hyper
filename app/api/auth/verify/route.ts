@@ -2,6 +2,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth/session';
 import { getUserById } from '@/lib/models/user';
+import { serverLogger } from '@/lib/server/logger';
+
+const authLogger = serverLogger.child({ route: '/api/auth/verify' });
 
 export async function GET(req: NextRequest) {
   const session = await getSession(req);
@@ -15,33 +18,31 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ authenticated: false }, { status: 401, headers });
   }
   
-  const fallbackName = session.name || process.env.DASHBOARD_USER_NAME || 'Dashboard Admin';
-  const fallbackEmail = session.email || process.env.DASHBOARD_USER_EMAIL || null;
-
-  let user = {
-    id: session.userId || null,
-    name: fallbackName,
-    email: fallbackEmail,
-    role: session.role || 'admin',
-    authMode: session.authMode || (session.userId ? 'user' : 'legacy'),
-  };
-
-  if (session.userId) {
-    try {
-      const dbUser = await getUserById(session.userId);
-      if (dbUser) {
-        user = {
-          id: dbUser.id,
-          name: dbUser.name,
-          email: dbUser.email,
-          role: dbUser.role,
-          authMode: 'user',
-        };
-      }
-    } catch (error) {
-      console.warn('[auth/verify] Failed to hydrate session user from DB:', error);
-    }
+  if (!session.userId) {
+    return NextResponse.json({ authenticated: false }, { status: 401, headers });
   }
 
-  return NextResponse.json({ authenticated: true, user }, { headers });
+  try {
+    const dbUser = await getUserById(session.userId);
+    if (!dbUser) {
+      return NextResponse.json({ authenticated: false }, { status: 401, headers });
+    }
+
+    return NextResponse.json({
+      authenticated: true,
+      user: {
+        id: dbUser.id,
+        name: dbUser.name,
+        email: dbUser.email,
+        role: dbUser.role,
+        authMode: 'user',
+      },
+    }, { headers });
+  } catch (error) {
+    authLogger.warn('auth.verify_hydration_failed', { error, userId: session.userId });
+    return NextResponse.json(
+      { error: 'Unable to verify session' },
+      { status: 503, headers }
+    );
+  }
 }

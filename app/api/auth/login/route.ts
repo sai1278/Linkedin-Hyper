@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcrypt';
 import { signToken } from '@/lib/auth/jwt';
 import { shouldUseSecureCookie } from '@/lib/auth/cookie';
-import { verifyPassword } from '@/lib/auth/password';
-import { isLegacyAuthAllowed, isProductionRuntime } from '@/lib/auth/runtime';
 import { enforceMutationProtection } from '@/lib/server/backend-api';
 import { clearLoginAttempts, consumeLoginAttempt } from '@/lib/auth/login-rate-limit';
 import { getUserByEmail } from '@/lib/models/user';
+import { serverLogger } from '@/lib/server/logger';
+
+const authLogger = serverLogger.child({ route: '/api/auth/login' });
 
 export async function POST(req: NextRequest) {
   const csrfError = enforceMutationProtection(req);
@@ -33,93 +34,44 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const { email, password, rememberMe } = body;
-    
-    if (!password) {
+
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const normalizedPassword = String(password || '');
+
+    if (!normalizedEmail || !normalizedPassword) {
       return NextResponse.json(
-        { error: 'Password is required' }, 
+        { error: 'Email and password are required' },
         { status: 400 }
       );
     }
-    
-    const normalizedEmail = String(email || '').trim().toLowerCase();
 
-    let sessionUser: {
-      userId?: string;
-      name: string;
-      email?: string;
-      role: 'admin' | 'user';
-      mode: 'user' | 'legacy';
-    } | null = null;
-
-    if (normalizedEmail) {
-      const existingUser = await getUserByEmail(normalizedEmail);
-      if (existingUser) {
-        const isValidUserPassword = await bcrypt.compare(String(password), String(existingUser.password_hash || ''));
-        if (!isValidUserPassword) {
-          return NextResponse.json(
-            { error: 'Invalid email or password' },
-            { status: 401 }
-          );
-        }
-
-        sessionUser = {
-          userId: existingUser.id,
-          name: existingUser.name,
-          email: existingUser.email,
-          role: existingUser.role,
-          mode: 'user',
-        };
-      }
+    const existingUser = await getUserByEmail(normalizedEmail);
+    if (!existingUser) {
+      return NextResponse.json(
+        { error: 'Invalid email or password' },
+        { status: 401 }
+      );
     }
 
-    if (!sessionUser) {
-      if (!isLegacyAuthAllowed()) {
-        console.warn('[auth/login] Legacy shared-password login blocked in production. Migrate operator to DB-backed user or set ALLOW_LEGACY_AUTH=true temporarily.');
-        return NextResponse.json(
-          { error: 'Legacy shared-password login is disabled in production' },
-          { status: 403 }
-        );
-      }
-
-      const dashboardPassword = process.env.DASHBOARD_PASSWORD;
-      if (!dashboardPassword) {
-        console.error('DASHBOARD_PASSWORD environment variable is not set');
-        return NextResponse.json(
-          { error: 'Server configuration error' },
-          { status: 500 }
-        );
-      }
-
-      if (!verifyPassword(String(password), String(dashboardPassword))) {
-        return NextResponse.json(
-          { error: 'Invalid password' },
-          { status: 401 }
-        );
-      }
-
-      const sessionName = (process.env.DASHBOARD_USER_NAME || 'Dashboard Admin').trim();
-      const sessionEmail = (process.env.DASHBOARD_USER_EMAIL || '').trim();
-
-      // TODO(auth-migration): Remove shared-password fallback after all operators are migrated to DB-backed users.
-      console.warn(
-        `[auth/login] Legacy shared-password login used${isProductionRuntime() ? ' in production' : ''}; migrate operator to registered user account.`
+    const isValidUserPassword = await bcrypt.compare(
+      normalizedPassword,
+      String(existingUser.password_hash || '')
+    );
+    if (!isValidUserPassword) {
+      return NextResponse.json(
+        { error: 'Invalid email or password' },
+        { status: 401 }
       );
-      sessionUser = {
-        name: sessionName,
-        email: sessionEmail || undefined,
-        role: 'admin',
-        mode: 'legacy',
-      };
     }
 
     await clearLoginAttempts(req);
 
     const token = await signToken({
-      ...(sessionUser.userId ? { userId: sessionUser.userId } : {}),
-      role: sessionUser.role,
-      name: sessionUser.name,
-      email: sessionUser.email || undefined,
-      authMode: sessionUser.mode,
+      userId: existingUser.id,
+      role: existingUser.role,
+      name: existingUser.name,
+      email: existingUser.email,
+      authMode: 'user',
     });
     
     // Set HTTP-only cookie
@@ -127,11 +79,11 @@ export async function POST(req: NextRequest) {
       ok: true, 
       message: 'Login successful',
       user: {
-        id: sessionUser.userId || null,
-        name: sessionUser.name,
-        email: sessionUser.email || null,
-        role: sessionUser.role,
-        authMode: sessionUser.mode,
+        id: existingUser.id,
+        name: existingUser.name,
+        email: existingUser.email,
+        role: existingUser.role,
+        authMode: 'user',
       },
     });
     response.headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
@@ -161,7 +113,7 @@ export async function POST(req: NextRequest) {
 
     return response;
   } catch (error) {
-    console.error('Login error:', error);
+    authLogger.error('auth.login_failed', { error });
     return NextResponse.json(
       { error: 'Login failed' },
       {

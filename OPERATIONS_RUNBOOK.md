@@ -114,3 +114,6 @@ Redis backups archive the full `/data` directory. To restore:
 3. Start the stack
 
 Operationally, test restore in a staging environment before relying on it for production recovery.
+
+## 11. Secret Rotation
+Use [SECURITY_ROTATION.md](./SECURITY_ROTATION.md) for API secret, service token, and compatibility token rotation procedures.
