@@ -4,36 +4,38 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
     env:
-      NODE_ENV: production
       JWT_SECRET: test-jwt-secret-012345678901234567890123
       API_SECRET: test-api-secret
       API_URL: http://127.0.0.1:3001
       NEXT_PUBLIC_API_URL: /api
-      NEXT_PUBLIC_WS_URL: ''
+      NEXT_PUBLIC_WS_URL: ""
       SESSION_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
       DATABASE_URL: postgresql://test:test@127.0.0.1:5432/testdb
       POSTGRES_URL: postgresql://test:test@127.0.0.1:5432/testdb
-      REDIS_HOST: 127.0.0.1
-      REDIS_PORT: '6379'
-      DISABLE_REDIS: '1'
+      REDIS_HOST: "127.0.0.1"
+      REDIS_PORT: "6379"
+      DISABLE_REDIS: "1"
       PROXY_AUTH_COOKIE_NAME: proxy_session
-      ALLOW_STATIC_SERVICE_TOKENS: 'false'
+      ALLOW_STATIC_SERVICE_TOKENS: "false"
       INITIAL_ADMIN_EMAILS: admin@example.com
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "24"
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --include=dev
 
       - name: Lint
         run: npm run lint
