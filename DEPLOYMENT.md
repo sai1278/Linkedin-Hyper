@@ -1,5 +1,7 @@
 # Deployment Guide
 
+> Auth note: dashboard access now uses registered **email + password** accounts. Do not deploy a shared `DASHBOARD_PASSWORD` as the primary operator login path.
+
 ---
 
 ## First-Time Deploy
@@ -31,8 +33,13 @@ ACCOUNT_IDS=alice,bob
 
 # Frontend only
 API_URL=http://worker:3001
-NEXT_PUBLIC_API_URL=http://localhost:3001
-PROXY_AUTH_TOKENS={"mytoken":"user","admintoken":"admin"}
+NEXT_PUBLIC_API_URL=/api
+INITIAL_ADMIN_EMAILS=admin@example.com
+SERVICE_AUTH_TOKENS=[]
+
+# Compatibility-only legacy service auth (optional, migration only)
+PROXY_AUTH_TOKENS=
+API_ROUTE_AUTH_TOKEN=
 
 # Optional proxy for Chrome
 PROXY_URL=
@@ -177,7 +184,7 @@ docker-compose start redis
 - [ ] Nginx (or equivalent) sits in front of port `3000` with TLS
 - [ ] Cookies are re-imported if LinkedIn session expires (every ~2 weeks)
 - [ ] `shm_size: 1gb` is present on the worker service — do not remove it
-- [ ] `DASHBOARD_PASSWORD` is set with a strong password
+- [ ] `INITIAL_ADMIN_EMAILS` is set before first registration, or at least one admin user already exists
 - [ ] `JWT_SECRET` is at least 32 characters (generated via `openssl rand -base64 48`)
 
 ---
@@ -222,7 +229,6 @@ nano .env
 Set all required variables:
 ```bash
 # Generate secrets
-DASHBOARD_PASSWORD=$(openssl rand -base64 32)
 JWT_SECRET=$(openssl rand -base64 48)
 SESSION_ENCRYPTION_KEY=$(openssl rand -hex 32)
 API_SECRET=$(openssl rand -hex 24)
@@ -230,6 +236,7 @@ REDIS_PASSWORD=$(openssl rand -hex 16)
 
 # Set account IDs
 ACCOUNT_IDS=alice,bob
+INITIAL_ADMIN_EMAILS=admin@example.com
 
 # WebSocket URL (use your domain)
 NEXT_PUBLIC_WS_URL=wss://your-domain.com/ws
@@ -262,7 +269,7 @@ make status
 ```
 
 **9. Access dashboard:**
-Navigate to `https://your-domain.com` and login with `DASHBOARD_PASSWORD`.
+Navigate to `https://your-domain.com`, register the bootstrap admin email if needed, and then login with that email + password.
 
 ### Post-Deployment
 
@@ -335,7 +342,7 @@ sudo systemctl status certbot.timer
 - Check browser console for WebSocket errors
 
 **Cannot login:**
-- Verify `DASHBOARD_PASSWORD` is set in .env
+- Verify `INITIAL_ADMIN_EMAILS` is set before first registration or an admin account already exists
 - Check `JWT_SECRET` is at least 32 characters
 - Verify Redis is running: `docker-compose ps redis`
 - Check frontend logs: `docker-compose logs frontend`

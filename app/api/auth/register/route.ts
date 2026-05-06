@@ -4,6 +4,18 @@ import { createUser, getUserByEmail } from '@/lib/models/user';
 import bcrypt from 'bcrypt';
 import { shouldUseSecureCookie } from '@/lib/auth/cookie';
 import { enforceMutationProtection } from '@/lib/server/backend-api';
+import { serverLogger } from '@/lib/server/logger';
+
+const authLogger = serverLogger.child({ route: '/api/auth/register' });
+
+function getInitialAdminEmails(): Set<string> {
+  return new Set(
+    String(process.env.INITIAL_ADMIN_EMAILS || '')
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
 
 export async function POST(req: NextRequest) {
   const csrfError = enforceMutationProtection(req);
@@ -14,46 +26,50 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { name, email, password } = body;
-    
-    if (!name || !email || !password) {
+
+    const normalizedName = String(name || '').trim();
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const normalizedPassword = String(password || '');
+
+    if (!normalizedName || !normalizedEmail || !normalizedPassword) {
       return NextResponse.json(
         { error: 'Name, email, and password are required' }, 
         { status: 400 }
       );
     }
 
-    if (password.length < 8) {
+    if (normalizedPassword.length < 8) {
       return NextResponse.json(
         { error: 'Password must be at least 8 characters long' }, 
         { status: 400 }
       );
     }
-    
-    const existingUser = await getUserByEmail(email);
+
+    const existingUser = await getUserByEmail(normalizedEmail);
     if (existingUser) {
       return NextResponse.json(
         { error: 'User with this email already exists' }, 
         { status: 409 }
       );
     }
-    
-    // Hash password
-    const password_hash = await bcrypt.hash(password, 12);
-    
-    // Create new user (automatically set as role 'user')
+
+    const password_hash = await bcrypt.hash(normalizedPassword, 12);
+    const initialAdminEmails = getInitialAdminEmails();
+    const assignedRole = initialAdminEmails.has(normalizedEmail) ? 'admin' : 'user';
+
     const user = await createUser({
-      name,
-      email,
+      name: normalizedName,
+      email: normalizedEmail,
       password_hash,
-      role: 'user'
+      role: assignedRole,
     });
-    
-    // Generate JWT specific to the user
+
     const token = await signToken({
       userId: user.id,
       role: user.role,
       name: user.name,
       email: user.email,
+      authMode: 'user',
     });
     
     const response = NextResponse.json({ 
@@ -72,7 +88,7 @@ export async function POST(req: NextRequest) {
     
     return response;
   } catch (error) {
-    console.error('Registration error:', error);
+    authLogger.error('auth.register_failed', { error });
     return NextResponse.json(
       { error: 'Registration failed' },
       { status: 500 }

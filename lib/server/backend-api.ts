@@ -147,7 +147,13 @@ export async function authenticateCaller(
   }
 
   const session = await getSession(req);
-  if (!session?.authenticated) {
+  const hasDbBackedSession = Boolean(
+    session?.authenticated &&
+    session.userId &&
+    (session.role === 'admin' || session.role === 'user')
+  );
+
+  if (!hasDbBackedSession) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

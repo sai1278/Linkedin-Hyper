@@ -21,7 +21,7 @@ This is now the preferred operator flow from a laptop. It uses the public app on
 
 ```powershell
 $base = "http://139.59.98.240:3002/api"
-$env:LI_COOKIE_API_SECRET = "REAL_API_SECRET_FROM_SERVER_ENV"
+$env:LI_COOKIE_API_SECRET = "PROMPT_FOR_API_SECRET"
 npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl $base
 ```
 
@@ -138,7 +138,7 @@ This is convenient when you want to keep capture and upload separate:
 
 ```powershell
 $base = "http://139.59.98.240:3002/api"
-$env:LI_COOKIE_API_SECRET = "REAL_API_SECRET_FROM_SERVER_ENV"
+$env:LI_COOKIE_API_SECRET = "PROMPT_FOR_API_SECRET"
 npm run cookies:import -- --accountId saikanchi130 --autoCapture --useLiveProfile --baseUrl $base
 ```
 
@@ -161,14 +161,14 @@ SSH to the server:
 ```bash
 ssh root@139.59.98.240
 cd ~/Linkedin-Hyper
-API_SECRET_VALUE=$(grep '^API_SECRET=' .env | cut -d= -f2-)
+KEY=$(grep '^API_SECRET=' .env | cut -d= -f2-)
 ```
 
 Import cookies directly into the worker:
 
 ```bash
 curl -sS \
-  -H "x-api-key: $API_SECRET_VALUE" \
+  -H "x-api-key: $KEY" \
   -H "Content-Type: application/json" \
   -X POST \
   --data-binary @~/linkedin-cookies-saikanchi130.json \
@@ -192,7 +192,7 @@ Verify the imported session:
 
 ```bash
 curl -sS \
-  -H "x-api-key: $API_SECRET_VALUE" \
+  -H "x-api-key: $KEY" \
   -X POST \
   http://127.0.0.1:3001/accounts/saikanchi130/verify | python3 -m json.tool
 ```
@@ -212,7 +212,7 @@ Check persisted session status:
 
 ```bash
 curl -sS \
-  -H "x-api-key: $API_SECRET_VALUE" \
+  -H "x-api-key: $KEY" \
   http://127.0.0.1:3001/accounts/saikanchi130/session/status | python3 -m json.tool
 ```
 
@@ -227,7 +227,7 @@ Once verify passes, run a scoped sync:
 
 ```bash
 curl -sS \
-  -H "x-api-key: $API_SECRET_VALUE" \
+  -H "x-api-key: $KEY" \
   -H "Content-Type: application/json" \
   -X POST \
   -d '{"accountId":"saikanchi130"}' \
@@ -257,7 +257,7 @@ Use the repo that contains the cookie operator scripts:
 ```powershell
 cd "C:\Users\kanchiDhyana sai\OneDrive\Desktop\linkedin\Linkedin-Hyper-V-inboxfix2"
 $base = "http://139.59.98.240:3002/api"
-$env:LI_COOKIE_API_SECRET = "REAL_API_SECRET_FROM_SERVER_ENV"
+$env:LI_COOKIE_API_SECRET = "PROMPT_FOR_API_SECRET"
 npm run cookies:refresh-direct -- --accountId saikanchi130 --baseUrl $base
 ```
 
@@ -372,3 +372,4 @@ If sync still fails after verify succeeds, check:
 - `/metrics` for `sessionExpired.byAccount.saikanchi130`
 - worker logs for `verify`, `sync`, or `checkpoint` errors
 - whether LinkedIn challenged the account again immediately after login
+
