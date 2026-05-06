@@ -571,6 +571,7 @@ function createInboxFallbackService(deps) {
     dedupeInFlightFallback,
     getUnifiedInboxCacheState,
     invalidateUnifiedInboxCache,
+    liveThreadFallbacksInFlight,
     persistOptimisticSendNewResult,
   };
 }
