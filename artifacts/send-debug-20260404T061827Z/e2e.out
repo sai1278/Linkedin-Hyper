@@ -1,0 +1,7 @@
+1) Health
+{"status":"ok","ts":"2026-04-04T06:18:34.805Z"}
+
+2) Verify session for account: kanchidhyanasai
+{"error":"Required LinkedIn cookies (li_at/JSESSIONID) are missing for account kanchidhyanasai. Re-import cookies. Screenshot: /tmp/linkedin-hyper-debug/kanchidhyanasai-1775283539769-verify-cookies_missing.png","code":"COOKIES_MISSING"}
+
+E2E blocked: session is not active. Re-import LinkedIn cookies, then retry.

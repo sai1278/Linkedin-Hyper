@@ -1,0 +1,1 @@
+worker-1  | [API] Worker API listening on port 3001

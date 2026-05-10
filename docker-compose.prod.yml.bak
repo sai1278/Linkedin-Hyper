@@ -16,6 +16,6 @@ services:
   # Expose frontend only to localhost; public traffic should go via Nginx.
   frontend:
     ports:
-      - "0.0.0.0:3002:3000"
+      - "${FRONTEND_HOST_BIND:-127.0.0.1}:3000:3000"
     environment:
       - NODE_ENV=production

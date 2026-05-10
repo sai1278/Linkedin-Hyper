@@ -1,0 +1,13 @@
+1) Health
+{"status":"ok","ts":"2026-04-04T06:23:11.535Z"}
+
+2) Verify session for account: kanchidhyanasai
+{"ok":true,"url":"https://www.linkedin.com/messaging/","via":"feed+messaging"}
+
+3) Send message to: https://www.linkedin.com/in/pasala-jaswanth-kumar-reddy/
+{"id":"sent-1775283911960-a9cum","chatId":"new","senderId":"__self__","text":"Hi, test message from automation (E2E 2026-04-04T06:23:22Z)","createdAt":"2026-04-04T06:25:11.963Z","isRead":true}
+
+4) Unified inbox quick check
+{"conversations":[{"conversationId":"activity-a2FuY2hpZGh5YW5hc2FpfHBhc2FsYSBqYXN3YW50aCBrdW1hciByZWRkeXxodHRwczovL3d3dy5saW5rZWRpbi5jb20vaW4vcGFzYWxhLWphc3dhbnRoLWt1bWFyLXJlZGR5Lw","accountId":"kanchidhyanasai","participant":{"name":"pasala jaswanth kumar reddy","profileUrl":"https://www.linkedin.com/in/pasala-jaswanth-kumar-reddy/"},"lastMessage":{"text":"Hi, test message from automation (E2E 2026-04-04T06:23:22Z)","sentAt":1775283911961,"sentByMe":true},"unreadCount":0,"messages":[{"id":"activity-msg-1775283911961","text":"Hi, test message from automation (E2E 2026-04-04T06:23:22Z)","sentAt":1775283911961,"sentByMe":true,"senderName":"kanchidhyanasai"}]}]}
+
+E2E smoke completed.

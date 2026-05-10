@@ -1,0 +1,4 @@
+worker-1  | [API] Worker API listening on port 3001
+worker-1  | [Prisma] Database client initialized
+BROWSER_USE_SYSTEM_CHROME=1
+BROWSER_HEADLESS=0

@@ -1,0 +1,2 @@
+232:    logSendStep(accountId, `message-button search attempt ${attempt}/${maxAttempts}`);
+128:    // Messaging must be accessible for automation sends.

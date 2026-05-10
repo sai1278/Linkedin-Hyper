@@ -1,0 +1,198 @@
+ Image linkedin-hyper-worker Building 
+ Image linkedin-hyper-frontend Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 947B done
+#1 DONE 0.0s
+
+#2 [worker internal] load build definition from Dockerfile
+#2 DONE 0.0s
+
+#2 [worker internal] load build definition from Dockerfile
+#2 transferring dockerfile: 976B done
+#2 DONE 0.0s
+
+#3 [frontend internal] load build definition from Dockerfile
+#3 transferring dockerfile: 1.59kB done
+#3 DONE 0.0s
+
+#4 [worker internal] load metadata for mcr.microsoft.com/playwright:v1.52.0-jammy
+#4 DONE 0.1s
+
+#5 [frontend internal] load metadata for docker.io/library/node:20-alpine
+#5 ...
+
+#6 [worker internal] load .dockerignore
+#6 transferring context: 2B done
+#6 DONE 0.0s
+
+#7 [worker  1/12] FROM mcr.microsoft.com/playwright:v1.52.0-jammy@sha256:ff2946177f0756c87482c0ef958b7cfbf389b92525ace78a1c9890281d0d60f4
+#7 DONE 0.0s
+
+#8 [worker internal] load build context
+#8 transferring context: 7.41kB 0.1s done
+#8 DONE 0.1s
+
+#9 [worker  4/12] RUN apt-get update && apt-get install -y xvfb x11-utils   && rm -rf /var/lib/apt/lists/*
+#9 CACHED
+
+#10 [worker  5/12] COPY package*.json ./
+#10 CACHED
+
+#11 [worker  9/12] RUN npx prisma generate --schema=prisma/schema.prisma
+#11 CACHED
+
+#12 [worker 10/12] COPY entrypoint.sh ./
+#12 CACHED
+
+#13 [worker  2/12] WORKDIR /app
+#13 CACHED
+
+#14 [worker  3/12] RUN apt-get update && apt-get install -y wget gnupg   && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -   && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main"      >> /etc/apt/sources.list.d/google.list   && apt-get update && apt-get install -y google-chrome-stable   && rm -rf /var/lib/apt/lists/*
+#14 CACHED
+
+#15 [worker  6/12] RUN npm install --omit=dev
+#15 CACHED
+
+#16 [worker  7/12] COPY prisma/ ./prisma/
+#16 CACHED
+
+#17 [worker  8/12] COPY prisma.config.ts ./prisma.config.ts
+#17 CACHED
+
+#18 [worker 11/12] RUN chmod +x entrypoint.sh
+#18 CACHED
+
+#19 [worker 12/12] COPY src/ ./src/
+#19 DONE 0.1s
+
+#20 [worker] exporting to image
+#20 exporting layers 0.0s done
+#20 writing image sha256:1a0041e1ffd6b0bc81805abab547ccf70c3048b57750ba96599ecb105543eddb done
+#20 naming to docker.io/library/linkedin-hyper-worker done
+#20 DONE 0.0s
+
+#21 [worker] resolving provenance for metadata file
+#21 DONE 0.0s
+
+#5 [frontend internal] load metadata for docker.io/library/node:20-alpine
+#5 DONE 1.3s
+
+#22 [frontend builder 1/6] FROM docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c
+#22 DONE 0.0s
+
+#23 [frontend internal] load build context
+#23 transferring context: 609.64kB 0.2s done
+#23 DONE 0.2s
+
+#24 [frontend builder 2/6] WORKDIR /app
+#24 CACHED
+
+#25 [frontend builder 3/6] COPY package*.json ./
+#25 CACHED
+
+#26 [frontend builder 4/6] RUN npm ci
+#26 CACHED
+
+#27 [frontend builder 5/6] COPY . .
+#27 DONE 0.6s
+
+#28 [frontend builder 6/6] RUN npm run build
+#28 0.445 
+#28 0.445 > linkedin-hyper-v@0.1.0 build
+#28 0.445 > next build
+#28 0.445 
+#28 1.852 Attention: Next.js now collects completely anonymous telemetry regarding usage.
+#28 1.854 This information is used to shape Next.js' roadmap and prioritize features.
+#28 1.854 You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+#28 1.855 https://nextjs.org/telemetry
+#28 1.855 
+#28 1.875 ▲ Next.js 16.1.1 (Turbopack)
+#28 1.876 
+#28 1.962 ⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+#28 2.027   Creating an optimized production build ...
+#28 32.56 ✓ Compiled successfully in 29.7s
+#28 32.58   Running TypeScript ...
+#28 42.69   Collecting page data using 1 worker ...
+#28 43.50   Generating static pages using 1 worker (0/23) ...
+#28 43.89   Generating static pages using 1 worker (5/23) 
+#28 43.90   Generating static pages using 1 worker (11/23) 
+#28 43.90   Generating static pages using 1 worker (17/23) 
+#28 43.92 ✓ Generating static pages using 1 worker (23/23) in 417.3ms
+#28 43.93   Finalizing page optimization ...
+#28 44.47 
+#28 44.48 Route (app)
+#28 44.48 ┌ ○ /
+#28 44.48 ├ ○ /_not-found
+#28 44.48 ├ ○ /accounts
+#28 44.48 ├ ƒ /api/accounts
+#28 44.48 ├ ƒ /api/accounts/[id]/limits
+#28 44.48 ├ ƒ /api/accounts/[id]/session
+#28 44.48 ├ ƒ /api/accounts/[id]/session/status
+#28 44.48 ├ ƒ /api/accounts/[id]/verify
+#28 44.48 ├ ƒ /api/auth/login
+#28 44.48 ├ ƒ /api/auth/logout
+#28 44.48 ├ ƒ /api/auth/register
+#28 44.48 ├ ƒ /api/auth/verify
+#28 44.48 ├ ƒ /api/connections/send
+#28 44.48 ├ ƒ /api/export/activity
+#28 44.48 ├ ƒ /api/export/messages
+#28 44.48 ├ ƒ /api/inbox/unified
+#28 44.48 ├ ƒ /api/messages/send
+#28 44.48 ├ ƒ /api/messages/send-new
+#28 44.48 ├ ƒ /api/messages/thread
+#28 44.48 ├ ƒ /api/people/search
+#28 44.48 ├ ƒ /api/proxy/[...path]
+#28 44.48 ├ ƒ /api/stats/[accountId]/activity
+#28 44.48 ├ ƒ /api/stats/all/summary
+#28 44.48 ├ ○ /connections
+#28 44.48 ├ ○ /inbox
+#28 44.48 ├ ○ /login
+#28 44.48 └ ○ /notifications
+#28 44.48 
+#28 44.48 
+#28 44.48 ƒ Proxy (Middleware)
+#28 44.48 
+#28 44.48 ○  (Static)   prerendered as static content
+#28 44.48 ƒ  (Dynamic)  server-rendered on demand
+#28 44.48 
+#28 DONE 44.6s
+
+#24 [frontend builder 2/6] WORKDIR /app
+#24 CACHED
+
+#29 [frontend stage-1 3/5] COPY --from=builder /app/.next/standalone ./
+#29 DONE 0.5s
+
+#30 [frontend stage-1 4/5] COPY --from=builder /app/.next/static ./.next/static
+#30 DONE 0.0s
+
+#31 [frontend stage-1 5/5] COPY --from=builder /app/public ./public
+#31 DONE 0.0s
+
+#32 [frontend] exporting to image
+#32 exporting layers
+#32 exporting layers 0.4s done
+#32 writing image sha256:4690d761b069db688382596b429285f51fbd1d652bebc89abb7a5c7992202384 done
+#32 naming to docker.io/library/linkedin-hyper-frontend done
+#32 DONE 0.4s
+
+#33 [frontend] resolving provenance for metadata file
+#33 DONE 0.0s
+ Image linkedin-hyper-worker Built 
+ Image linkedin-hyper-frontend Built 
+ Container linkedin-hyper-redis-1 Running 
+ Container linkedin-hyper-postgres-1 Running 
+ Container linkedin-hyper-worker-1 Recreate 
+ Container linkedin-hyper-worker-1 Recreated 
+ Container linkedin-hyper-frontend-1 Recreate 
+ Container linkedin-hyper-frontend-1 Recreated 
+ Container linkedin-hyper-postgres-1 Waiting 
+ Container linkedin-hyper-redis-1 Waiting 
+ Container linkedin-hyper-postgres-1 Healthy 
+ Container linkedin-hyper-redis-1 Healthy 
+ Container linkedin-hyper-worker-1 Starting 
+ Container linkedin-hyper-worker-1 Started 
+ Container linkedin-hyper-worker-1 Waiting 
+ Container linkedin-hyper-worker-1 Healthy 
+ Container linkedin-hyper-frontend-1 Starting 
+ Container linkedin-hyper-frontend-1 Started 

@@ -1,0 +1,10 @@
+1) Health
+{"status":"ok","ts":"2026-04-03T10:24:44.762Z"}
+
+2) Verify session for account: kanchidhyanasai
+{"ok":true,"url":"https://www.linkedin.com/feed/"}
+
+3) Send message to: https://www.linkedin.com/in/pasala-jaswanth-kumar-reddy/
+{"error":"Session expired for account kanchidhyanasai. Re-import cookies. Screenshot: /tmp/linkedin-hyper-debug/kanchidhyanasai-1775211942803-profile-authwall.png","code":"SESSION_EXPIRED"}
+
+Message send failed. Check error above (connection status / messageability / session).
