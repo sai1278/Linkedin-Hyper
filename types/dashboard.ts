@@ -121,8 +121,14 @@ export interface StartupValidationReport {
   checks: Array<{
     id: string;
     label: string;
+    title?: string;
     status: 'pass' | 'warn' | 'fail';
     detail: string;
+    accountAccessConfigPresent?: boolean;
+    initialAdminEmailsConfigured?: boolean;
+    initialAdminEmailsCount?: number;
+    userAccountAccessConfigured?: boolean;
+    userAccountAccessMappingCount?: number;
   }>;
   healthSummary: {
     status: 'healthy' | 'warning' | 'critical';

@@ -190,7 +190,7 @@ export default function StatusPage() {
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-                    {check.label}
+                    {check.title ?? check.label}
                   </span>
                   <span
                     className="rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide"

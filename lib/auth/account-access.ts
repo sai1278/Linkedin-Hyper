@@ -58,7 +58,9 @@ async function getPersistedAccountIdsForUser(userId: string): Promise<Set<string
   }
 }
 
-async function getAllowedAccountIdsForUser(user: Pick<User, 'id' | 'email' | 'role'> | null): Promise<Set<string>> {
+export async function resolveAllowedAccountIdsForUser(
+  user: Pick<User, 'id' | 'email' | 'role'> | null
+): Promise<Set<string>> {
   if (!user || user.role === 'admin') return new Set();
 
   const configured = getConfiguredAccountAccessMap();
@@ -127,7 +129,7 @@ async function hydrateActor(req: NextRequest, options: AccessOptions = {}): Prom
         name: hydratedUser.name,
       },
       user: hydratedUser,
-      allowedAccountIds: await getAllowedAccountIdsForUser(hydratedUser),
+      allowedAccountIds: await resolveAllowedAccountIdsForUser(hydratedUser),
     },
   };
 }

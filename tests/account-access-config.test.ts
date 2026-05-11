@@ -11,8 +11,14 @@ describe('account access configuration helper', () => {
 
     expect(getAccountAccessStartupCheck()).toEqual({
       id: 'account-access-config',
-      label: 'Account access configuration',
+      label: 'account-access-config',
+      title: 'Account access configuration',
       status: 'warn',
+      accountAccessConfigPresent: false,
+      initialAdminEmailsConfigured: false,
+      initialAdminEmailsCount: 0,
+      userAccountAccessConfigured: false,
+      userAccountAccessMappingCount: 0,
       detail: 'Neither INITIAL_ADMIN_EMAILS nor USER_ACCOUNT_ACCESS is configured in the frontend runtime environment.',
     });
   });
