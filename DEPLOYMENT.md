@@ -34,7 +34,9 @@ ACCOUNT_IDS=alice,bob
 # Frontend only
 API_URL=http://worker:3001
 NEXT_PUBLIC_API_URL=/api
+NEXT_PUBLIC_WS_URL=ws://YOUR_SERVER_IP:3002/ws
 INITIAL_ADMIN_EMAILS=admin@example.com
+USER_ACCOUNT_ACCESS={"admin@example.com":["saikanchi130"]}
 SERVICE_AUTH_TOKENS=[]
 
 # Compatibility-only legacy service auth (optional, migration only)
@@ -44,6 +46,10 @@ API_ROUTE_AUTH_TOKEN=
 # Optional proxy for Chrome
 PROXY_URL=
 ```
+
+Do not use the typoed variable names `NEXT_PUBLIC_API__URL` or `NEXT_PUBLIC_WS__URL`; only `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` are read by the frontend container.
+
+Make sure the **frontend** container also receives `INITIAL_ADMIN_EMAILS` and `USER_ACCOUNT_ACCESS`, because the Next.js `/api/*` routes enforce account ownership server-side.
 
 ### 3. Build and launch
 

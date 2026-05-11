@@ -2,6 +2,10 @@
 import { query } from '@/lib/db';
 import { getEffectiveUserRole, getUserById, type User } from '@/lib/models/user';
 import {
+  getConfiguredAccountAccessMap,
+  warnIfAccountAccessConfigMissing,
+} from '@/lib/auth/account-access-config';
+import {
   getAuthenticatedActor,
   type AuthenticatedActor,
 } from '@/lib/server/backend-api';
@@ -31,47 +35,8 @@ function jsonError(status: number, error: string) {
   return NextResponse.json({ error }, { status, headers: noStoreHeaders() });
 }
 
-function normalizePrincipalKey(value: string) {
-  return String(value || '').trim().toLowerCase();
-}
-
 function normalizeAccountId(value: string) {
   return String(value || '').trim();
-}
-
-function parseConfiguredAccountAccess(): Map<string, Set<string>> {
-  const raw = process.env.USER_ACCOUNT_ACCESS ?? process.env.ACCOUNT_ACCESS_MAP ?? '';
-  if (!raw.trim()) return new Map();
-
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const mapping = new Map<string, Set<string>>();
-
-    for (const [principal, allowedAccounts] of Object.entries(parsed || {})) {
-      const normalizedPrincipal = normalizePrincipalKey(principal);
-      if (!normalizedPrincipal) continue;
-
-      const values = Array.isArray(allowedAccounts)
-        ? allowedAccounts
-        : typeof allowedAccounts === 'string'
-          ? allowedAccounts.split(',')
-          : [];
-
-      const allowedSet = new Set(
-        values
-          .map((value) => normalizeAccountId(String(value || '')))
-          .filter((value) => ACCOUNT_ID_RE.test(value))
-      );
-
-      if (allowedSet.size > 0) {
-        mapping.set(normalizedPrincipal, allowedSet);
-      }
-    }
-
-    return mapping;
-  } catch {
-    return new Map();
-  }
 }
 
 async function getPersistedAccountIdsForUser(userId: string): Promise<Set<string>> {
@@ -96,11 +61,11 @@ async function getPersistedAccountIdsForUser(userId: string): Promise<Set<string
 async function getAllowedAccountIdsForUser(user: Pick<User, 'id' | 'email' | 'role'> | null): Promise<Set<string>> {
   if (!user || user.role === 'admin') return new Set();
 
-  const configured = parseConfiguredAccountAccess();
+  const configured = getConfiguredAccountAccessMap();
   const accountIds = new Set<string>();
 
   const principalKeys = [user.id, user.email]
-    .map((value) => normalizePrincipalKey(String(value || '')))
+    .map((value) => String(value || '').trim().toLowerCase())
     .filter(Boolean);
 
   for (const key of principalKeys) {
@@ -120,6 +85,8 @@ async function getAllowedAccountIdsForUser(user: Pick<User, 'id' | 'email' | 'ro
 }
 
 async function hydrateActor(req: NextRequest, options: AccessOptions = {}): Promise<{ data?: HydratedActor; response?: NextResponse }> {
+  warnIfAccountAccessConfigMissing();
+
   const { actor, response } = await getAuthenticatedActor(req, options);
   if (response || !actor) {
     return { response: response ?? jsonError(401, 'Unauthorized') };

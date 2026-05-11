@@ -1,5 +1,6 @@
 import { query } from '../db';
 import { randomUUID } from 'crypto';
+import { getConfiguredAdminEmails } from '../auth/account-access-config';
 
 export interface User {
   id: string;
@@ -15,15 +16,6 @@ export interface User {
 }
 
 export type CreateUserDTO = Pick<User, 'name' | 'email' | 'password_hash'> & Partial<Pick<User, 'role'>>;
-
-function getConfiguredAdminEmails(): Set<string> {
-  return new Set(
-    String(process.env.INITIAL_ADMIN_EMAILS || '')
-      .split(',')
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean)
-  );
-}
 
 export function getEffectiveUserRole(
   role: User['role'] | string | undefined,

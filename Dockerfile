@@ -13,7 +13,7 @@ RUN npm ci
 COPY . .
 
 # Pass dummy environment variables for NEXT_PUBLIC_* at build time
-ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+ARG NEXT_PUBLIC_API_URL=/api
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 ARG NEXT_PUBLIC_WS_URL=
