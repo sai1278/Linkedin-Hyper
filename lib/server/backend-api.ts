@@ -14,6 +14,15 @@ interface AuthenticateCallerOptions {
   allowApiSecret?: boolean;
 }
 
+export interface AuthenticatedActor {
+  authenticated: true;
+  kind: 'api-secret' | 'service-token' | 'user-session';
+  role: 'admin' | 'user';
+  userId?: string;
+  email?: string;
+  name?: string;
+}
+
 function applyPrivateNoStore(headers: Headers): void {
   headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
   headers.set('Pragma', 'no-cache');
@@ -116,6 +125,14 @@ export async function authenticateCaller(
   req: NextRequest,
   options: AuthenticateCallerOptions = {}
 ): Promise<NextResponse | null> {
+  const { response } = await getAuthenticatedActor(req, options);
+  return response;
+}
+
+export async function getAuthenticatedActor(
+  req: NextRequest,
+  options: AuthenticateCallerOptions = {}
+): Promise<{ actor: AuthenticatedActor | null; response: NextResponse | null }> {
   const { allowApiSecret = false } = options;
   const apiSecretHeader = req.headers.get('x-api-key');
   if (allowApiSecret && secretsMatch(apiSecretHeader, API_SECRET)) {
@@ -123,7 +140,14 @@ export async function authenticateCaller(
       apiSecretOperatorWarningShown = true;
       console.warn('[backend-api] API_SECRET operator access used through BFF allowlist. This path is limited to cookie/session recovery endpoints.');
     }
-    return null;
+    return {
+      actor: {
+        authenticated: true,
+        kind: 'api-secret',
+        role: 'admin',
+      },
+      response: null,
+    };
   }
 
   const expectedToken = process.env.API_ROUTE_AUTH_TOKEN?.trim();
@@ -136,14 +160,24 @@ export async function authenticateCaller(
       serviceTokenWarningShown = true;
       console.warn('[backend-api] Static service bearer token used for BFF access. Prefer DB-backed session auth for interactive operators.');
     }
-    return null;
+    return {
+      actor: {
+        authenticated: true,
+        kind: 'service-token',
+        role: 'admin',
+      },
+      response: null,
+    };
   }
 
   if (bearerMatches && !hasValidBearer) {
-    return NextResponse.json(
-      { error: 'Static service bearer tokens are disabled in production' },
-      { status: 403 }
-    );
+    return {
+      actor: null,
+      response: NextResponse.json(
+        { error: 'Static service bearer tokens are disabled in production' },
+        { status: 403 }
+      ),
+    };
   }
 
   const session = await getSession(req);
@@ -154,22 +188,43 @@ export async function authenticateCaller(
   );
 
   if (!hasDbBackedSession) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return {
+      actor: null,
+      response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+    };
   }
 
   const origin = extractOrigin(req.headers.get('origin'));
   if (origin && !isTrustedOrigin(req, origin)) {
-    return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
+    return {
+      actor: null,
+      response: NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 }),
+    };
   }
 
   if (isMutationMethod(req.method)) {
     const csrfError = enforceMutationProtection(req);
     if (csrfError) {
-      return csrfError;
+      return {
+        actor: null,
+        response: csrfError,
+      };
     }
   }
 
-  return null;
+  const authenticatedSession = session as NonNullable<typeof session>;
+
+  return {
+    actor: {
+      authenticated: true,
+      kind: 'user-session',
+      role: authenticatedSession.role as 'admin' | 'user',
+      userId: authenticatedSession.userId,
+      email: authenticatedSession.email,
+      name: authenticatedSession.name,
+    },
+    response: null,
+  };
 }
 
 interface ForwardOptions {
@@ -186,26 +241,8 @@ interface ForwardOptions {
  * Includes a default 120-second AbortSignal timeout (override via timeoutMs).
  */
 export async function forwardToBackend(opts: ForwardOptions): Promise<NextResponse> {
-  const { method, path, query, body, timeoutMs } = opts;
-  const qs = query ? `?${query.toString()}` : '';
-  const url = `${API_URL}${path}${qs}`;
-  const parsedTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : NaN;
-  const effectiveTimeoutMs = Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
-    ? parsedTimeoutMs
-    : 120_000;
-
-  const requestInit: RequestInit = {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Api-Key': API_SECRET,
-    },
-    body: body != null ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(effectiveTimeoutMs),
-  };
-
   try {
-    const res = await fetchBackendWithRetry(url, requestInit);
+    const res = await fetchBackendResponse(opts);
 
     const data = await res.text();
     const isNoContentStatus = res.status === 204 || res.status === 205 || res.status === 304;
@@ -229,6 +266,28 @@ export async function forwardToBackend(opts: ForwardOptions): Promise<NextRespon
       { status: 502 }
     );
   }
+}
+
+export async function fetchBackendResponse(opts: ForwardOptions): Promise<Response> {
+  const { method, path, query, body, timeoutMs } = opts;
+  const qs = query ? `?${query.toString()}` : '';
+  const url = `${API_URL}${path}${qs}`;
+  const parsedTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : NaN;
+  const effectiveTimeoutMs = Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
+    ? parsedTimeoutMs
+    : 120_000;
+
+  const requestInit: RequestInit = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Api-Key': API_SECRET,
+    },
+    body: body != null ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(effectiveTimeoutMs),
+  };
+
+  return fetchBackendWithRetry(url, requestInit);
 }
 
 function isTimeoutError(err: unknown): boolean {

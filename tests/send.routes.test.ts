@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   authenticateCaller: vi.fn(),
   forwardToBackend: vi.fn(),
+  authorizeAccountAccess: vi.fn(),
 }));
 
 vi.mock('@/lib/server/backend-api', () => ({
@@ -15,6 +16,10 @@ vi.mock('@/lib/server/backend-api', () => ({
   ),
 }));
 
+vi.mock('@/lib/auth/account-access', () => ({
+  authorizeAccountAccess: mocks.authorizeAccountAccess,
+}));
+
 describe('send-message route compatibility', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -22,6 +27,11 @@ describe('send-message route compatibility', () => {
     mocks.forwardToBackend.mockResolvedValue(
       NextResponse.json({ ok: true, proxied: true })
     );
+    mocks.authorizeAccountAccess.mockResolvedValue({
+      actor: { authenticated: true, kind: 'user-session', role: 'admin', userId: 'admin-1' },
+      accountId: 'acct-1',
+      allowedAccountIds: new Set(['acct-1']),
+    });
   });
 
   it('keeps the old send route deprecated with HTTP 410', async () => {

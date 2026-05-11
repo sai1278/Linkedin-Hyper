@@ -5,6 +5,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 worker_root="$repo_root/worker"
 frontend_log="$repo_root/frontend_run.log"
 worker_log="$worker_root/worker_run.log"
+preexisting_db_password="${DB_PASSWORD:-}"
+preexisting_linkedin_hyper_db_password="${LINKEDIN_HYPER_DB_PASSWORD:-}"
 
 load_env_file() {
   local file="$1"
@@ -51,14 +53,26 @@ redis_password="${REDIS_PASSWORD:-$(openssl rand -hex 18)}"
 api_secret="${API_SECRET:-$(openssl rand -hex 32)}"
 session_key="${SESSION_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"
 account_ids="${ACCOUNT_IDS:-saikanchi130}"
+db_host="${DB_HOST:-127.0.0.1}"
+db_port="${DB_PORT:-${DB_HOST_PORT:-5432}}"
 
-if [[ -n "${DATABASE_URL:-}" ]]; then
-  database_url="$DATABASE_URL"
+resolved_db_password="${DB_PASSWORD:-}"
+if [[ -z "$resolved_db_password" && -n "$preexisting_db_password" ]]; then
+  resolved_db_password="$preexisting_db_password"
+fi
+if [[ -z "$resolved_db_password" && -n "$preexisting_linkedin_hyper_db_password" ]]; then
+  resolved_db_password="$preexisting_linkedin_hyper_db_password"
+fi
+
+resolved_database_url="${DATABASE_URL:-${POSTGRES_URL:-}}"
+
+if [[ -n "$resolved_database_url" ]]; then
+  database_url="$resolved_database_url"
 else
-  if [[ -n "${DB_PASSWORD:-}" ]]; then
-    database_url="postgresql://linkedinuser:${DB_PASSWORD}@127.0.0.1:5432/linkedin_db"
+  if [[ -n "$resolved_db_password" ]]; then
+    database_url="postgresql://linkedinuser:${resolved_db_password}@${db_host}:${db_port}/linkedin_db"
   else
-    database_url="postgresql://linkedinuser@127.0.0.1:5432/linkedin_db"
+    database_url="postgresql://linkedinuser@${db_host}:${db_port}/linkedin_db"
   fi
 fi
 
@@ -95,6 +109,7 @@ fi
   export DIRECT_EXECUTION="1"
   export DISABLE_QUEUE="1"
   export BROWSER_HEADLESS="1"
+  export BROWSER_USE_SYSTEM_CHROME="1"
   npm run start >>"$worker_log" 2>&1
 ) &
 

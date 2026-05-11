@@ -72,6 +72,34 @@
   --text-primary-new: var(--color-gray-900);
   --text-secondary: var(--color-gray-700);
   --text-muted-new: var(--color-gray-500);
+
+  /* Inbox-specific surfaces */
+  --inbox-thread-panel: #ffffff;
+  --inbox-thread-bg: #f4f7fb;
+  --inbox-thread-divider: #d7dfeb;
+  --inbox-composer-bg: rgba(255, 255, 255, 0.94);
+  --inbox-template-bg: #f8fafc;
+  --inbox-input-bg: #ffffff;
+  --inbox-input-border: #cdd7e6;
+  --inbox-input-text: #172033;
+  --inbox-send-disabled-bg: #e5e7eb;
+  --inbox-jump-button-bg: #1d4ed8;
+  --inbox-jump-button-text: #eff6ff;
+  --inbox-bubble-incoming-bg: #ffffff;
+  --inbox-bubble-incoming-text: #172033;
+  --inbox-bubble-incoming-border: #d7dfeb;
+  --inbox-bubble-outgoing-bg: #2563eb;
+  --inbox-bubble-outgoing-text: #eff6ff;
+  --inbox-bubble-sending-bg: #dbeafe;
+  --inbox-bubble-sending-text: #1d4ed8;
+  --inbox-bubble-sending-border: #93c5fd;
+  --inbox-bubble-failed-bg: #fef2f2;
+  --inbox-bubble-failed-text: #b91c1c;
+  --inbox-bubble-failed-border: #fca5a5;
+  --inbox-status-sent: #1d4ed8;
+  --inbox-status-pending: #1d4ed8;
+  --inbox-status-failed: #b91c1c;
+  --inbox-retry-bg: rgba(239, 68, 68, 0.08);
   
   /* Typography Scale */
   --font-size-xs: 0.75rem;    /* 12px */
@@ -132,6 +160,37 @@
   --z-modal: 1200;
   --z-popover: 1300;
   --z-tooltip: 1400;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --inbox-thread-panel: #0f172a;
+    --inbox-thread-bg: #020617;
+    --inbox-thread-divider: #263245;
+    --inbox-composer-bg: rgba(15, 23, 42, 0.94);
+    --inbox-template-bg: #162033;
+    --inbox-input-bg: #111b2e;
+    --inbox-input-border: #334155;
+    --inbox-input-text: #e5eefc;
+    --inbox-send-disabled-bg: #1e293b;
+    --inbox-jump-button-bg: #2563eb;
+    --inbox-jump-button-text: #eff6ff;
+    --inbox-bubble-incoming-bg: #162033;
+    --inbox-bubble-incoming-text: #e5eefc;
+    --inbox-bubble-incoming-border: #334155;
+    --inbox-bubble-outgoing-bg: #2563eb;
+    --inbox-bubble-outgoing-text: #eff6ff;
+    --inbox-bubble-sending-bg: rgba(37, 99, 235, 0.24);
+    --inbox-bubble-sending-text: #bfdbfe;
+    --inbox-bubble-sending-border: #60a5fa;
+    --inbox-bubble-failed-bg: rgba(127, 29, 29, 0.5);
+    --inbox-bubble-failed-text: #fecaca;
+    --inbox-bubble-failed-border: rgba(248, 113, 113, 0.55);
+    --inbox-status-sent: #93c5fd;
+    --inbox-status-pending: #bfdbfe;
+    --inbox-status-failed: #fecaca;
+    --inbox-retry-bg: rgba(248, 113, 113, 0.16);
+  }
 }
 
 * {
@@ -302,4 +361,63 @@ html {
   border-color: var(--accent);
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
+}
+
+.inbox-thread-shell {
+  isolation: isolate;
+  background: var(--inbox-thread-panel);
+}
+
+.inbox-thread-header {
+  background: var(--inbox-thread-panel);
+  border-color: var(--inbox-thread-divider);
+}
+
+.inbox-thread-scroll {
+  background: var(--inbox-thread-bg);
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+.inbox-thread-composer {
+  background: var(--inbox-composer-bg);
+  border-top: 1px solid var(--inbox-thread-divider);
+  backdrop-filter: blur(16px);
+}
+
+.message-bubble {
+  border: 1px solid transparent;
+  box-shadow: var(--shadow-sm);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.message-bubble::selection {
+  background: rgba(59, 130, 246, 0.24);
+  color: inherit;
+}
+
+.message-bubble--incoming {
+  background: var(--inbox-bubble-incoming-bg);
+  color: var(--inbox-bubble-incoming-text);
+  border-color: var(--inbox-bubble-incoming-border);
+}
+
+.message-bubble--outgoing {
+  background: var(--inbox-bubble-outgoing-bg);
+  color: var(--inbox-bubble-outgoing-text);
+}
+
+.message-bubble--sending {
+  background: var(--inbox-bubble-sending-bg);
+  color: var(--inbox-bubble-sending-text);
+  border-color: var(--inbox-bubble-sending-border);
+  border-style: dashed;
+}
+
+.message-bubble--failed {
+  background: var(--inbox-bubble-failed-bg);
+  color: var(--inbox-bubble-failed-text);
+  border-color: var(--inbox-bubble-failed-border);
 }

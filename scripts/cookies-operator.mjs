@@ -55,12 +55,30 @@ function parseEnvFile(filePath) {
     ) {
       value = value.slice(1, -1);
     }
-    values.set(key, value);
+    if (value) {
+      values.set(key, value);
+    }
   }
   return values;
 }
 
-const envValues = parseEnvFile(path.join(repoRoot, '.env'));
+function loadEnvValues() {
+  const files = [
+    path.join(repoRoot, '.env'),
+    path.join(repoRoot, '.env.local'),
+    path.join(repoRoot, 'worker', '.env'),
+  ];
+  const merged = new Map();
+  for (const filePath of files) {
+    const parsed = parseEnvFile(filePath);
+    for (const [key, value] of parsed.entries()) {
+      merged.set(key, value);
+    }
+  }
+  return merged;
+}
+
+const envValues = loadEnvValues();
 
 function getConfigValue(key) {
   const envValue = process.env[key];

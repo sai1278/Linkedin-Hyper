@@ -1,15 +1,15 @@
 // FILE: app/api/accounts/[id]/verify/route.ts
 import { NextRequest } from 'next/server';
-import { authenticateCaller, forwardToBackend } from '@/lib/server/backend-api';
+import { authorizeAccountAccess } from '@/lib/auth/account-access';
+import { forwardToBackend } from '@/lib/server/backend-api';
 
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authError = await authenticateCaller(req, { allowApiSecret: true });
-  if (authError) return authError;
-  
   const { id: accountId } = await params;
+  const access = await authorizeAccountAccess(req, accountId, { allowApiSecret: true });
+  if (access.response) return access.response;
   const query = new URLSearchParams();
   const fresh = req.nextUrl.searchParams.get('fresh');
   if (fresh) {
@@ -19,7 +19,7 @@ export async function POST(
   // This endpoint takes 10-30 seconds as it launches a browser
   return forwardToBackend({
     method: 'POST',
-    path: `/accounts/${accountId}/verify`,
+    path: `/accounts/${access.accountId}/verify`,
     query,
     // Verify can now take longer because we wait for feed/messaging auth state to settle.
     timeoutMs: 420_000,

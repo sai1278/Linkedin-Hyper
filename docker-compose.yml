@@ -9,7 +9,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${DB_HOST_BIND:-127.0.0.1}:${DB_HOST_PORT:-5432}:5432"
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U linkedinuser -d linkedin_db"]

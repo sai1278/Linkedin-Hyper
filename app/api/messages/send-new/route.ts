@@ -1,11 +1,9 @@
 // FILE: app/api/messages/send-new/route.ts
 import { NextRequest } from 'next/server';
-import { authenticateCaller, forwardToBackend, badRequest } from '@/lib/server/backend-api';
+import { authorizeAccountAccess } from '@/lib/auth/account-access';
+import { forwardToBackend, badRequest } from '@/lib/server/backend-api';
 
 export async function POST(req: NextRequest) {
-  const authError = await authenticateCaller(req);
-  if (authError) return authError;
-
   try {
     const body = await req.json();
     const accountId = String(body?.accountId || '').trim();
@@ -16,6 +14,9 @@ export async function POST(req: NextRequest) {
     if (!accountId || !text) {
       return badRequest(new Error('Missing required fields: accountId, text'));
     }
+
+    const access = await authorizeAccountAccess(req, accountId);
+    if (access.response) return access.response;
 
     if (!profileUrl && !chatId) {
       return badRequest(new Error('Either profileUrl or chatId is required'));
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
       method: 'POST',
       path: '/messages/send-new',
       body: {
-        accountId,
+        accountId: access.accountId,
         text,
         ...(profileUrl ? { profileUrl } : {}),
         ...(chatId ? { chatId } : {}),

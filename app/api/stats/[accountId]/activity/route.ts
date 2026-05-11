@@ -1,6 +1,6 @@
-import { NextRequest } from 'next/server';
+﻿import { NextRequest } from 'next/server';
+import { authorizeAccountAccess } from '@/lib/auth/account-access';
 import {
-  authenticateCaller,
   badRequest,
   forwardToBackend,
   requireInteger,
@@ -11,13 +11,11 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ accountId: string }> }
 ) {
-  const authError = await authenticateCaller(req);
-  if (authError) return authError;
-
   try {
-    // Next.js 15+: params is a Promise Ã¢â‚¬â€ must be awaited
     const { accountId: rawAccountId } = await params;
     const accountId = requireString(rawAccountId, 'accountId');
+    const access = await authorizeAccountAccess(req, accountId);
+    if (access.response) return access.response;
 
     const page = requireInteger(req.nextUrl.searchParams.get('page'), 'page', {
       min: 0,
@@ -31,7 +29,7 @@ export async function GET(
 
     return forwardToBackend({
       method: 'GET',
-      path: `/stats/${encodeURIComponent(accountId)}/activity`,
+      path: `/stats/${encodeURIComponent(access.accountId || accountId)}/activity`,
       query: new URLSearchParams({ page: String(page), limit: String(limit) }),
     });
   } catch (error) {

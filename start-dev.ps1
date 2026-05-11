@@ -130,21 +130,52 @@ $envMap = @{}
 Load-EnvFile -Path (Join-Path $repoRoot ".env") -Target $envMap
 Load-EnvFile -Path (Join-Path $repoRoot ".env.local") -Target $envMap
 
-$resolvedDbPassword = if ($envMap.ContainsKey("DB_PASSWORD")) {
+$resolvedDbPassword = if ([Environment]::GetEnvironmentVariable("DB_PASSWORD")) {
+  [Environment]::GetEnvironmentVariable("DB_PASSWORD")
+} elseif ($envMap.ContainsKey("DB_PASSWORD") -and -not [string]::IsNullOrWhiteSpace($envMap["DB_PASSWORD"])) {
   $envMap["DB_PASSWORD"]
-} elseif ($baseEnv.ContainsKey("DB_PASSWORD")) {
+} elseif ($baseEnv.ContainsKey("DB_PASSWORD") -and -not [string]::IsNullOrWhiteSpace($baseEnv["DB_PASSWORD"])) {
   $baseEnv["DB_PASSWORD"]
 } elseif ([Environment]::GetEnvironmentVariable("LINKEDIN_HYPER_DB_PASSWORD")) {
   [Environment]::GetEnvironmentVariable("LINKEDIN_HYPER_DB_PASSWORD")
 } else {
   ""
 }
-$databaseUrl = if ($envMap.ContainsKey("DATABASE_URL")) {
+$resolvedDatabaseUrl = if ([Environment]::GetEnvironmentVariable("DATABASE_URL")) {
+  [Environment]::GetEnvironmentVariable("DATABASE_URL")
+} elseif ([Environment]::GetEnvironmentVariable("POSTGRES_URL")) {
+  [Environment]::GetEnvironmentVariable("POSTGRES_URL")
+} elseif ($envMap.ContainsKey("DATABASE_URL") -and -not [string]::IsNullOrWhiteSpace($envMap["DATABASE_URL"])) {
   $envMap["DATABASE_URL"]
-} elseif (-not [string]::IsNullOrWhiteSpace($resolvedDbPassword)) {
-  "postgresql://linkedinuser:$resolvedDbPassword@localhost:5432/linkedin_db"
+} elseif ($envMap.ContainsKey("POSTGRES_URL") -and -not [string]::IsNullOrWhiteSpace($envMap["POSTGRES_URL"])) {
+  $envMap["POSTGRES_URL"]
 } else {
-  "postgresql://linkedinuser@localhost:5432/linkedin_db"
+  ""
+}
+$dbHost = if ([Environment]::GetEnvironmentVariable("DB_HOST")) {
+  [Environment]::GetEnvironmentVariable("DB_HOST")
+} elseif ($envMap.ContainsKey("DB_HOST") -and -not [string]::IsNullOrWhiteSpace($envMap["DB_HOST"])) {
+  $envMap["DB_HOST"]
+} else {
+  "127.0.0.1"
+}
+$dbPort = if ([Environment]::GetEnvironmentVariable("DB_PORT")) {
+  [Environment]::GetEnvironmentVariable("DB_PORT")
+} elseif ([Environment]::GetEnvironmentVariable("DB_HOST_PORT")) {
+  [Environment]::GetEnvironmentVariable("DB_HOST_PORT")
+} elseif ($envMap.ContainsKey("DB_PORT") -and -not [string]::IsNullOrWhiteSpace($envMap["DB_PORT"])) {
+  $envMap["DB_PORT"]
+} elseif ($envMap.ContainsKey("DB_HOST_PORT") -and -not [string]::IsNullOrWhiteSpace($envMap["DB_HOST_PORT"])) {
+  $envMap["DB_HOST_PORT"]
+} else {
+  "5432"
+}
+$databaseUrl = if (-not [string]::IsNullOrWhiteSpace($resolvedDatabaseUrl)) {
+  $resolvedDatabaseUrl
+} elseif (-not [string]::IsNullOrWhiteSpace($resolvedDbPassword)) {
+  "postgresql://linkedinuser:$resolvedDbPassword@${dbHost}:$dbPort/linkedin_db"
+} else {
+  "postgresql://linkedinuser@${dbHost}:$dbPort/linkedin_db"
 }
 $redisHost = if ($envMap.ContainsKey("REDIS_HOST")) { $envMap["REDIS_HOST"] } else { "localhost" }
 $redisPort = if ($envMap.ContainsKey("REDIS_PORT")) { $envMap["REDIS_PORT"] } else { "6379" }
@@ -249,7 +280,7 @@ try {
 } catch {
   Write-Warning "Could not reset worker log file (it may be locked by an old process): $($_.Exception.Message)"
 }
-$workerArgs = "/c set DATABASE_URL=$databaseUrl&& set REDIS_HOST=$redisHost&& set REDIS_PORT=$redisPort&& set REDIS_PASSWORD=$redisPassword&& set DISABLE_REDIS=$disableRedis&& set API_SECRET=$apiSecret&& set SESSION_ENCRYPTION_KEY=$sessionKey&& set ACCOUNT_IDS=$accountIds&& set DISABLE_MESSAGE_SYNC=1&& set DIRECT_VERIFY=1&& set DIRECT_EXECUTION=1&& set DISABLE_QUEUE=1&& set BROWSER_HEADLESS=1&& set REFRESH_SESSION_COOKIES=0&& npm run start > `"$workerLog`" 2>&1"
+$workerArgs = "/c set DATABASE_URL=$databaseUrl&& set POSTGRES_URL=$databaseUrl&& set REDIS_HOST=$redisHost&& set REDIS_PORT=$redisPort&& set REDIS_PASSWORD=$redisPassword&& set DISABLE_REDIS=$disableRedis&& set API_SECRET=$apiSecret&& set SESSION_ENCRYPTION_KEY=$sessionKey&& set ACCOUNT_IDS=$accountIds&& set DISABLE_MESSAGE_SYNC=1&& set DIRECT_VERIFY=1&& set DIRECT_EXECUTION=1&& set DISABLE_QUEUE=1&& set BROWSER_HEADLESS=1&& set BROWSER_USE_SYSTEM_CHROME=1&& set REFRESH_SESSION_COOKIES=0&& npm run start > `"$workerLog`" 2>&1"
 Start-Process -FilePath "cmd.exe" -ArgumentList $workerArgs -WorkingDirectory $workerRoot | Out-Null
 
 function Wait-HttpStatus {

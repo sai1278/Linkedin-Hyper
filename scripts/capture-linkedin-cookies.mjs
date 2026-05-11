@@ -12,6 +12,7 @@ const DEBUG_SCREENSHOT_DIR =
   path.resolve(process.cwd(), 'artifacts', 'cookie-capture-debug');
 const CAPTURE_STABLE_MS = Math.max(3000, Number(process.env.LI_CAPTURE_STABLE_MS || 5000));
 const CAPTURE_POLL_MS = 2000;
+const COPY_EXISTING_COOKIES = process.env.LI_CAPTURE_COPY_COOKIES === '1';
 const AUTH_BLOCK_TOKENS = [
   '/uas/login',
   '/login',
@@ -427,6 +428,22 @@ function closeBrowserProcesses(imageName) {
   }
 }
 
+async function waitForBrowserProcessesExit(imageName, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const probe = spawnSync('tasklist', ['/FI', `IMAGENAME eq ${imageName}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    const output = String(probe.stdout || '');
+    if (!output.toLowerCase().includes(imageName.toLowerCase())) {
+      return;
+    }
+    await delay(250);
+  }
+}
+
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
 }
@@ -451,6 +468,15 @@ function copyProfileArtifacts(srcProfile, dstProfile) {
     path.join('Network', 'TransportSecurity'),
   ];
 
+  if (COPY_EXISTING_COOKIES) {
+    filesToCopy.push(
+      path.join('Network', 'Cookies'),
+      path.join('Network', 'Cookies-journal'),
+      path.join('Network', 'Cookies-wal'),
+      path.join('Network', 'Cookies-shm')
+    );
+  }
+
   for (const rel of filesToCopy) {
     copyFileIfExists(path.join(srcProfile, rel), path.join(dstProfile, rel));
   }
@@ -474,6 +500,15 @@ function prepareTempUserData(userDataRoot, profileName) {
   copyProfileArtifacts(srcProfile, dstProfile);
 
   return tempRoot;
+}
+
+function removeDirQuietly(targetPath) {
+  if (!targetPath) return;
+  try {
+    fs.rmSync(targetPath, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup issues.
+  }
 }
 
 async function fetchJson(url) {
@@ -1001,6 +1036,7 @@ async function main() {
 
   if (args.closeBrowser) {
     closeBrowserProcesses(cfg.processImageName);
+    await waitForBrowserProcessesExit(cfg.processImageName, 5000);
     await delay(1000);
   }
 
@@ -1010,13 +1046,18 @@ async function main() {
     tempUserData = prepareTempUserData(cfg.userDataRoot, profileName);
     launchedUserDataDir = tempUserData;
     console.log(`Prepared temporary browser profile: ${tempUserData}`);
-    console.log('LinkedIn cookies are intentionally not pre-copied; sign in in this window to capture fresh cookies.');
+    if (COPY_EXISTING_COOKIES) {
+      console.log('Copied existing browser cookie store into the temporary profile for local automation capture.');
+    } else {
+      console.log('LinkedIn cookies are intentionally not pre-copied; sign in in this window to capture fresh cookies.');
+    }
   } else {
     console.log(`Using live browser profile at: ${cfg.userDataRoot}`);
   }
 
   const browserArgs = [
     `--remote-debugging-port=${args.port}`,
+    '--remote-debugging-address=127.0.0.1',
     '--remote-allow-origins=*',
     `--user-data-dir=${launchedUserDataDir}`,
     `--profile-directory=${profileName}`,
@@ -1034,8 +1075,8 @@ async function main() {
   let savedPath = null;
   let cdpError = null;
   try {
-    await waitForDebuggerEndpoint(args.port, 30_000);
-    const wsUrl = await waitForPageTargetWs(args.port, 30_000);
+    await waitForDebuggerEndpoint(args.port, 60_000);
+    const wsUrl = await waitForPageTargetWs(args.port, 60_000);
     console.log('DevTools endpoint ready.');
     console.log('If LinkedIn asks for login, complete login in the opened browser window.');
 
@@ -1061,6 +1102,13 @@ async function main() {
 
     const modeLabel = args.useTempCopy ? 'temp profile copy' : 'live profile';
     console.warn(`Falling back to Playwright direct capture (${modeLabel}).`);
+    if (tempUserData) {
+      const previousTempUserData = tempUserData;
+      tempUserData = prepareTempUserData(cfg.userDataRoot, profileName);
+      launchedUserDataDir = tempUserData;
+      console.log(`Prepared fresh temporary browser profile for Playwright fallback: ${tempUserData}`);
+      removeDirQuietly(previousTempUserData);
+    }
     const fallbackCookies = await captureLinkedInCookiesViaPlaywrightFallback({
       cfg,
       userDataDir: launchedUserDataDir,
@@ -1078,11 +1126,7 @@ async function main() {
   }
 
   if (tempUserData && !args.keepTemp) {
-    try {
-      fs.rmSync(tempUserData, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup issues.
-    }
+    removeDirQuietly(tempUserData);
   } else if (tempUserData && args.keepTemp) {
     console.log(`Keeping temp user data dir for debug: ${tempUserData}`);
   }

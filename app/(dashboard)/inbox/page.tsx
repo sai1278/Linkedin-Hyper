@@ -786,7 +786,7 @@ export default function InboxPage() {
       {!isLive && (
         <div className="shrink-0 px-6 pt-4">
           <div
-            className="flex items-start justify-between gap-4 rounded-2xl border px-4 py-3 shadow-sm"
+            className="inbox-status-banner flex min-h-[88px] items-start justify-between gap-4 rounded-2xl border px-4 py-3 shadow-sm"
             style={{
               backgroundColor: wsStatus === 'reconnecting' ? '#fff7ed' : '#fef2f2',
               borderColor: wsStatus === 'reconnecting' ? '#fdba74' : '#fca5a5',
@@ -852,7 +852,7 @@ export default function InboxPage() {
               onSelect={handleSelect}
             />
           </div>
-          <div className={`flex min-w-0 flex-1 overflow-hidden ${selected ? 'max-[900px]:flex' : 'max-[900px]:hidden'}`}>
+          <div className={`flex min-h-0 min-w-0 flex-1 overflow-hidden ${selected ? 'max-[900px]:flex' : 'max-[900px]:hidden'}`}>
             <MessageThread
               conversation={selected}
               accountLabelById={accountLabelById}

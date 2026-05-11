@@ -14,7 +14,10 @@
     "cookies:refresh-direct": "node scripts/cookies-operator.mjs refresh-direct",
     "cookies:import": "node scripts/cookies-operator.mjs import",
     "cookies:verify": "node scripts/cookies-operator.mjs verify",
-    "cookies:status": "node scripts/cookies-operator.mjs status"
+    "cookies:status": "node scripts/cookies-operator.mjs status",
+    "test:security:message-session": "vitest run tests/message-session.security.test.ts",
+    "test:e2e:preflight": "node scripts/e2e-preflight.mjs",
+    "test:e2e:linkedin-message": "node scripts/e2e-linkedin-message.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

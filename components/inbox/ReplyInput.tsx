@@ -84,16 +84,16 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
   const charactersRemaining = MAX_MESSAGE_LENGTH - text.length;
 
   return (
-    <div style={{ borderTop: '1px solid var(--border)' }}>
+    <div className="inbox-thread-composer shrink-0">
       {templates.length > 0 && (
-        <div className="flex flex-wrap gap-2 px-6 pt-4">
+        <div className="flex flex-wrap gap-2 border-b px-6 pt-4 pb-3" style={{ borderColor: 'var(--inbox-thread-divider)' }}>
           {templates.map((template) => (
             <div
               key={template}
               className="flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs"
               style={{
                 borderColor: 'var(--border)',
-                backgroundColor: 'var(--bg-primary, var(--color-gray-50))',
+                backgroundColor: 'var(--inbox-template-bg)',
                 color: 'var(--text-primary-new, var(--text-primary))',
               }}
             >
@@ -117,9 +117,7 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
         </div>
       )}
 
-      <div
-        className="flex items-end gap-3 px-6 py-4"
-      >
+      <div className="flex items-end gap-3 px-6 py-4">
         <div className="flex-1">
           <textarea
             ref={textareaRef}
@@ -130,11 +128,11 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
             aria-label="Message composer"
             disabled={disabled || sending}
             rows={2}
-            className="flex-1 w-full resize-none rounded-xl px-4 py-3 text-sm outline-none transition-colors focus:ring-2 focus:ring-blue-500"
+            className="w-full min-h-[88px] resize-none rounded-2xl px-4 py-3 text-sm leading-relaxed outline-none transition-colors focus:ring-2 focus:ring-blue-500"
             style={{
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              color: 'var(--text-primary)',
+              background: 'var(--inbox-input-bg)',
+              border: '1px solid var(--inbox-input-border)',
+              color: 'var(--inbox-input-text)',
               caretColor: 'var(--accent)',
             }}
           />
@@ -151,7 +149,7 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
             <span
               className="text-xs"
               style={{
-                color: charactersRemaining < 80 ? '#b45309' : 'var(--text-muted-new, var(--text-muted))',
+                color: charactersRemaining < 80 ? 'var(--color-warning-700)' : 'var(--text-muted-new, var(--text-muted))',
               }}
             >
               {text.length}/{MAX_MESSAGE_LENGTH}
@@ -163,12 +161,12 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
           onClick={() => void handleSend()}
           disabled={!text.trim() || sending || disabled}
           aria-label={sending ? 'Sending message' : 'Send message'}
-          className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl transition-all"
+          className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl transition-colors"
           style={{
-            background: text.trim() && !sending ? 'var(--accent)' : 'var(--bg-card)',
+            background: text.trim() && !sending ? 'var(--accent)' : 'var(--inbox-send-disabled-bg)',
             color: text.trim() && !sending ? '#fff' : 'var(--text-muted)',
             border: '1px solid',
-            borderColor: text.trim() && !sending ? 'var(--accent)' : 'var(--border)',
+            borderColor: text.trim() && !sending ? 'var(--accent)' : 'var(--inbox-input-border)',
             cursor: text.trim() && !sending ? 'pointer' : 'not-allowed',
           }}
         >

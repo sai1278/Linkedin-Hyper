@@ -61,28 +61,64 @@ function getRenderableMessageKey(message: Message, accountId: string, conversati
 
 export function MessageThread({ conversation, accountLabelById, onMessageSent, onSyncAfterSend, onBack }: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  const [autoScroll, setAutoScroll] = useState(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const scrollStateRef = useRef<{ conversationId: string; lastMessageKey: string; messageCount: number } | null>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  const conversationId = conversation?.conversationId ?? '';
+  const messageCount = conversation?.messages.length ?? 0;
+  const lastMessage = conversation?.messages[messageCount - 1] ?? null;
+  const lastMessageKey = conversation && lastMessage
+    ? getRenderableMessageKey(lastMessage, conversation.accountId, conversationId)
+    : '';
 
   useEffect(() => {
-    if (autoScroll) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!conversationId) {
+      scrollStateRef.current = null;
+      return;
     }
-  }, [conversation?.messages, autoScroll]);
+
+    const nextScrollState = {
+      conversationId,
+      lastMessageKey,
+      messageCount,
+    };
+    const previousScrollState = scrollStateRef.current;
+    scrollStateRef.current = nextScrollState;
+
+    const conversationChanged = previousScrollState?.conversationId !== nextScrollState.conversationId;
+    const messageChanged = !conversationChanged && (
+      previousScrollState?.messageCount !== nextScrollState.messageCount ||
+      previousScrollState?.lastMessageKey !== nextScrollState.lastMessageKey
+    );
+
+    if (!conversationChanged && !messageChanged) {
+      return;
+    }
+
+    if (!conversationChanged && !autoScroll) {
+      return;
+    }
+
+    const behavior: ScrollBehavior = conversationChanged ? 'auto' : 'smooth';
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
+    });
+  }, [autoScroll, conversationId, lastMessageKey, messageCount]);
 
   const handleScroll = () => {
     if (!messagesContainerRef.current) return;
 
     const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
     const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-    setAutoScroll(isNearBottom);
+    setAutoScroll((currentValue) => (currentValue === isNearBottom ? currentValue : isNearBottom));
   };
 
   if (!conversation) {
     return (
       <div
         className="flex flex-1 items-center justify-center"
-        style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}
+        style={{ backgroundColor: 'var(--inbox-thread-panel)' }}
       >
         <div className="px-6 text-center">
           <div
@@ -150,9 +186,6 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
       const profileUrl = getConversationProfileUrl(activeConversation);
       let didSend = false;
 
-      // Keep one public send contract. Prefer profile-based sends when we have
-      // a stable LinkedIn profile URL, otherwise reuse the same send-new route
-      // with an existing chat id so older thread replies still work.
       if (profileUrl) {
         await sendMessageNew({ accountId, profileUrl, text });
         didSend = true;
@@ -209,14 +242,8 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
   );
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
-      <div
-        className="shrink-0 flex items-center justify-between border-b px-8 py-5 max-[900px]:px-4"
-        style={{
-          borderColor: 'var(--border)',
-          backgroundColor: 'var(--bg-secondary, var(--bg-panel))',
-        }}
-      >
+    <div className="inbox-thread-shell relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="inbox-thread-header shrink-0 flex items-center justify-between border-b px-8 py-5 max-[900px]:px-4">
         <div className="flex items-center gap-3">
           {onBack && (
             <button
@@ -253,36 +280,33 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="min-h-0 flex-1 overflow-y-auto px-8 py-6 max-[900px]:px-4"
-        style={{ backgroundColor: 'var(--bg-primary, var(--bg-base))' }}
+        className="inbox-thread-scroll min-h-0 flex-1 overflow-y-auto px-8 py-6 max-[900px]:px-4"
       >
         {groupedMessages.map((group) => (
-            <MessageGroup
-              key={getMessageGroupKey(group)}
-              messages={group.messages}
-              isSentByMe={group.isSentByMe}
-              senderName={group.senderName}
-              accountLabel={accountLabel}
-              accountId={accountId}
-              conversationId={conversation.conversationId}
-              participantAvatarUrl={participant.avatarUrl}
-              onRetry={handleSend}
-            />
+          <MessageGroup
+            key={getMessageGroupKey(group)}
+            messages={group.messages}
+            isSentByMe={group.isSentByMe}
+            senderName={group.senderName}
+            accountLabel={accountLabel}
+            accountId={accountId}
+            conversationId={conversation.conversationId}
+            participantAvatarUrl={participant.avatarUrl}
+            onRetry={handleSend}
+          />
         ))}
         <div ref={bottomRef} />
       </div>
 
       {!autoScroll && (
         <button
+          type="button"
           onClick={() => {
             setAutoScroll(true);
-            bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+            bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
           }}
-          className="absolute bottom-28 right-8 z-10 rounded-full px-4 py-2 shadow-lg transition-all max-[900px]:right-4"
-          style={{
-            backgroundColor: 'var(--color-primary-500)',
-            color: 'white',
-          }}
+          className="absolute bottom-28 right-8 z-10 rounded-full px-4 py-2 text-sm font-medium shadow-lg transition-colors max-[900px]:right-4"
+          style={{ backgroundColor: 'var(--inbox-jump-button-bg)', color: 'var(--inbox-jump-button-text)' }}
         >
           New messages
         </button>
@@ -400,48 +424,34 @@ function MessageBubble({
   const deliveryStatus = message.status ?? (isSentByMe ? 'sent' : undefined);
   const isSending = deliveryStatus === 'sending';
   const isFailed = deliveryStatus === 'failed';
+  const bubbleStateClass = isSentByMe
+    ? isFailed
+      ? 'message-bubble--failed'
+      : isSending
+        ? 'message-bubble--sending'
+        : 'message-bubble--outgoing'
+    : 'message-bubble--incoming';
 
   return (
     <div className="w-full">
-      <div
-        className={`inline-block px-4 py-3 text-sm leading-relaxed transition-all ${
-          isSentByMe ? 'rounded-2xl rounded-br-sm' : 'rounded-2xl rounded-bl-sm'
-        }`}
-        style={{
-          backgroundColor: isSentByMe
-            ? isFailed
-              ? 'rgba(239, 68, 68, 0.12)'
-              : isSending
-                ? 'rgba(24, 119, 242, 0.14)'
-                : 'var(--color-primary-500, #3b82f6)'
-            : 'var(--bg-card, var(--color-gray-100))',
-          color: isSentByMe && !isFailed && !isSending
-            ? '#ffffff'
-            : 'var(--text-primary-new, var(--text-primary))',
-          maxWidth: '100%',
-          wordBreak: 'break-word',
-          boxShadow: 'var(--shadow-sm)',
-          border: isFailed
-            ? '1px solid rgba(239, 68, 68, 0.32)'
-            : isSending
-              ? '1px dashed rgba(24, 119, 242, 0.4)'
-              : '1px solid transparent',
-          opacity: isSending ? 0.85 : 1,
-        }}
-      >
-        {message.text}
+      <div className={`message-bubble ${bubbleStateClass} inline-block max-w-full px-4 py-3 text-sm leading-relaxed ${
+        isSentByMe ? 'rounded-2xl rounded-br-sm' : 'rounded-2xl rounded-bl-sm'
+      }`}>
+        <span className="block whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+          {message.text}
+        </span>
       </div>
 
       {isLast && (
         <div className={`mt-1 flex items-center gap-1 px-2 ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
           <span className="text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-            {`${formatRelativeTime(message.sentAt)} • ${formatTimestamp(message.sentAt)}`}
+            {`${formatRelativeTime(message.sentAt)} - ${formatTimestamp(message.sentAt)}`}
           </span>
 
           {isSentByMe && deliveryStatus === 'sending' && (
             <>
-              <LoaderCircle size={14} className="animate-spin" style={{ color: 'var(--color-primary-500, #3b82f6)' }} />
-              <span className="text-xs" style={{ color: 'var(--color-primary-600, #166fe5)' }}>
+              <LoaderCircle size={14} className="animate-spin" style={{ color: 'var(--inbox-status-pending)' }} />
+              <span className="text-xs" style={{ color: 'var(--inbox-status-pending)' }}>
                 Sending...
               </span>
             </>
@@ -449,8 +459,8 @@ function MessageBubble({
 
           {isSentByMe && deliveryStatus === 'sent' && (
             <>
-              <CheckCheck size={14} style={{ color: 'var(--color-primary-500, #3b82f6)' }} />
-              <span className="text-xs" style={{ color: 'var(--color-primary-600, #166fe5)' }}>
+              <CheckCheck size={14} style={{ color: 'var(--inbox-status-sent)' }} />
+              <span className="text-xs" style={{ color: 'var(--inbox-status-sent)' }}>
                 Sent
               </span>
             </>
@@ -458,17 +468,18 @@ function MessageBubble({
 
           {isSentByMe && deliveryStatus === 'failed' && (
             <>
-              <AlertCircle size={14} style={{ color: '#dc2626' }} />
-              <span className="text-xs" style={{ color: '#dc2626' }}>
+              <AlertCircle size={14} style={{ color: 'var(--inbox-status-failed)' }} />
+              <span className="text-xs" style={{ color: 'var(--inbox-status-failed)' }}>
                 Failed
               </span>
               {onRetry && (
                 <button
+                  type="button"
                   onClick={onRetry}
-                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-all"
+                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors"
                   style={{
-                    color: '#dc2626',
-                    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                    color: 'var(--inbox-status-failed)',
+                    backgroundColor: 'var(--inbox-retry-bg)',
                   }}
                 >
                   <RotateCcw size={12} />
@@ -481,7 +492,7 @@ function MessageBubble({
       )}
 
       {isSentByMe && message.error && isFailed && (
-        <p className="mt-1 px-2 text-xs" style={{ color: '#b91c1c' }}>
+        <p className="mt-1 px-2 text-xs" style={{ color: 'var(--inbox-status-failed)' }}>
           {message.error}
         </p>
       )}
