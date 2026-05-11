@@ -1,6 +1,6 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
-import { getUserById, type User } from '@/lib/models/user';
+import { getEffectiveUserRole, getUserById, type User } from '@/lib/models/user';
 import {
   getAuthenticatedActor,
   type AuthenticatedActor,
@@ -74,7 +74,26 @@ function parseConfiguredAccountAccess(): Map<string, Set<string>> {
   }
 }
 
-function getAllowedAccountIdsForUser(user: Pick<User, 'id' | 'email' | 'role'> | null): Set<string> {
+async function getPersistedAccountIdsForUser(userId: string): Promise<Set<string>> {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) return new Set();
+
+  try {
+    const result = await query(
+      'SELECT account_id FROM user_account_access WHERE user_id = $1',
+      [normalizedUserId]
+    );
+    return new Set(
+      result.rows
+        .map((row) => normalizeAccountId(String((row as { account_id?: string }).account_id || '')))
+        .filter((value) => ACCOUNT_ID_RE.test(value))
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+async function getAllowedAccountIdsForUser(user: Pick<User, 'id' | 'email' | 'role'> | null): Promise<Set<string>> {
   if (!user || user.role === 'admin') return new Set();
 
   const configured = parseConfiguredAccountAccess();
@@ -90,6 +109,11 @@ function getAllowedAccountIdsForUser(user: Pick<User, 'id' | 'email' | 'role'> |
     for (const accountId of mappedAccounts) {
       accountIds.add(accountId);
     }
+  }
+
+  const persistedAccountIds = await getPersistedAccountIdsForUser(user.id);
+  for (const accountId of persistedAccountIds) {
+    accountIds.add(accountId);
   }
 
   return accountIds;
@@ -124,7 +148,7 @@ async function hydrateActor(req: NextRequest, options: AccessOptions = {}): Prom
     id: dbUser.id,
     email: dbUser.email,
     name: dbUser.name,
-    role: dbUser.role,
+    role: getEffectiveUserRole(dbUser.role, dbUser.email),
   };
 
   return {
@@ -136,7 +160,7 @@ async function hydrateActor(req: NextRequest, options: AccessOptions = {}): Prom
         name: hydratedUser.name,
       },
       user: hydratedUser,
-      allowedAccountIds: getAllowedAccountIdsForUser(hydratedUser),
+      allowedAccountIds: await getAllowedAccountIdsForUser(hydratedUser),
     },
   };
 }

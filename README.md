@@ -18,6 +18,7 @@
 - Dashboard login uses registered **email + password** only.
 - Passwords are stored as bcrypt hashes.
 - Set `INITIAL_ADMIN_EMAILS` before first registration if you need bootstrap admin accounts.
+- Use `USER_ACCOUNT_ACCESS` to assign specific LinkedIn `accountId` values to non-admin dashboard users when you want account-scoped access without giving admin privileges.
 - Legacy shared dashboard passwords are deprecated and should not be used for production access.
 
 ## What It Does

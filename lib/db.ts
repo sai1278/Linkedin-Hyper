@@ -57,6 +57,16 @@ export async function initializeDatabase() {
       linkedin_connected BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS user_account_access (
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      account_id VARCHAR(128) NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, account_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_account_access_account_id
+      ON user_account_access(account_id);
   `;
   
   try {
