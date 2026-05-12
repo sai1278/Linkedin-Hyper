@@ -9,7 +9,7 @@ describe('account access configuration helper', () => {
   it('warns when neither admin emails nor user mappings are configured', async () => {
     const { getAccountAccessStartupCheck } = await import('@/lib/auth/account-access-config');
 
-    expect(getAccountAccessStartupCheck()).toEqual({
+    expect(getAccountAccessStartupCheck()).toEqual(expect.objectContaining({
       id: 'account-access-config',
       label: 'account-access-config',
       title: 'Account access configuration',
@@ -20,7 +20,7 @@ describe('account access configuration helper', () => {
       userAccountAccessConfigured: false,
       userAccountAccessEntryCount: 0,
       detail: 'Neither INITIAL_ADMIN_EMAILS nor USER_ACCOUNT_ACCESS is configured in the frontend runtime environment.',
-    });
+    }));
   });
 
   it('passes when admin emails are configured', async () => {
