@@ -394,7 +394,7 @@ function MessageGroup({
         />
       </div>
 
-      <div className={`flex max-w-[74%] flex-col gap-2 max-[1200px]:max-w-[82%] max-[900px]:max-w-[88%] ${isSentByMe ? 'items-end' : 'items-start'}`}>
+      <div className={`flex max-w-[70%] flex-col gap-2.5 max-[1200px]:max-w-[80%] max-[900px]:max-w-[88%] ${isSentByMe ? 'items-end' : 'items-start'}`}>
         <span className="px-2 text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
           {displayName}
         </span>

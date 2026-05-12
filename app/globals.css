@@ -73,32 +73,40 @@
   --text-secondary: var(--color-gray-700);
   --text-muted-new: var(--color-gray-500);
 
+  /* Semantic UI tokens */
+  --surface: #f7faff;
+  --surface-elevated: #ffffff;
+  --surface-panel: #eef4ff;
+  --text-primary-ui: #172033;
+  --text-secondary-ui: #475569;
+  --border-subtle: #d7dfeb;
+
   /* Inbox-specific surfaces */
-  --inbox-thread-panel: #ffffff;
-  --inbox-thread-bg: #f4f7fb;
-  --inbox-thread-divider: #d7dfeb;
+  --inbox-thread-panel: var(--surface-elevated);
+  --inbox-thread-bg: var(--surface);
+  --inbox-thread-divider: var(--border-subtle);
   --inbox-page-bg: linear-gradient(180deg, #f6f9ff 0%, #eef4ff 100%);
   --inbox-sidebar-bg: rgba(255, 255, 255, 0.96);
-  --inbox-sidebar-muted-bg: #f7faff;
+  --inbox-sidebar-muted-bg: var(--surface);
   --inbox-sidebar-hover: #edf4ff;
   --inbox-sidebar-selected-bg: #e6f0ff;
   --inbox-sidebar-selected-border: #3b82f6;
   --inbox-card-shadow: 0 20px 45px -28px rgba(15, 23, 42, 0.28);
   --inbox-banner-bg: rgba(255, 255, 255, 0.92);
   --inbox-banner-border: #dbe6f5;
-  --inbox-banner-text: #475569;
+  --inbox-banner-text: var(--text-secondary-ui);
   --inbox-banner-accent: #3b82f6;
   --inbox-composer-bg: rgba(255, 255, 255, 0.94);
   --inbox-template-bg: #f8fafc;
-  --inbox-input-bg: #ffffff;
+  --inbox-input-bg: var(--surface-elevated);
   --inbox-input-border: #cdd7e6;
-  --inbox-input-text: #172033;
+  --inbox-input-text: var(--text-primary-ui);
   --inbox-send-disabled-bg: #e5e7eb;
   --inbox-jump-button-bg: #1d4ed8;
   --inbox-jump-button-text: #eff6ff;
   --inbox-bubble-incoming-bg: #fbfdff;
-  --inbox-bubble-incoming-text: #172033;
-  --inbox-bubble-incoming-border: #d7dfeb;
+  --inbox-bubble-incoming-text: var(--text-primary-ui);
+  --inbox-bubble-incoming-border: var(--border-subtle);
   --inbox-bubble-outgoing-bg: #1d4ed8;
   --inbox-bubble-outgoing-text: #eff6ff;
   --inbox-bubble-sending-bg: #dbeafe;
@@ -175,25 +183,31 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --inbox-thread-panel: #0f172a;
+    --surface: #08111f;
+    --surface-elevated: #0f172a;
+    --surface-panel: #111b2e;
+    --text-primary-ui: #e5eefc;
+    --text-secondary-ui: #cbd5e1;
+    --border-subtle: #334155;
+    --inbox-thread-panel: var(--surface-elevated);
     --inbox-thread-bg: #020617;
     --inbox-thread-divider: #263245;
     --inbox-page-bg: linear-gradient(180deg, #020617 0%, #08111f 100%);
     --inbox-sidebar-bg: rgba(15, 23, 42, 0.96);
-    --inbox-sidebar-muted-bg: #101a2d;
+    --inbox-sidebar-muted-bg: var(--surface-panel);
     --inbox-sidebar-hover: #18253a;
     --inbox-sidebar-selected-bg: #13233d;
     --inbox-sidebar-selected-border: #60a5fa;
     --inbox-card-shadow: 0 24px 48px -28px rgba(2, 6, 23, 0.75);
     --inbox-banner-bg: rgba(15, 23, 42, 0.9);
-    --inbox-banner-border: #334155;
-    --inbox-banner-text: #cbd5e1;
+    --inbox-banner-border: var(--border-subtle);
+    --inbox-banner-text: var(--text-secondary-ui);
     --inbox-banner-accent: #93c5fd;
     --inbox-composer-bg: rgba(15, 23, 42, 0.94);
     --inbox-template-bg: #162033;
-    --inbox-input-bg: #111b2e;
-    --inbox-input-border: #334155;
-    --inbox-input-text: #e5eefc;
+    --inbox-input-bg: var(--surface-panel);
+    --inbox-input-border: var(--border-subtle);
+    --inbox-input-text: var(--text-primary-ui);
     --inbox-send-disabled-bg: #1e293b;
     --inbox-jump-button-bg: #2563eb;
     --inbox-jump-button-text: #eff6ff;
@@ -390,7 +404,7 @@ html {
 }
 
 .inbox-main-card {
-  background: var(--inbox-thread-panel);
+  background: var(--surface-elevated);
   box-shadow: var(--inbox-card-shadow);
 }
 
@@ -400,8 +414,8 @@ html {
 
 .inbox-sidebar-search {
   background: var(--inbox-sidebar-muted-bg);
-  border: 1px solid var(--border);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  border: 1px solid var(--border-subtle);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
 
 .inbox-sidebar-scroll {
@@ -436,15 +450,12 @@ html {
   background: var(--inbox-banner-bg);
   border: 1px solid var(--inbox-banner-border);
   color: var(--inbox-banner-text);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(10px);
 }
 
 .inbox-thread-shell {
   isolation: isolate;
-  background: var(--inbox-thread-panel);
-}
-
-.inbox-thread-shell {
+  background: var(--surface-elevated);
   min-width: 0;
 }
 
@@ -467,7 +478,7 @@ html {
 }
 
 .inbox-composer-input {
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05), 0 12px 24px -24px rgba(15, 23, 42, 0.55);
 }
 
 .inbox-template-chip {

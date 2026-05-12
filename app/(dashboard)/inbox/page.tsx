@@ -319,6 +319,7 @@ function logMessageArray(label: string, messages: Message[]): void {
 }
 
 export default function InboxPage() {
+  const RECONNECTING_NOTICE_DELAY_MS = 1800;
   const routeMeta = DASHBOARD_ROUTE_META.inbox;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -335,9 +336,28 @@ export default function InboxPage() {
   const [wsStatus, setWsStatus] = useState<'connected' | 'disconnected' | 'reconnecting'>(
     wsClient.isConnected ? 'connected' : 'disconnected'
   );
+  const [showConnectionBanner, setShowConnectionBanner] = useState(() => !wsClient.isConnected);
   const selectedRef = useRef<Conversation | null>(null);
   const visibleLimitRef = useRef(25);
   const syncInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (wsStatus === 'connected') {
+      setShowConnectionBanner(false);
+      return;
+    }
+
+    if (wsStatus === 'disconnected') {
+      setShowConnectionBanner(true);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setShowConnectionBanner(true);
+    }, RECONNECTING_NOTICE_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [wsStatus]);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -722,17 +742,17 @@ export default function InboxPage() {
     return (
       <div className="inbox-page-shell flex h-full min-h-0 flex-1 overflow-hidden px-6 pb-6 pt-4 max-[900px]:block max-[900px]:px-0 max-[900px]:pb-0">
         <div className="inbox-main-card flex h-full min-h-0 w-full overflow-hidden rounded-[28px] border max-[900px]:rounded-none max-[900px]:border-x-0 max-[900px]:border-b-0">
-        <div
-          className="min-w-[320px] max-w-[420px] flex-[0_0_34%] border-r max-[1200px]:min-w-[300px] max-[900px]:w-full max-[900px]:min-w-0 max-[900px]:max-w-none max-[900px]:border-r-0"
-          style={{ borderColor: 'var(--border)', backgroundColor: 'var(--bg-secondary, var(--bg-panel))' }}
-        >
-          <ConversationListSkeleton count={8} />
-        </div>
-        <div className="flex min-w-0 flex-1 items-stretch overflow-hidden max-[900px]:hidden" style={{ backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
-          <div className="min-h-0 w-full p-6">
-            <MessageThreadSkeleton />
+          <div
+            className="min-w-[320px] max-w-[420px] flex-[0_0_34%] border-r max-[1200px]:min-w-[300px] max-[900px]:w-full max-[900px]:min-w-0 max-[900px]:max-w-none max-[900px]:border-r-0"
+            style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-elevated, var(--bg-panel))' }}
+          >
+            <ConversationListSkeleton count={8} />
           </div>
-        </div>
+          <div className="flex min-w-0 flex-1 items-stretch overflow-hidden max-[900px]:hidden" style={{ backgroundColor: 'var(--surface-elevated, #ffffff)' }}>
+            <div className="min-h-0 w-full p-6">
+              <MessageThreadSkeleton />
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -793,7 +813,7 @@ export default function InboxPage() {
         </div>
       </div>
 
-      {!isLive && (
+      {showConnectionBanner && !isLive && (
         <div className="shrink-0 px-6 pt-3 max-[900px]:px-4">
           <div className="inbox-status-banner flex min-h-[64px] items-center justify-between gap-4 rounded-2xl px-4 py-3 max-[700px]:flex-col max-[700px]:items-start">
             <div className="flex items-start gap-3">
@@ -801,12 +821,12 @@ export default function InboxPage() {
               <div>
                 <p className="text-sm font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
                   {wsStatus === 'reconnecting'
-                    ? 'Reconnecting to live inbox updates'
+                    ? 'Trying to restore live updates'
                     : 'Live inbox updates are paused'}
                 </p>
                 <p className="mt-1 text-xs leading-5" style={{ color: 'var(--inbox-banner-text)' }}>
                   {wsStatus === 'reconnecting'
-                    ? 'Your thread is still usable. Fresh activity may appear after the connection settles.'
+                    ? 'You can keep reading or replying while the connection settles in the background.'
                     : 'Messages can still be reviewed and sent. Use reconnect or sync when you want the latest activity.'}
                 </p>
               </div>

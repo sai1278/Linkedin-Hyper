@@ -24,14 +24,20 @@ export function Avatar({ name, size = 'md', src }: AvatarProps) {
 
   return (
     <div
-      className={`${sizeClasses[size]} rounded-full flex items-center justify-center font-semibold text-white flex-shrink-0`}
-      style={{ background: 'var(--accent)' }}
+      className={`${sizeClasses[size]} flex flex-shrink-0 items-center justify-center overflow-hidden rounded-full font-semibold text-white`}
+      style={{
+        background: canRenderImage
+          ? 'var(--surface-panel, rgba(255,255,255,0.08))'
+          : 'linear-gradient(135deg, var(--color-primary-600, var(--accent)) 0%, var(--color-primary-800, var(--accent-hover)) 100%)',
+        border: '1px solid rgba(148, 163, 184, 0.22)',
+        boxShadow: '0 10px 20px -16px rgba(15, 23, 42, 0.6)',
+      }}
     >
       {canRenderImage ? (
         <img
           src={src || undefined}
           alt={`${name} avatar`}
-          className="h-full w-full rounded-full object-cover"
+          className="block h-full w-full rounded-full object-cover"
           loading="lazy"
           decoding="async"
           onError={() => setImageFailed(true)}
