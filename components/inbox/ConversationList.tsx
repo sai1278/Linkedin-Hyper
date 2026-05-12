@@ -6,13 +6,14 @@ import type { Conversation, Account } from '@/types/dashboard';
 import { Avatar } from '@/components/ui/Avatar';
 import { UnreadBadge } from '@/components/ui/UnreadBadge';
 import { AccountBadge } from '@/components/ui/AccountBadge';
+import { getConversationSelectionKey } from '@/lib/inbox-thread-state';
 import { formatRelativeTime } from '@/lib/time-utils';
 
 interface ConversationListProps {
   conversations: Conversation[];
   accounts: Account[];
   accountLabels: Record<string, string>;
-  selected: Conversation | null;
+  selectedConversationKey: string | null;
   filter: string;
   search: string;
   canLoadMore: boolean;
@@ -27,7 +28,7 @@ export const ConversationList = memo(function ConversationList({
   conversations,
   accounts,
   accountLabels,
-  selected,
+  selectedConversationKey,
   filter,
   search,
   canLoadMore,
@@ -170,7 +171,7 @@ export const ConversationList = memo(function ConversationList({
         ) : (
           <>
             {conversations.map((conversation, index) => {
-              const isSelected = conversation.conversationId === selected?.conversationId;
+              const isSelected = getConversationSelectionKey(conversation) === selectedConversationKey;
               const timeStr = formatRelativeTime(conversation.lastMessage.sentAt);
               const hasUnread = conversation.unreadCount > 0;
               const lastMessageLabel = (() => {

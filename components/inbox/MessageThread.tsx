@@ -7,6 +7,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { AccountBadge } from '@/components/ui/AccountBadge';
 import { ReplyInput } from '@/components/inbox/ReplyInput';
 import { sendMessageNew } from '@/lib/api-client';
+import { getConversationSelectionKey, getThreadAutoScrollBehavior } from '@/lib/inbox-thread-state';
 import { formatRelativeTime, formatTimestamp } from '@/lib/time-utils';
 import { ExportButton } from '@/components/ui/ExportButton';
 import { MessageThreadSkeleton } from '@/components/ui/SkeletonLoader';
@@ -83,44 +84,37 @@ export function MessageThread({
 }: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const scrollStateRef = useRef<{ conversationId: string; lastMessageSignature: string; messageCount: number } | null>(null);
+  const scrollStateRef = useRef<{ conversationKey: string; lastMessageKey: string; messageCount: number } | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
-  const conversationId = conversation?.conversationId ?? '';
+  const conversationKey = getConversationSelectionKey(conversation);
   const messageCount = conversation?.messages.length ?? 0;
   const lastMessage = conversation?.messages[messageCount - 1] ?? null;
   const lastMessageSignature = getMessageScrollSignature(lastMessage);
 
   useEffect(() => {
-    if (!conversationId) {
+    if (!conversationKey) {
       scrollStateRef.current = null;
       return;
     }
 
     const nextScrollState = {
-      conversationId,
-      lastMessageSignature,
+      conversationKey,
+      lastMessageKey: lastMessageSignature,
       messageCount,
     };
     const previousScrollState = scrollStateRef.current;
     scrollStateRef.current = nextScrollState;
 
-    const conversationChanged = previousScrollState?.conversationId !== nextScrollState.conversationId;
-    const appendedMessage = !conversationChanged && nextScrollState.messageCount > (previousScrollState?.messageCount ?? 0);
-
-    if (!conversationChanged && !appendedMessage) {
+    const behavior = getThreadAutoScrollBehavior(previousScrollState, nextScrollState, autoScroll);
+    if (!behavior) {
       return;
     }
 
-    if (!conversationChanged && !autoScroll) {
-      return;
-    }
-
-    const behavior: ScrollBehavior = conversationChanged ? 'auto' : 'smooth';
     requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
     });
-  }, [autoScroll, conversationId, lastMessageSignature, messageCount]);
+  }, [autoScroll, conversationKey, lastMessageSignature, messageCount]);
 
   const handleScroll = () => {
     if (!messagesContainerRef.current) return;
@@ -278,7 +272,9 @@ export function MessageThread({
                 <AccountBadge name={accountLabel} />
               </div>
               <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-                {messages.length} {messages.length === 1 ? 'message' : 'messages'} in this thread
+                {isLoadingConversation
+                  ? 'Loading thread...'
+                  : `${messages.length} ${messages.length === 1 ? 'message' : 'messages'} in this thread`}
               </p>
             </div>
           </div>
@@ -304,6 +300,17 @@ export function MessageThread({
         {isLoadingConversation ? (
           <div className="max-w-3xl">
             <MessageThreadSkeleton />
+          </div>
+        ) : groupedMessages.length === 0 ? (
+          <div className="flex h-full min-h-[220px] items-center justify-center px-6 text-center">
+            <div className="max-w-sm">
+              <p className="text-base font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
+                No messages yet
+              </p>
+              <p className="mt-2 text-sm leading-6" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+                This thread is ready for a first reply once the next message arrives.
+              </p>
+            </div>
           </div>
         ) : (
           groupedMessages.map((group) => (

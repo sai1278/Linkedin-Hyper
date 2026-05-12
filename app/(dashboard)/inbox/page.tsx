@@ -9,6 +9,10 @@ import { MessageThread } from '@/components/inbox/MessageThread';
 import { ConversationListSkeleton, MessageThreadSkeleton } from '@/components/ui/SkeletonLoader';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { wsClient } from '@/lib/websocket-client';
+import {
+  getConversationSelectionKey,
+  shouldApplyThreadResponse,
+} from '@/lib/inbox-thread-state';
 import { getAccountLabel } from '@/lib/account-label';
 import toast from 'react-hot-toast';
 
@@ -26,37 +30,15 @@ function normalizeConversationValue(value: string | undefined | null): string {
   return String(value || '').trim().replace(/\/+$/, '').toLowerCase();
 }
 
-function findMatchingConversation(
-  currentSelected: Conversation,
-  nextConversations: Conversation[]
+function findConversationBySelectionKey(
+  conversations: Conversation[],
+  selectionKey: string | null
 ): Conversation | null {
-  const directMatch = nextConversations.find(
-    (conversation) => conversation.conversationId === currentSelected.conversationId
-  );
-  if (directMatch) {
-    return directMatch;
-  }
-
-  const selectedProfileUrl = normalizeConversationValue(currentSelected.participant.profileUrl);
-  if (selectedProfileUrl) {
-    const profileMatch = nextConversations.find((conversation) => (
-      conversation.accountId === currentSelected.accountId &&
-      normalizeConversationValue(conversation.participant.profileUrl) === selectedProfileUrl
-    ));
-    if (profileMatch) {
-      return profileMatch;
-    }
-  }
-
-  const selectedName = normalizeConversationValue(currentSelected.participant.name);
-  if (!selectedName) {
+  if (!selectionKey) {
     return null;
   }
 
-  return nextConversations.find((conversation) => (
-    conversation.accountId === currentSelected.accountId &&
-    normalizeConversationValue(conversation.participant.name) === selectedName
-  )) || null;
+  return conversations.find((conversation) => getConversationSelectionKey(conversation) === selectionKey) || null;
 }
 
 function areSameConversation(left: Conversation | null | undefined, right: Conversation | null | undefined): boolean {
@@ -320,6 +302,7 @@ export default function InboxPage() {
   const RECONNECTING_NOTICE_DELAY_MS = 1800;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationKey, setActiveConversationKey] = useState<string | null>(null);
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -336,6 +319,8 @@ export default function InboxPage() {
   );
   const [showConnectionStatus, setShowConnectionStatus] = useState(() => !wsClient.isConnected);
   const selectedRef = useRef<Conversation | null>(null);
+  const activeConversationKeyRef = useRef<string | null>(null);
+  const isThreadLoadingRef = useRef(false);
   const visibleLimitRef = useRef(25);
   const syncInFlightRef = useRef(false);
   const threadRequestTokenRef = useRef(0);
@@ -361,6 +346,14 @@ export default function InboxPage() {
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+
+  useEffect(() => {
+    activeConversationKeyRef.current = activeConversationKey;
+  }, [activeConversationKey]);
+
+  useEffect(() => {
+    isThreadLoadingRef.current = isThreadLoading;
+  }, [isThreadLoading]);
 
   useEffect(() => {
     if (reloadCooldownUntil <= Date.now()) {
@@ -472,20 +465,41 @@ export default function InboxPage() {
       const effectiveLimit = requestedLimit ?? visibleLimitRef.current;
       const inboxData = await getUnifiedInbox(effectiveLimit);
       setConversations(inboxData.conversations);
-      setSelected((currentSelected) => {
-        if (!currentSelected) return currentSelected;
+      const activeKey = activeConversationKeyRef.current;
+      const freshConversation = findConversationBySelectionKey(inboxData.conversations, activeKey);
 
-        const freshConversation = findMatchingConversation(currentSelected, inboxData.conversations);
+      if (activeKey && !freshConversation) {
+        setSelected(null);
+        setActiveConversationKey(null);
+        setIsThreadLoading(false);
+      } else {
+        setSelected((currentSelected) => {
+          if (!activeKey || !freshConversation) {
+            return currentSelected;
+          }
 
-        if (!freshConversation) return currentSelected;
+          const currentSelectionMatches = getConversationSelectionKey(currentSelected) === activeKey;
+          if (isThreadLoadingRef.current && currentSelectionMatches) {
+            return {
+              ...currentSelected!,
+              unreadCount: freshConversation.unreadCount,
+              lastMessage: freshConversation.lastMessage,
+              participant: freshConversation.participant,
+            };
+          }
 
-        const mergedConversation = mergeConversationForDisplay(currentSelected, {
-          ...freshConversation,
-          messages: mergePreviewConversationMessages(currentSelected, freshConversation),
+          const baselineConversation = currentSelectionMatches
+            ? currentSelected!
+            : freshConversation;
+
+          const mergedConversation = mergeConversationForDisplay(baselineConversation, {
+            ...freshConversation,
+            messages: mergePreviewConversationMessages(baselineConversation, freshConversation),
+          });
+          logMessageArray(`loadInbox merged selected ${mergedConversation.conversationId}`, mergedConversation.messages);
+          return mergedConversation;
         });
-        logMessageArray(`loadInbox merged selected ${mergedConversation.conversationId}`, mergedConversation.messages);
-        return mergedConversation;
-      });
+      }
       setError(null);
       return inboxData.conversations;
     } catch (nextError) {
@@ -510,10 +524,12 @@ export default function InboxPage() {
   }, [loadInbox]);
 
   const handleSelect = useCallback(async (conversation: Conversation) => {
+    const conversationKey = getConversationSelectionKey(conversation);
     const currentSelected = selectedRef.current;
-    const isConversationChange = !areSameConversation(currentSelected, conversation);
+    const isConversationChange = activeConversationKeyRef.current !== conversationKey;
     const requestToken = threadRequestTokenRef.current + 1;
     threadRequestTokenRef.current = requestToken;
+    setActiveConversationKey(conversationKey);
 
     const initialConversation = isConversationChange
       ? { ...conversation, messages: [] }
@@ -524,10 +540,9 @@ export default function InboxPage() {
 
     if (isConversationChange) {
       setIsThreadLoading(true);
+      logMessageArray(`handleSelect before thread fetch ${conversation.conversationId}`, initialConversation.messages);
+      setSelected(initialConversation);
     }
-
-    logMessageArray(`handleSelect before thread fetch ${conversation.conversationId}`, initialConversation.messages);
-    setSelected(initialConversation);
 
     try {
       const thread = await getConversationThread(conversation.accountId, conversation.conversationId, {
@@ -535,7 +550,12 @@ export default function InboxPage() {
         limit: 250,
       });
       const hasThreadMessages = Array.isArray(thread.messages) && thread.messages.length > 0;
-      if (threadRequestTokenRef.current !== requestToken) {
+      if (!shouldApplyThreadResponse(
+        threadRequestTokenRef.current,
+        requestToken,
+        activeConversationKeyRef.current,
+        conversationKey
+      )) {
         return;
       }
       setSelected((currentSelected) => {
@@ -550,7 +570,12 @@ export default function InboxPage() {
         return mergedConversation;
       });
     } catch {
-      if (threadRequestTokenRef.current !== requestToken) {
+      if (!shouldApplyThreadResponse(
+        threadRequestTokenRef.current,
+        requestToken,
+        activeConversationKeyRef.current,
+        conversationKey
+      )) {
         return;
       }
       setSelected((currentSelected) => {
@@ -565,20 +590,28 @@ export default function InboxPage() {
         return mergedConversation;
       });
     } finally {
-      if (threadRequestTokenRef.current === requestToken) {
+      if (shouldApplyThreadResponse(
+        threadRequestTokenRef.current,
+        requestToken,
+        activeConversationKeyRef.current,
+        conversationKey
+      )) {
         setIsThreadLoading(false);
       }
     }
   }, [getFallbackMessages, mergeConversationForDisplay]);
 
   const refreshSelectedConversation = useCallback(async (nextConversations: Conversation[]) => {
-    const currentSelected = selectedRef.current;
-    if (!currentSelected) {
+    const activeKey = activeConversationKeyRef.current;
+    if (!activeKey) {
       return;
     }
 
-    const refreshedConversation = findMatchingConversation(currentSelected, nextConversations);
+    const refreshedConversation = findConversationBySelectionKey(nextConversations, activeKey);
     if (!refreshedConversation) {
+      setSelected(null);
+      setActiveConversationKey(null);
+      setIsThreadLoading(false);
       return;
     }
 
@@ -691,6 +724,7 @@ export default function InboxPage() {
   const handleBackToList = useCallback(() => {
     threadRequestTokenRef.current += 1;
     setIsThreadLoading(false);
+    setActiveConversationKey(null);
     setSelected(null);
   }, []);
 
@@ -862,7 +896,7 @@ export default function InboxPage() {
               conversations={filteredConversations}
               accounts={accounts}
               accountLabels={accountLabelById}
-              selected={selected}
+              selectedConversationKey={activeConversationKey}
               filter={filter}
               search={search}
               canLoadMore={canLoadMore}
@@ -875,7 +909,7 @@ export default function InboxPage() {
           </div>
           <div className={`flex min-h-0 min-w-0 flex-1 overflow-hidden ${selected ? 'max-[900px]:flex' : 'max-[900px]:hidden'}`}>
             <MessageThread
-              key={selected?.conversationId ?? 'empty-thread'}
+              key={activeConversationKey ?? 'empty-thread'}
               conversation={selected}
               isLoadingConversation={isThreadLoading}
               accountLabelById={accountLabelById}

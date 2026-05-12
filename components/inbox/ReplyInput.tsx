@@ -128,8 +128,8 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
             placeholder="Write a message... Press Enter to send or Shift+Enter for a new line."
             aria-label="Message composer"
             disabled={disabled || sending}
-            rows={3}
-            className="inbox-composer-input w-full min-h-[116px] resize-none rounded-[24px] px-4 py-3.5 text-[15px] leading-7 outline-none transition-colors focus:ring-2 focus:ring-blue-500"
+            rows={2}
+            className="inbox-composer-input w-full min-h-[56px] max-h-[120px] resize-none overflow-y-auto rounded-[22px] px-4 py-3 text-sm leading-6 outline-none transition-colors focus:ring-2 focus:ring-blue-500"
             style={{
               background: 'var(--inbox-input-bg)',
               border: '1px solid var(--inbox-input-border)',
