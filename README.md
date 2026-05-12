@@ -19,7 +19,7 @@
 - Passwords are stored as bcrypt hashes.
 - Set `INITIAL_ADMIN_EMAILS` before first registration if you need bootstrap admin accounts.
 - Use `USER_ACCOUNT_ACCESS` to assign specific LinkedIn `accountId` values to non-admin dashboard users when you want account-scoped access without giving admin privileges.
-- In Docker production, the **frontend** container must receive `INITIAL_ADMIN_EMAILS` and `USER_ACCOUNT_ACCESS`, because the Next.js `/api/*` routes enforce account access server-side.
+- In Docker production, the **frontend** container must receive `INITIAL_ADMIN_EMAILS`, `USER_ACCOUNT_ACCESS`, and `TRUSTED_ORIGINS`, because the Next.js `/api/*` routes enforce account access server-side and validate same-origin mutations there.
 - Legacy shared dashboard passwords are deprecated and should not be used for production access.
 
 ## What It Does
@@ -115,6 +115,7 @@ redirects to `/inbox` automatically.
 | `API_URL` | ✅ | `http://localhost:3001` | Internal URL of the worker API |
 | `NEXT_PUBLIC_API_URL` | Yes | `/api` | Client-side base URL |
 | `NEXT_PUBLIC_WS_URL` | No | - | Browser WebSocket URL, e.g. `ws://YOUR_SERVER_IP:3002/ws` |
+| `TRUSTED_ORIGINS` | No | - | Comma-separated frontend origins allowed to perform cookie-authenticated POST/PUT/PATCH/DELETE requests, e.g. `http://YOUR_SERVER_IP:3002,http://127.0.0.1:3002` |
 | `PROXY_AUTH_TOKENS` | No | - | Legacy static proxy tokens. Compatibility only. |
 | `SERVICE_AUTH_TOKENS` | No | `[]` | Preferred expiring hashed service tokens for proxy/BFF automation |
 | `INITIAL_ADMIN_EMAILS` | No | - | Comma-separated emails that should receive the `admin` role at registration |

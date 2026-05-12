@@ -35,6 +35,7 @@ ACCOUNT_IDS=alice,bob
 API_URL=http://worker:3001
 NEXT_PUBLIC_API_URL=/api
 NEXT_PUBLIC_WS_URL=ws://YOUR_SERVER_IP:3002/ws
+TRUSTED_ORIGINS=http://YOUR_SERVER_IP:3002,http://127.0.0.1:3002
 INITIAL_ADMIN_EMAILS=admin@example.com
 USER_ACCOUNT_ACCESS={"admin@example.com":["saikanchi130"]}
 SERVICE_AUTH_TOKENS=[]
@@ -49,7 +50,7 @@ PROXY_URL=
 
 Do not use the typoed variable names `NEXT_PUBLIC_API__URL` or `NEXT_PUBLIC_WS__URL`; only `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` are read by the frontend container.
 
-Make sure the **frontend** container also receives `INITIAL_ADMIN_EMAILS` and `USER_ACCOUNT_ACCESS`, because the Next.js `/api/*` routes enforce account ownership server-side.
+Make sure the **frontend** container also receives `TRUSTED_ORIGINS`, `INITIAL_ADMIN_EMAILS`, and `USER_ACCOUNT_ACCESS`, because the Next.js `/api/*` routes enforce account ownership server-side and validate same-origin mutations there.
 
 ### 3. Build and launch
 
@@ -70,6 +71,21 @@ Docker will:
 make status
 make logs-worker
 make logs-frontend
+
+# Verify frontend runtime env propagation (presence only)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env exec frontend sh -lc '
+for key in TRUSTED_ORIGINS USER_ACCOUNT_ACCESS INITIAL_ADMIN_EMAILS NEXT_PUBLIC_API_URL NEXT_PUBLIC_WS_URL; do
+  eval "value=\${$key:-}"
+  if [ -n "$value" ]; then
+    echo "$key=SET"
+  else
+    echo "$key=MISSING"
+  fi
+done
+'
+
+# Optional raw value inspection
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env exec frontend printenv | grep -E "TRUSTED_ORIGINS|USER_ACCOUNT_ACCESS|INITIAL_ADMIN_EMAILS|NEXT_PUBLIC_API_URL|NEXT_PUBLIC_WS_URL"
 ```
 
 Send a test health request:
