@@ -1,7 +1,7 @@
 ﻿'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, WifiOff } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import type { Account, Conversation, Message } from '@/types/dashboard';
 import { ApiError, getAccounts, getConversationThread, getUnifiedInbox, syncMessages } from '@/lib/api-client';
 import { ConversationList } from '@/components/inbox/ConversationList';
@@ -9,8 +9,6 @@ import { MessageThread } from '@/components/inbox/MessageThread';
 import { ConversationListSkeleton, MessageThreadSkeleton } from '@/components/ui/SkeletonLoader';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { wsClient } from '@/lib/websocket-client';
-import { ExportButton } from '@/components/ui/ExportButton';
-import { DASHBOARD_ROUTE_META } from '@/lib/dashboard-route-meta';
 import { getAccountLabel } from '@/lib/account-label';
 import toast from 'react-hot-toast';
 
@@ -320,7 +318,6 @@ function logMessageArray(label: string, messages: Message[]): void {
 
 export default function InboxPage() {
   const RECONNECTING_NOTICE_DELAY_MS = 1800;
-  const routeMeta = DASHBOARD_ROUTE_META.inbox;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selected, setSelected] = useState<Conversation | null>(null);
@@ -331,29 +328,31 @@ export default function InboxPage() {
   const [visibleLimit, setVisibleLimit] = useState(25);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isReloadingInbox, setIsReloadingInbox] = useState(false);
+  const [isThreadLoading, setIsThreadLoading] = useState(false);
   const [reloadCooldownUntil, setReloadCooldownUntil] = useState(0);
   const [cooldownClock, setCooldownClock] = useState(Date.now());
   const [wsStatus, setWsStatus] = useState<'connected' | 'disconnected' | 'reconnecting'>(
     wsClient.isConnected ? 'connected' : 'disconnected'
   );
-  const [showConnectionBanner, setShowConnectionBanner] = useState(() => !wsClient.isConnected);
+  const [showConnectionStatus, setShowConnectionStatus] = useState(() => !wsClient.isConnected);
   const selectedRef = useRef<Conversation | null>(null);
   const visibleLimitRef = useRef(25);
   const syncInFlightRef = useRef(false);
+  const threadRequestTokenRef = useRef(0);
 
   useEffect(() => {
     if (wsStatus === 'connected') {
-      setShowConnectionBanner(false);
+      setShowConnectionStatus(false);
       return;
     }
 
     if (wsStatus === 'disconnected') {
-      setShowConnectionBanner(true);
+      setShowConnectionStatus(true);
       return;
     }
 
     const timer = window.setTimeout(() => {
-      setShowConnectionBanner(true);
+      setShowConnectionStatus(true);
     }, RECONNECTING_NOTICE_DELAY_MS);
 
     return () => window.clearTimeout(timer);
@@ -511,10 +510,22 @@ export default function InboxPage() {
   }, [loadInbox]);
 
   const handleSelect = useCallback(async (conversation: Conversation) => {
-    const initialConversation = mergeConversationForDisplay(selectedRef.current, {
-      ...conversation,
-      messages: getFallbackMessages(conversation),
-    });
+    const currentSelected = selectedRef.current;
+    const isConversationChange = !areSameConversation(currentSelected, conversation);
+    const requestToken = threadRequestTokenRef.current + 1;
+    threadRequestTokenRef.current = requestToken;
+
+    const initialConversation = isConversationChange
+      ? { ...conversation, messages: [] }
+      : mergeConversationForDisplay(currentSelected, {
+          ...conversation,
+          messages: getFallbackMessages(conversation),
+        });
+
+    if (isConversationChange) {
+      setIsThreadLoading(true);
+    }
+
     logMessageArray(`handleSelect before thread fetch ${conversation.conversationId}`, initialConversation.messages);
     setSelected(initialConversation);
 
@@ -524,6 +535,9 @@ export default function InboxPage() {
         limit: 250,
       });
       const hasThreadMessages = Array.isArray(thread.messages) && thread.messages.length > 0;
+      if (threadRequestTokenRef.current !== requestToken) {
+        return;
+      }
       setSelected((currentSelected) => {
         const baselineConversation = areSameConversation(currentSelected, conversation)
           ? currentSelected
@@ -536,6 +550,9 @@ export default function InboxPage() {
         return mergedConversation;
       });
     } catch {
+      if (threadRequestTokenRef.current !== requestToken) {
+        return;
+      }
       setSelected((currentSelected) => {
         const baselineConversation = areSameConversation(currentSelected, conversation)
           ? currentSelected
@@ -547,6 +564,10 @@ export default function InboxPage() {
         logMessageArray(`handleSelect fallback ${conversation.conversationId}`, mergedConversation.messages);
         return mergedConversation;
       });
+    } finally {
+      if (threadRequestTokenRef.current === requestToken) {
+        setIsThreadLoading(false);
+      }
     }
   }, [getFallbackMessages, mergeConversationForDisplay]);
 
@@ -624,14 +645,18 @@ export default function InboxPage() {
   }, [accountLabelById, conversations, filter, search]);
 
   const isLive = wsStatus === 'connected';
+  const connectionUiStatus: 'connected' | 'disconnected' | 'reconnecting' = !isLive && !showConnectionStatus
+    ? 'connected'
+    : wsStatus;
+  const showReconnectAction = connectionUiStatus === 'disconnected';
   const canLoadMore = conversations.length >= visibleLimit;
   const reloadCooldownRemainingSec = Math.max(
     0,
     Math.ceil((reloadCooldownUntil - cooldownClock) / 1000)
   );
-  const liveTooltip = wsStatus === 'connected'
+  const liveTooltip = connectionUiStatus === 'connected'
     ? 'Live means real-time inbox updates are connected. New messages should appear automatically.'
-    : wsStatus === 'reconnecting'
+    : connectionUiStatus === 'reconnecting'
       ? 'The real-time connection is retrying. You can reconnect or reload the inbox manually.'
       : 'Offline means live updates are paused. Reconnect or reload the inbox to refresh conversations.';
 
@@ -662,6 +687,12 @@ export default function InboxPage() {
     wsClient.reconnect();
     await loadInbox();
   }, [loadInbox]);
+
+  const handleBackToList = useCallback(() => {
+    threadRequestTokenRef.current += 1;
+    setIsThreadLoading(false);
+    setSelected(null);
+  }, []);
 
   const handleReloadInbox = useCallback(async () => {
     if (reloadCooldownUntil > Date.now()) {
@@ -743,7 +774,7 @@ export default function InboxPage() {
       <div className="inbox-page-shell flex h-full min-h-0 flex-1 overflow-hidden px-6 pb-6 pt-4 max-[900px]:block max-[900px]:px-0 max-[900px]:pb-0">
         <div className="inbox-main-card flex h-full min-h-0 w-full overflow-hidden rounded-[28px] border max-[900px]:rounded-none max-[900px]:border-x-0 max-[900px]:border-b-0">
           <div
-            className="min-w-[320px] max-w-[420px] flex-[0_0_34%] border-r max-[1200px]:min-w-[300px] max-[900px]:w-full max-[900px]:min-w-0 max-[900px]:max-w-none max-[900px]:border-r-0"
+            className="min-w-[340px] max-w-[360px] flex-[0_0_340px] border-r max-[1200px]:min-w-[320px] max-[1200px]:flex-[0_0_320px] max-[900px]:w-full max-[900px]:min-w-0 max-[900px]:max-w-none max-[900px]:border-r-0"
             style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-elevated, var(--bg-panel))' }}
           >
             <ConversationListSkeleton count={8} />
@@ -767,14 +798,11 @@ export default function InboxPage() {
       <div className="shrink-0 border-b px-6 py-4 max-[900px]:px-4" style={{ borderColor: 'var(--border)' }}>
         <div className="flex items-start justify-between gap-4 max-[700px]:flex-col max-[700px]:items-stretch">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-              Conversations workspace
-            </p>
-            <h1 className="mt-2 text-xl font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
-              {routeMeta.pageTitle}
+            <h1 className="text-[1.5rem] font-semibold tracking-tight" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
+              Inbox
             </h1>
             <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-              {routeMeta.description}
+              Review conversations, reply clearly, and stay in sync without leaving the thread view.
             </p>
           </div>
 
@@ -784,83 +812,52 @@ export default function InboxPage() {
               title={liveTooltip}
               role="status"
               aria-live="polite"
-              aria-label={`Live updates status: ${isLive ? 'connected' : wsStatus === 'reconnecting' ? 'reconnecting' : 'offline'}`}
+              aria-label={`Live updates status: ${connectionUiStatus === 'connected' ? 'connected' : connectionUiStatus === 'reconnecting' ? 'reconnecting' : 'offline'}`}
               style={{
-                backgroundColor: isLive ? 'rgba(16, 185, 129, 0.12)' : wsStatus === 'reconnecting' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(148, 163, 184, 0.12)',
-                color: isLive ? '#047857' : wsStatus === 'reconnecting' ? '#b45309' : 'var(--text-muted-new, var(--text-muted))',
+                backgroundColor: connectionUiStatus === 'connected' ? 'rgba(16, 185, 129, 0.12)' : connectionUiStatus === 'reconnecting' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(148, 163, 184, 0.12)',
+                color: connectionUiStatus === 'connected' ? '#047857' : connectionUiStatus === 'reconnecting' ? '#b45309' : 'var(--text-muted-new, var(--text-muted))',
               }}
             >
               <div
                 className="h-2.5 w-2.5 rounded-full"
                 style={{
-                  backgroundColor: isLive ? '#10b981' : wsStatus === 'reconnecting' ? '#f59e0b' : '#94a3b8',
-                  boxShadow: isLive ? '0 0 10px rgba(16, 185, 129, 0.55)' : 'none',
+                  backgroundColor: connectionUiStatus === 'connected' ? '#10b981' : connectionUiStatus === 'reconnecting' ? '#f59e0b' : '#94a3b8',
+                  boxShadow: connectionUiStatus === 'connected' ? '0 0 10px rgba(16, 185, 129, 0.55)' : 'none',
                 }}
               />
               <span className="font-medium">
-                {isLive ? 'Live updates on' : wsStatus === 'reconnecting' ? 'Reconnecting...' : 'Live updates paused'}
+                {connectionUiStatus === 'connected' ? 'Live updates on' : connectionUiStatus === 'reconnecting' ? 'Reconnecting...' : 'Live updates paused'}
               </span>
             </div>
-
-            <ExportButton
-              type="messages"
-              accountId={filter !== 'all' ? filter : undefined}
-              label="Export inbox"
-              size="sm"
-              variant="ghost"
-            />
+            <button
+              type="button"
+              onClick={() => void handleReloadInbox()}
+              disabled={isReloadingInbox || reloadCooldownRemainingSec > 0}
+              className="button-outline inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium"
+            >
+              <RefreshCw size={14} className={isReloadingInbox ? 'animate-spin' : ''} />
+              {isReloadingInbox
+                ? 'Syncing...'
+                : reloadCooldownRemainingSec > 0
+                  ? `Retry in ${reloadCooldownRemainingSec}s`
+                  : 'Sync'}
+            </button>
+            {showReconnectAction && (
+              <button
+                type="button"
+                onClick={() => void handleReconnect()}
+                className="button-outline rounded-full px-3 py-2 text-sm font-medium"
+              >
+                Reconnect
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      {showConnectionBanner && !isLive && (
-        <div className="shrink-0 px-6 pt-3 max-[900px]:px-4">
-          <div className="inbox-status-banner flex min-h-[64px] items-center justify-between gap-4 rounded-2xl px-4 py-3 max-[700px]:flex-col max-[700px]:items-start">
-            <div className="flex items-start gap-3">
-              <WifiOff size={16} style={{ color: wsStatus === 'reconnecting' ? 'var(--inbox-banner-accent)' : 'var(--inbox-status-failed)' }} />
-              <div>
-                <p className="text-sm font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
-                  {wsStatus === 'reconnecting'
-                    ? 'Trying to restore live updates'
-                    : 'Live inbox updates are paused'}
-                </p>
-                <p className="mt-1 text-xs leading-5" style={{ color: 'var(--inbox-banner-text)' }}>
-                  {wsStatus === 'reconnecting'
-                    ? 'You can keep reading or replying while the connection settles in the background.'
-                    : 'Messages can still be reviewed and sent. Use reconnect or sync when you want the latest activity.'}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 max-[700px]:w-full max-[700px]:justify-end">
-              <button
-                type="button"
-                onClick={() => void handleReconnect()}
-                className="button-ghost rounded-full px-3 py-2 text-sm font-medium"
-              >
-                Reconnect
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleReloadInbox()}
-                disabled={isReloadingInbox || reloadCooldownRemainingSec > 0}
-                className="button-outline inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium"
-              >
-                <RefreshCw size={14} className={isReloadingInbox ? 'animate-spin' : ''} />
-                {isReloadingInbox
-                  ? 'Syncing...'
-                  : reloadCooldownRemainingSec > 0
-                    ? `Retry in ${reloadCooldownRemainingSec}s`
-                    : 'Sync inbox'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="min-h-0 flex-1 overflow-hidden px-6 pb-6 pt-4 max-[900px]:px-0 max-[900px]:pb-0">
-        <div className="inbox-main-card flex h-full min-h-0 overflow-hidden rounded-[28px] border max-[900px]:block max-[900px]:rounded-none max-[900px]:border-x-0 max-[900px]:border-b-0" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--bg-secondary, #ffffff)' }}>
-          <div className={`${selected ? 'h-full max-[900px]:hidden' : 'h-full'} min-w-[320px] max-w-[420px] flex-[0_0_34%] overflow-hidden border-r max-[1200px]:min-w-[300px] max-[900px]:w-full max-[900px]:min-w-0 max-[900px]:max-w-none max-[900px]:border-r-0`} style={{ borderColor: 'var(--border)' }}>
+        <div className="inbox-main-card flex h-full min-h-0 overflow-hidden rounded-[28px] border max-[900px]:block max-[900px]:rounded-none max-[900px]:border-x-0 max-[900px]:border-b-0" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--surface-elevated, #ffffff)' }}>
+          <div className={`${selected ? 'h-full max-[900px]:hidden' : 'h-full'} min-w-[340px] max-w-[360px] flex-[0_0_340px] overflow-hidden border-r max-[1200px]:min-w-[320px] max-[1200px]:flex-[0_0_320px] max-[900px]:w-full max-[900px]:min-w-0 max-[900px]:max-w-none max-[900px]:border-r-0`} style={{ borderColor: 'var(--border)' }}>
             <ConversationList
               conversations={filteredConversations}
               accounts={accounts}
@@ -878,10 +875,12 @@ export default function InboxPage() {
           </div>
           <div className={`flex min-h-0 min-w-0 flex-1 overflow-hidden ${selected ? 'max-[900px]:flex' : 'max-[900px]:hidden'}`}>
             <MessageThread
+              key={selected?.conversationId ?? 'empty-thread'}
               conversation={selected}
+              isLoadingConversation={isThreadLoading}
               accountLabelById={accountLabelById}
               onSyncAfterSend={handleReloadInbox}
-              onBack={selected ? () => setSelected(null) : undefined}
+              onBack={selected ? handleBackToList : undefined}
               onMessageSent={(updatedConversation) => {
                 setConversations((currentConversations) =>
                   currentConversations.map((conversation) => {

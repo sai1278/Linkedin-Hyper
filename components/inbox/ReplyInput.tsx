@@ -120,9 +120,6 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
 
       <div className="flex items-end gap-3 px-6 py-4 max-[900px]:items-stretch max-[900px]:px-4">
         <div className="flex-1">
-          <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-            Reply
-          </label>
           <textarea
             ref={textareaRef}
             value={text}
@@ -132,7 +129,7 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
             aria-label="Message composer"
             disabled={disabled || sending}
             rows={3}
-            className="inbox-composer-input w-full min-h-[104px] resize-none rounded-[24px] px-4 py-3 text-sm leading-relaxed outline-none transition-colors focus:ring-2 focus:ring-blue-500"
+            className="inbox-composer-input w-full min-h-[116px] resize-none rounded-[24px] px-4 py-3.5 text-[15px] leading-7 outline-none transition-colors focus:ring-2 focus:ring-blue-500"
             style={{
               background: 'var(--inbox-input-bg)',
               border: '1px solid var(--inbox-input-border)',
@@ -165,7 +162,7 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
           onClick={() => void handleSend()}
           disabled={sendDisabled}
           aria-label={sending ? 'Sending message' : 'Send message'}
-          className="inbox-send-button flex h-12 min-w-[132px] flex-shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold transition-colors max-[900px]:min-w-[120px]"
+          className="inbox-send-button flex h-12 min-w-[136px] flex-shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold transition-colors max-[900px]:min-w-[120px]"
           style={{
             background: sendDisabled ? 'var(--inbox-send-disabled-bg)' : 'var(--accent)',
             color: sendDisabled ? 'var(--text-muted)' : '#fff',

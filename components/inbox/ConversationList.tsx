@@ -75,17 +75,14 @@ export const ConversationList = memo(function ConversationList({
       <div className="border-b px-5 pb-4 pt-5" style={{ borderColor: 'var(--border)' }}>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-              LinkedIn Inbox
-            </p>
-            <h2 className="mt-2 text-lg font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
               Conversations
             </h2>
           </div>
           {totalUnread > 0 && <UnreadBadge count={totalUnread} color="blue" />}
         </div>
-        <p className="mt-2 text-xs leading-5" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-          {conversations.length} {conversations.length === 1 ? 'conversation' : 'conversations'} ready to review
+        <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+          {conversations.length} {conversations.length === 1 ? 'thread' : 'threads'} ready to review
         </p>
 
         <div className="inbox-sidebar-search mt-4 flex items-center gap-2 rounded-2xl px-3.5 py-3 focus-within:ring-2 focus-within:ring-blue-500">
@@ -133,12 +130,9 @@ export const ConversationList = memo(function ConversationList({
 
       <div className="flex items-center justify-between px-5 py-3" style={{ backgroundColor: 'var(--inbox-sidebar-muted-bg)' }}>
         <div>
-          <span className="text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-            Recent threads
+          <span className="text-xs font-medium" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+            Recent activity
           </span>
-          <p className="mt-1 text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-            Newest activity stays at the top
-          </p>
         </div>
         {hasFilters && (
           <span className="rounded-full px-2.5 py-1 text-[11px] font-medium" style={{ backgroundColor: 'var(--inbox-sidebar-bg)', color: 'var(--text-secondary, var(--text-muted))' }}>

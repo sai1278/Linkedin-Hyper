@@ -9,10 +9,12 @@ import { ReplyInput } from '@/components/inbox/ReplyInput';
 import { sendMessageNew } from '@/lib/api-client';
 import { formatRelativeTime, formatTimestamp } from '@/lib/time-utils';
 import { ExportButton } from '@/components/ui/ExportButton';
+import { MessageThreadSkeleton } from '@/components/ui/SkeletonLoader';
 import toast from 'react-hot-toast';
 
 interface MessageThreadProps {
   conversation: Conversation | null;
+  isLoadingConversation?: boolean;
   accountLabelById: Record<string, string>;
   onMessageSent: (updated: Conversation) => void;
   onSyncAfterSend?: () => Promise<void>;
@@ -44,6 +46,18 @@ function normalizeThreadMessageText(value: string | undefined | null): string {
   return String(value || '').trim().replace(/\s+/g, ' ');
 }
 
+function getMessageScrollSignature(message: Message | null | undefined): string {
+  if (!message) {
+    return '';
+  }
+
+  return [
+    message.sentByMe ? 'me' : normalizeThreadMessageText(message.senderName).toLowerCase(),
+    normalizeThreadMessageText(message.text).toLowerCase(),
+    String(message.sentAt || 0),
+  ].join(':');
+}
+
 function getRenderableMessageKey(message: Message, accountId: string, conversationId: string): string {
   const stableId = String(message.id || '').trim();
   if (stableId) {
@@ -59,18 +73,23 @@ function getRenderableMessageKey(message: Message, accountId: string, conversati
   ].join(':');
 }
 
-export function MessageThread({ conversation, accountLabelById, onMessageSent, onSyncAfterSend, onBack }: MessageThreadProps) {
+export function MessageThread({
+  conversation,
+  isLoadingConversation = false,
+  accountLabelById,
+  onMessageSent,
+  onSyncAfterSend,
+  onBack,
+}: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const scrollStateRef = useRef<{ conversationId: string; lastMessageKey: string; messageCount: number } | null>(null);
+  const scrollStateRef = useRef<{ conversationId: string; lastMessageSignature: string; messageCount: number } | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
   const conversationId = conversation?.conversationId ?? '';
   const messageCount = conversation?.messages.length ?? 0;
   const lastMessage = conversation?.messages[messageCount - 1] ?? null;
-  const lastMessageKey = conversation && lastMessage
-    ? getRenderableMessageKey(lastMessage, conversation.accountId, conversationId)
-    : '';
+  const lastMessageSignature = getMessageScrollSignature(lastMessage);
 
   useEffect(() => {
     if (!conversationId) {
@@ -80,19 +99,16 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
 
     const nextScrollState = {
       conversationId,
-      lastMessageKey,
+      lastMessageSignature,
       messageCount,
     };
     const previousScrollState = scrollStateRef.current;
     scrollStateRef.current = nextScrollState;
 
     const conversationChanged = previousScrollState?.conversationId !== nextScrollState.conversationId;
-    const messageChanged = !conversationChanged && (
-      previousScrollState?.messageCount !== nextScrollState.messageCount ||
-      previousScrollState?.lastMessageKey !== nextScrollState.lastMessageKey
-    );
+    const appendedMessage = !conversationChanged && nextScrollState.messageCount > (previousScrollState?.messageCount ?? 0);
 
-    if (!conversationChanged && !messageChanged) {
+    if (!conversationChanged && !appendedMessage) {
       return;
     }
 
@@ -104,7 +120,7 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
     requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
     });
-  }, [autoScroll, conversationId, lastMessageKey, messageCount]);
+  }, [autoScroll, conversationId, lastMessageSignature, messageCount]);
 
   const handleScroll = () => {
     if (!messagesContainerRef.current) return;
@@ -253,15 +269,15 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
                 <ArrowLeft size={16} />
               </button>
             )}
-            <Avatar name={participant.name} size="md" src={participant.avatarUrl} />
+            <Avatar name={participant.name} size="lg" src={participant.avatarUrl} />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-base font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
+                <h2 className="truncate text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
                   {participant.name}
                 </h2>
                 <AccountBadge name={accountLabel} />
               </div>
-              <p className="mt-1 text-xs leading-5" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+              <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
                 {messages.length} {messages.length === 1 ? 'message' : 'messages'} in this thread
               </p>
             </div>
@@ -285,23 +301,28 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
         onScroll={handleScroll}
         className="inbox-thread-scroll min-h-0 flex-1 overflow-y-auto px-8 py-6 max-[900px]:px-4"
       >
-        {groupedMessages.map((group) => (
-          <MessageGroup
-            key={getMessageGroupKey(group)}
-            messages={group.messages}
-            isSentByMe={group.isSentByMe}
-            senderName={group.senderName}
-            accountLabel={accountLabel}
-            accountId={accountId}
-            conversationId={conversation.conversationId}
-            participantAvatarUrl={participant.avatarUrl}
-            onRetry={handleSend}
-          />
-        ))}
+        {isLoadingConversation ? (
+          <div className="max-w-3xl">
+            <MessageThreadSkeleton />
+          </div>
+        ) : (
+          groupedMessages.map((group) => (
+            <MessageGroup
+              key={getMessageGroupKey(group)}
+              messages={group.messages}
+              isSentByMe={group.isSentByMe}
+              senderName={group.senderName}
+              accountId={accountId}
+              conversationId={conversation.conversationId}
+              participantAvatarUrl={participant.avatarUrl}
+              onRetry={handleSend}
+            />
+          ))
+        )}
         <div ref={bottomRef} />
       </div>
 
-      {!autoScroll && (
+      {!isLoadingConversation && !autoScroll && (
         <button
           type="button"
           onClick={() => {
@@ -315,7 +336,7 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
         </button>
       )}
 
-      <ReplyInput onSend={handleSend} />
+      <ReplyInput onSend={handleSend} disabled={isLoadingConversation} />
     </div>
   );
 }
@@ -367,7 +388,6 @@ function MessageGroup({
   messages,
   isSentByMe,
   senderName,
-  accountLabel,
   accountId,
   conversationId,
   participantAvatarUrl,
@@ -376,29 +396,24 @@ function MessageGroup({
   messages: Message[];
   isSentByMe: boolean;
   senderName: string;
-  accountLabel: string;
   accountId: string;
   conversationId: string;
   participantAvatarUrl?: string | null;
   onRetry: (text: string, messageId?: string) => Promise<void>;
 }) {
-  const displayName = isSentByMe ? accountLabel : senderName;
-
   return (
-    <div className={`mb-7 flex gap-3 ${isSentByMe ? 'flex-row-reverse' : 'flex-row'}`}>
-      <div className="flex-shrink-0">
-        <Avatar
-          name={displayName}
-          size="sm"
-          src={isSentByMe ? null : participantAvatarUrl}
-        />
-      </div>
+    <div className={`mb-8 flex gap-3 ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
+      {!isSentByMe && (
+        <div className="flex-shrink-0 pt-1">
+          <Avatar
+            name={senderName}
+            size="sm"
+            src={participantAvatarUrl}
+          />
+        </div>
+      )}
 
-      <div className={`flex max-w-[70%] flex-col gap-2.5 max-[1200px]:max-w-[80%] max-[900px]:max-w-[88%] ${isSentByMe ? 'items-end' : 'items-start'}`}>
-        <span className="px-2 text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-          {displayName}
-        </span>
-
+      <div className={`flex max-w-[68%] flex-col gap-2.5 max-[1200px]:max-w-[80%] max-[900px]:max-w-[88%] ${isSentByMe ? 'items-end' : 'items-start'}`}>
         {messages.map((message, index) => (
           <MessageBubble
             key={getRenderableMessageKey(message, accountId, conversationId)}
@@ -437,7 +452,7 @@ function MessageBubble({
 
   return (
     <div className="w-full">
-      <div className={`message-bubble ${bubbleStateClass} inline-block max-w-full px-4 py-3.5 text-sm leading-relaxed ${
+      <div className={`message-bubble ${bubbleStateClass} inline-block max-w-full px-4 py-3.5 text-[15px] leading-7 ${
         isSentByMe ? 'rounded-3xl rounded-br-md' : 'rounded-3xl rounded-bl-md'
       }`}>
         <span className="block whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
@@ -446,7 +461,7 @@ function MessageBubble({
       </div>
 
       {isLast && (
-        <div className={`message-meta mt-2 flex flex-wrap items-center gap-1.5 px-2 text-[11px] ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
+        <div className={`message-meta mt-2 flex flex-wrap items-center gap-1.5 px-2 text-xs font-medium ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
           <span>
             {formatRelativeTime(message.sentAt)}
           </span>
