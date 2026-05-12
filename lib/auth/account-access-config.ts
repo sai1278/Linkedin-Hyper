@@ -66,9 +66,9 @@ export function getAccountAccessStartupCheck() {
     status: configured ? 'pass' : 'warn',
     accountAccessConfigPresent: configured,
     initialAdminEmailsConfigured: adminEmails.size > 0,
-    initialAdminEmailsCount: adminEmails.size,
+    initialAdminEmailCount: adminEmails.size,
     userAccountAccessConfigured: accessMapping.size > 0,
-    userAccountAccessMappingCount: accessMapping.size,
+    userAccountAccessEntryCount: accessMapping.size,
     detail: configured
       ? `Configured admin emails: ${adminEmails.size}; user account mappings: ${accessMapping.size}`
       : 'Neither INITIAL_ADMIN_EMAILS nor USER_ACCOUNT_ACCESS is configured in the frontend runtime environment.',

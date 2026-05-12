@@ -60,9 +60,9 @@ export async function GET(req: NextRequest) {
         accountAccess: {
           accountAccessConfigPresent: accountAccessCheck.accountAccessConfigPresent,
           initialAdminEmailsConfigured: accountAccessCheck.initialAdminEmailsConfigured,
-          initialAdminEmailsCount: accountAccessCheck.initialAdminEmailsCount,
+          initialAdminEmailCount: accountAccessCheck.initialAdminEmailCount,
           userAccountAccessConfigured: accountAccessCheck.userAccountAccessConfigured,
-          userAccountAccessMappingCount: accountAccessCheck.userAccountAccessMappingCount,
+          userAccountAccessEntryCount: accountAccessCheck.userAccountAccessEntryCount,
           mappedAccountIds: assignedAccountIds,
           effectiveRole,
         },

@@ -77,9 +77,9 @@ describe('/api/auth/verify', () => {
       status: 'pass',
       accountAccessConfigPresent: true,
       initialAdminEmailsConfigured: true,
-      initialAdminEmailsCount: 1,
+      initialAdminEmailCount: 1,
       userAccountAccessConfigured: true,
-      userAccountAccessMappingCount: 1,
+      userAccountAccessEntryCount: 1,
       detail: 'Configured admin emails: 1; user account mappings: 1',
     });
     mocks.resolveAllowedAccountIdsForUser.mockResolvedValue(new Set(['saikanchi130']));
@@ -124,9 +124,9 @@ describe('/api/auth/verify', () => {
       accountAccess: {
         accountAccessConfigPresent: true,
         initialAdminEmailsConfigured: true,
-        initialAdminEmailsCount: 1,
+        initialAdminEmailCount: 1,
         userAccountAccessConfigured: true,
-        userAccountAccessMappingCount: 1,
+        userAccountAccessEntryCount: 1,
         mappedAccountIds: ['saikanchi130'],
         effectiveRole: 'user',
       },

@@ -126,9 +126,9 @@ export interface StartupValidationReport {
     detail: string;
     accountAccessConfigPresent?: boolean;
     initialAdminEmailsConfigured?: boolean;
-    initialAdminEmailsCount?: number;
+    initialAdminEmailCount?: number;
     userAccountAccessConfigured?: boolean;
-    userAccountAccessMappingCount?: number;
+    userAccountAccessEntryCount?: number;
   }>;
   healthSummary: {
     status: 'healthy' | 'warning' | 'critical';

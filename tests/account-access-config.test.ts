@@ -16,9 +16,9 @@ describe('account access configuration helper', () => {
       status: 'warn',
       accountAccessConfigPresent: false,
       initialAdminEmailsConfigured: false,
-      initialAdminEmailsCount: 0,
+      initialAdminEmailCount: 0,
       userAccountAccessConfigured: false,
-      userAccountAccessMappingCount: 0,
+      userAccountAccessEntryCount: 0,
       detail: 'Neither INITIAL_ADMIN_EMAILS nor USER_ACCOUNT_ACCESS is configured in the frontend runtime environment.',
     });
   });
