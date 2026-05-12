@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { BookmarkPlus, Send, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -82,17 +82,17 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
   }
 
   const charactersRemaining = MAX_MESSAGE_LENGTH - text.length;
+  const sendDisabled = !text.trim() || sending || disabled;
 
   return (
     <div className="inbox-thread-composer shrink-0">
       {templates.length > 0 && (
-        <div className="flex flex-wrap gap-2 border-b px-6 pt-4 pb-3" style={{ borderColor: 'var(--inbox-thread-divider)' }}>
+        <div className="flex flex-wrap gap-2 border-b px-6 pb-3 pt-4 max-[900px]:px-4" style={{ borderColor: 'var(--inbox-thread-divider)' }}>
           {templates.map((template) => (
             <div
               key={template}
-              className="flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs"
+              className="inbox-template-chip flex items-center gap-1 rounded-full px-3 py-1.5 text-xs"
               style={{
-                borderColor: 'var(--border)',
                 backgroundColor: 'var(--inbox-template-bg)',
                 color: 'var(--text-primary-new, var(--text-primary))',
               }}
@@ -101,6 +101,7 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
                 type="button"
                 onClick={() => setText(template)}
                 className="button-ghost rounded-full px-1 py-0.5 text-left"
+                aria-label="Use saved reply template"
               >
                 {template.length > 44 ? `${template.slice(0, 44)}...` : template}
               </button>
@@ -117,18 +118,21 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
         </div>
       )}
 
-      <div className="flex items-end gap-3 px-6 py-4">
+      <div className="flex items-end gap-3 px-6 py-4 max-[900px]:items-stretch max-[900px]:px-4">
         <div className="flex-1">
+          <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+            Reply
+          </label>
           <textarea
             ref={textareaRef}
             value={text}
             onChange={(e) => setText(e.target.value.slice(0, MAX_MESSAGE_LENGTH))}
             onKeyDown={handleKeyDown}
-            placeholder="Write a message... (Enter to send, Shift+Enter for newline)"
+            placeholder="Write a message... Press Enter to send or Shift+Enter for a new line."
             aria-label="Message composer"
             disabled={disabled || sending}
-            rows={2}
-            className="w-full min-h-[88px] resize-none rounded-2xl px-4 py-3 text-sm leading-relaxed outline-none transition-colors focus:ring-2 focus:ring-blue-500"
+            rows={3}
+            className="inbox-composer-input w-full min-h-[104px] resize-none rounded-[24px] px-4 py-3 text-sm leading-relaxed outline-none transition-colors focus:ring-2 focus:ring-blue-500"
             style={{
               background: 'var(--inbox-input-bg)',
               border: '1px solid var(--inbox-input-border)',
@@ -136,12 +140,12 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
               caretColor: 'var(--accent)',
             }}
           />
-          <div className="mt-2 flex items-center justify-between gap-3">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <button
               type="button"
               onClick={handleSaveTemplate}
               disabled={!text.trim()}
-              className="button-ghost inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-medium"
+              className="button-ghost inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium"
             >
               <BookmarkPlus size={14} />
               Save as template
@@ -159,20 +163,22 @@ export function ReplyInput({ onSend, disabled = false }: ReplyInputProps) {
         <button
           type="button"
           onClick={() => void handleSend()}
-          disabled={!text.trim() || sending || disabled}
+          disabled={sendDisabled}
           aria-label={sending ? 'Sending message' : 'Send message'}
-          className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl transition-colors"
+          className="inbox-send-button flex h-12 min-w-[132px] flex-shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold transition-colors max-[900px]:min-w-[120px]"
           style={{
-            background: text.trim() && !sending ? 'var(--accent)' : 'var(--inbox-send-disabled-bg)',
-            color: text.trim() && !sending ? '#fff' : 'var(--text-muted)',
+            background: sendDisabled ? 'var(--inbox-send-disabled-bg)' : 'var(--accent)',
+            color: sendDisabled ? 'var(--text-muted)' : '#fff',
             border: '1px solid',
-            borderColor: text.trim() && !sending ? 'var(--accent)' : 'var(--inbox-input-border)',
-            cursor: text.trim() && !sending ? 'pointer' : 'not-allowed',
+            borderColor: sendDisabled ? 'var(--inbox-input-border)' : 'var(--accent)',
+            cursor: sendDisabled ? 'not-allowed' : 'pointer',
           }}
         >
           <Send size={16} />
+          <span>{sending ? 'Sending...' : 'Send'}</span>
         </button>
       </div>
     </div>
   );
 }
+

@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { memo, useRef } from 'react';
 import { Search } from 'lucide-react';
@@ -71,35 +71,31 @@ export const ConversationList = memo(function ConversationList({
   };
 
   return (
-    <div
-      className="flex h-full min-w-0 flex-1 flex-col"
-      style={{
-        borderRight: '1px solid var(--border)',
-        backgroundColor: 'var(--bg-secondary, var(--bg-panel))',
-      }}
-    >
-      <div className="border-b px-4 pb-4 pt-5" style={{ borderColor: 'var(--border)' }}>
-        <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
-          Inbox
-        </h2>
-        <p className="mt-1 text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-          {conversations.length} {conversations.length === 1 ? 'conversation' : 'conversations'}
+    <div className="inbox-sidebar flex h-full min-w-0 flex-1 flex-col" style={{ borderRight: '1px solid var(--border)' }}>
+      <div className="border-b px-5 pb-4 pt-5" style={{ borderColor: 'var(--border)' }}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+              LinkedIn Inbox
+            </p>
+            <h2 className="mt-2 text-lg font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
+              Conversations
+            </h2>
+          </div>
+          {totalUnread > 0 && <UnreadBadge count={totalUnread} color="blue" />}
+        </div>
+        <p className="mt-2 text-xs leading-5" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+          {conversations.length} {conversations.length === 1 ? 'conversation' : 'conversations'} ready to review
         </p>
 
-        <div
-          className="mt-3 flex items-center gap-2 rounded-xl px-3 py-2 focus-within:ring-2 focus-within:ring-blue-500"
-          style={{
-            backgroundColor: 'var(--bg-primary, var(--color-gray-50))',
-            border: '1px solid var(--border)',
-          }}
-        >
+        <div className="inbox-sidebar-search mt-4 flex items-center gap-2 rounded-2xl px-3.5 py-3 focus-within:ring-2 focus-within:ring-blue-500">
           <Search size={14} style={{ color: 'var(--text-muted-new, var(--text-muted))' }} />
           <input
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
-            placeholder="Search people or message text"
+            placeholder="Search people, account, or message text"
             aria-label="Search conversations"
-            className="w-full bg-transparent text-sm outline-none"
+            className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400"
             style={{ color: 'var(--text-primary-new, var(--text-primary))' }}
           />
         </div>
@@ -114,16 +110,17 @@ export const ConversationList = memo(function ConversationList({
                 type="button"
                 key={accountId}
                 onClick={() => onFilterChange(accountId)}
-                className="rounded-lg px-3 py-1.5 text-xs font-medium transition-all"
+                className="rounded-full px-3.5 py-2 text-xs font-medium transition-all"
                 style={{
                   backgroundColor: isActive
-                    ? 'var(--color-primary-500, var(--accent))'
-                    : 'var(--color-gray-100, var(--bg-card))',
+                    ? 'var(--color-primary-600, var(--accent))'
+                    : 'var(--inbox-sidebar-muted-bg)',
                   color: isActive ? '#ffffff' : 'var(--text-secondary, var(--text-muted))',
                   border: '1px solid',
                   borderColor: isActive
-                    ? 'var(--color-primary-600, var(--accent))'
-                    : 'var(--border)',
+                    ? 'var(--color-primary-700, var(--accent))'
+                    : 'rgba(148, 163, 184, 0.28)',
+                  boxShadow: isActive ? '0 12px 24px -18px rgba(37, 99, 235, 0.85)' : 'none',
                   cursor: 'pointer',
                 }}
               >
@@ -134,19 +131,28 @@ export const ConversationList = memo(function ConversationList({
         </div>
       )}
 
-      <div className="flex items-center justify-between bg-opacity-50 px-4 py-3" style={{ backgroundColor: 'var(--bg-primary, transparent)' }}>
-        <span className="text-xs font-semibold" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-          Recent
-        </span>
-        {totalUnread > 0 && <UnreadBadge count={totalUnread} />}
+      <div className="flex items-center justify-between px-5 py-3" style={{ backgroundColor: 'var(--inbox-sidebar-muted-bg)' }}>
+        <div>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+            Recent threads
+          </span>
+          <p className="mt-1 text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+            Newest activity stays at the top
+          </p>
+        </div>
+        {hasFilters && (
+          <span className="rounded-full px-2.5 py-1 text-[11px] font-medium" style={{ backgroundColor: 'var(--inbox-sidebar-bg)', color: 'var(--text-secondary, var(--text-muted))' }}>
+            Filtered
+          </span>
+        )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="inbox-sidebar-scroll min-h-0 flex-1 overflow-y-auto pb-4">
         {conversations.length === 0 ? (
-          <div className="flex h-64 flex-col items-center justify-center px-6 text-center">
+          <div className="flex h-64 flex-col items-center justify-center px-8 text-center">
             <div
               className="mb-4 flex h-16 w-16 items-center justify-center rounded-full"
-              style={{ backgroundColor: 'var(--color-gray-100)' }}
+              style={{ backgroundColor: 'var(--inbox-sidebar-muted-bg)' }}
             >
               <svg
                 className="h-8 w-8"
@@ -159,9 +165,9 @@ export const ConversationList = memo(function ConversationList({
               </svg>
             </div>
             <p className="mb-1 text-sm font-medium" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
-              {hasFilters ? 'No matching conversations' : 'No recent messages'}
+              {hasFilters ? 'No matching conversations' : 'No recent messages yet'}
             </p>
-            <p className="text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+            <p className="text-xs leading-5" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
               {hasFilters
                 ? 'Try a different account filter, name, or search term.'
                 : 'Messages from the last sync window will appear here.'}
@@ -195,13 +201,7 @@ export const ConversationList = memo(function ConversationList({
                   aria-pressed={isSelected}
                   data-selected={isSelected ? 'true' : 'false'}
                   aria-label={`Open conversation with ${conversation.participant.name}`}
-                  className="interactive-row flex w-full items-start gap-3 px-4 py-3 text-left"
-                  style={{
-                    borderBottom: '1px solid var(--border)',
-                    borderLeft: isSelected
-                      ? '3px solid var(--color-primary-500, var(--accent))'
-                      : '3px solid transparent',
-                  }}
+                  className="conversation-row flex w-[calc(100%-1.5rem)] items-start gap-3 px-4 py-4 text-left"
                 >
                   <div className="relative flex-shrink-0">
                     <Avatar
@@ -221,34 +221,32 @@ export const ConversationList = memo(function ConversationList({
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <div className="mb-1 flex items-center justify-between gap-2">
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
                       <span
                         className={`truncate text-sm ${hasUnread ? 'font-semibold' : 'font-medium'}`}
                         style={{ color: 'var(--text-primary-new, var(--text-primary))' }}
                       >
                         {conversation.participant.name}
                       </span>
-                      <span className="flex-shrink-0 text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+                      <span className="flex-shrink-0 text-[11px]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
                         {timeStr}
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between gap-2">
-                      <p
-                        className={`truncate text-xs ${hasUnread ? 'font-medium' : ''}`}
-                        style={{
-                          color: hasUnread
-                            ? 'var(--text-secondary, var(--text-primary))'
-                            : 'var(--text-muted-new, var(--text-muted))',
-                        }}
-                      >
-                        {lastMessageLabel}
-                      </p>
-                      {hasUnread && <UnreadBadge count={conversation.unreadCount} />}
-                    </div>
+                    <p
+                      className={`truncate text-xs leading-5 ${hasUnread ? 'font-medium' : ''}`}
+                      style={{
+                        color: hasUnread
+                          ? 'var(--text-secondary, var(--text-primary))'
+                          : 'var(--text-muted-new, var(--text-muted))',
+                      }}
+                    >
+                      {lastMessageLabel}
+                    </p>
 
-                    <div className="mt-1">
+                    <div className="mt-2 flex items-center justify-between gap-2">
                       <AccountBadge name={accountLabels[conversation.accountId] ?? conversation.accountId} />
+                      {hasUnread && <UnreadBadge count={conversation.unreadCount} />}
                     </div>
                   </div>
                 </button>
@@ -256,12 +254,12 @@ export const ConversationList = memo(function ConversationList({
             })}
 
             {canLoadMore && (
-              <div className="border-t px-4 py-4" style={{ borderColor: 'var(--border)' }}>
+              <div className="px-4 pt-2">
                 <button
                   type="button"
                   onClick={onLoadMore}
                   disabled={isLoadingMore}
-                  className="button-outline w-full rounded-xl px-4 py-2.5 text-sm font-medium"
+                  className="button-outline w-full rounded-2xl px-4 py-3 text-sm font-medium"
                   style={{
                     cursor: isLoadingMore ? 'wait' : 'pointer',
                     opacity: isLoadingMore ? 0.75 : 1,
@@ -277,3 +275,4 @@ export const ConversationList = memo(function ConversationList({
     </div>
   );
 });
+

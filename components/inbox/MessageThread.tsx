@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useRef, useState } from 'react';
 import type { Conversation, Message } from '@/types/dashboard';
@@ -116,30 +116,27 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
 
   if (!conversation) {
     return (
-      <div
-        className="flex flex-1 items-center justify-center"
-        style={{ backgroundColor: 'var(--inbox-thread-panel)' }}
-      >
-        <div className="px-6 text-center">
+      <div className="flex flex-1 items-center justify-center px-8 text-center" style={{ backgroundColor: 'var(--inbox-thread-panel)' }}>
+        <div className="max-w-md">
           <div
-            className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-full"
-            style={{ backgroundColor: 'var(--color-gray-100)' }}
+            className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-[28px]"
+            style={{ backgroundColor: 'var(--inbox-thread-bg)' }}
           >
             <svg
               className="h-10 w-10"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
-              style={{ color: 'var(--color-gray-400)' }}
+              style={{ color: 'var(--text-muted-new, var(--text-muted))' }}
             >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
             </svg>
           </div>
-          <p className="mb-2 text-lg font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
+          <p className="text-lg font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
             Select a conversation
           </p>
-          <p className="text-sm" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-            Choose from the left panel to start messaging
+          <p className="mt-2 text-sm leading-6" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+            Choose a thread from the left to review synced LinkedIn messages, reply, or export the chat.
           </p>
         </div>
       </div>
@@ -243,37 +240,43 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
 
   return (
     <div className="inbox-thread-shell relative flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="inbox-thread-header shrink-0 flex items-center justify-between border-b px-8 py-5 max-[900px]:px-4">
-        <div className="flex items-center gap-3">
-          {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              aria-label="Back to conversation list"
-              className="button-outline hidden h-9 w-9 items-center justify-center rounded-full max-[900px]:inline-flex"
-            >
-              <ArrowLeft size={16} />
-            </button>
-          )}
-          <Avatar name={participant.name} size="md" src={participant.avatarUrl} />
-          <div>
-            <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
-              {participant.name}
-            </h2>
-            <p className="mt-0.5 text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-              {messages.length} {messages.length === 1 ? 'message' : 'messages'}
-            </p>
+      <div className="inbox-thread-header shrink-0 border-b px-8 py-5 max-[900px]:px-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                aria-label="Back to conversation list"
+                className="button-outline hidden h-10 w-10 items-center justify-center rounded-full max-[900px]:inline-flex"
+              >
+                <ArrowLeft size={16} />
+              </button>
+            )}
+            <Avatar name={participant.name} size="md" src={participant.avatarUrl} />
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="truncate text-base font-semibold" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
+                  {participant.name}
+                </h2>
+                <AccountBadge name={accountLabel} />
+              </div>
+              <p className="mt-1 text-xs leading-5" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+                {messages.length} {messages.length === 1 ? 'message' : 'messages'} in this thread
+              </p>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <ExportButton
-            type="messages"
-            accountId={accountId}
-            conversationId={conversation.conversationId}
-            label="Export chat"
-            size="sm"
-          />
-          <AccountBadge name={accountLabel} />
+
+          <div className="flex shrink-0 items-center gap-2">
+            <ExportButton
+              type="messages"
+              accountId={accountId}
+              conversationId={conversation.conversationId}
+              label="Export chat"
+              size="sm"
+              variant="ghost"
+            />
+          </div>
         </div>
       </div>
 
@@ -308,7 +311,7 @@ export function MessageThread({ conversation, accountLabelById, onMessageSent, o
           className="absolute bottom-28 right-8 z-10 rounded-full px-4 py-2 text-sm font-medium shadow-lg transition-colors max-[900px]:right-4"
           style={{ backgroundColor: 'var(--inbox-jump-button-bg)', color: 'var(--inbox-jump-button-text)' }}
         >
-          New messages
+          Jump to latest
         </button>
       )}
 
@@ -382,7 +385,7 @@ function MessageGroup({
   const displayName = isSentByMe ? accountLabel : senderName;
 
   return (
-    <div className={`mb-6 flex gap-3 ${isSentByMe ? 'flex-row-reverse' : 'flex-row'}`}>
+    <div className={`mb-7 flex gap-3 ${isSentByMe ? 'flex-row-reverse' : 'flex-row'}`}>
       <div className="flex-shrink-0">
         <Avatar
           name={displayName}
@@ -391,8 +394,8 @@ function MessageGroup({
         />
       </div>
 
-      <div className={`flex max-w-[78%] flex-col gap-1 max-[900px]:max-w-[88%] ${isSentByMe ? 'items-end' : 'items-start'}`}>
-        <span className="mb-1 px-2 text-xs font-medium" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
+      <div className={`flex max-w-[74%] flex-col gap-2 max-[1200px]:max-w-[82%] max-[900px]:max-w-[88%] ${isSentByMe ? 'items-end' : 'items-start'}`}>
+        <span className="px-2 text-[11px] font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
           {displayName}
         </span>
 
@@ -434,8 +437,8 @@ function MessageBubble({
 
   return (
     <div className="w-full">
-      <div className={`message-bubble ${bubbleStateClass} inline-block max-w-full px-4 py-3 text-sm leading-relaxed ${
-        isSentByMe ? 'rounded-2xl rounded-br-sm' : 'rounded-2xl rounded-bl-sm'
+      <div className={`message-bubble ${bubbleStateClass} inline-block max-w-full px-4 py-3.5 text-sm leading-relaxed ${
+        isSentByMe ? 'rounded-3xl rounded-br-md' : 'rounded-3xl rounded-bl-md'
       }`}>
         <span className="block whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
           {message.text}
@@ -443,15 +446,18 @@ function MessageBubble({
       </div>
 
       {isLast && (
-        <div className={`mt-1 flex items-center gap-1 px-2 ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
-          <span className="text-xs" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
-            {`${formatRelativeTime(message.sentAt)} - ${formatTimestamp(message.sentAt)}`}
+        <div className={`message-meta mt-2 flex flex-wrap items-center gap-1.5 px-2 text-[11px] ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
+          <span>
+            {formatRelativeTime(message.sentAt)}
           </span>
+          <span aria-hidden="true">•</span>
+          <span>{formatTimestamp(message.sentAt)}</span>
 
           {isSentByMe && deliveryStatus === 'sending' && (
             <>
-              <LoaderCircle size={14} className="animate-spin" style={{ color: 'var(--inbox-status-pending)' }} />
-              <span className="text-xs" style={{ color: 'var(--inbox-status-pending)' }}>
+              <span aria-hidden="true">•</span>
+              <LoaderCircle size={13} className="animate-spin" style={{ color: 'var(--inbox-status-pending)' }} />
+              <span style={{ color: 'var(--inbox-status-pending)' }}>
                 Sending...
               </span>
             </>
@@ -459,8 +465,9 @@ function MessageBubble({
 
           {isSentByMe && deliveryStatus === 'sent' && (
             <>
-              <CheckCheck size={14} style={{ color: 'var(--inbox-status-sent)' }} />
-              <span className="text-xs" style={{ color: 'var(--inbox-status-sent)' }}>
+              <span aria-hidden="true">•</span>
+              <CheckCheck size={13} style={{ color: 'var(--inbox-status-sent)' }} />
+              <span style={{ color: 'var(--inbox-status-sent)' }}>
                 Sent
               </span>
             </>
@@ -468,21 +475,22 @@ function MessageBubble({
 
           {isSentByMe && deliveryStatus === 'failed' && (
             <>
-              <AlertCircle size={14} style={{ color: 'var(--inbox-status-failed)' }} />
-              <span className="text-xs" style={{ color: 'var(--inbox-status-failed)' }}>
+              <span aria-hidden="true">•</span>
+              <AlertCircle size={13} style={{ color: 'var(--inbox-status-failed)' }} />
+              <span style={{ color: 'var(--inbox-status-failed)' }}>
                 Failed
               </span>
               {onRetry && (
                 <button
                   type="button"
                   onClick={onRetry}
-                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors"
+                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors"
                   style={{
                     color: 'var(--inbox-status-failed)',
                     backgroundColor: 'var(--inbox-retry-bg)',
                   }}
                 >
-                  <RotateCcw size={12} />
+                  <RotateCcw size={11} />
                   Retry
                 </button>
               )}
@@ -492,10 +500,11 @@ function MessageBubble({
       )}
 
       {isSentByMe && message.error && isFailed && (
-        <p className="mt-1 px-2 text-xs" style={{ color: 'var(--inbox-status-failed)' }}>
+        <p className="mt-1 px-2 text-xs leading-5" style={{ color: 'var(--inbox-status-failed)' }}>
           {message.error}
         </p>
       )}
     </div>
   );
 }
+
