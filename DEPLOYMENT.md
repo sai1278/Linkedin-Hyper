@@ -1,375 +1,189 @@
-# Deployment Guide
+﻿# Deployment
 
-> Auth note: dashboard access now uses registered **email + password** accounts. Do not deploy a shared `DASHBOARD_PASSWORD` as the primary operator login path.
+This document covers production deployment for Linkedin-Hyper using Docker Compose.
 
----
+## Production Topology
+- `frontend` container: Next.js dashboard and `/api/*` BFF on port `3000` inside the container, typically exposed as host `3002`
+- `worker` container: Express automation/runtime service on port `3001`
+- `postgres` container: message and user persistence
+- `redis` container: sessions, rate limits, caches, activity logs
 
-## First-Time Deploy
+Typical public exposure:
+- frontend: `http://YOUR_SERVER_IP:3002`
+- worker: internal only, or localhost-only if reverse proxied
+- websocket: `ws://YOUR_SERVER_IP:3002/ws`
 
-### 1. Generate secrets
+## Prerequisites
+- Docker Engine with Compose support
+- Git checkout of branch `feature/ui-polish-2026-04-17`
+- A prepared `.env` file with placeholder values replaced by deployment values
+- Managed LinkedIn account cookies captured/imported separately
 
-```bash
-# AES-256-GCM key for session cookies (must be exactly 64 hex chars)
-openssl rand -hex 32
-
-# API shared secret (any long random string)
-openssl rand -hex 24
-
-# Redis password
-openssl rand -hex 16
-```
-
-### 2. Create `.env` at the project root
+## Required Environment Variables
+Use placeholders only in source control.
 
 ```env
-# Worker + Frontend shared
-API_SECRET=<output of openssl rand -hex 24>
-REDIS_PASSWORD=<output of openssl rand -hex 16>
+API_SECRET=change-me
+JWT_SECRET=change-me
+SESSION_ENCRYPTION_KEY=change-me
+API_ROUTE_AUTH_TOKEN=change-me
+REDIS_PASSWORD=change-me
+DB_PASSWORD=change-me
 
-# Worker only
-SESSION_ENCRYPTION_KEY=<output of openssl rand -hex 32>
-DB_PASSWORD=<output of openssl rand -hex 16>
-ACCOUNT_IDS=alice,bob
+ACCOUNT_IDS=saikanchi130
+MESSAGE_SYNC_DISABLED_ACCOUNT_IDS=optional-account-id
 
-# Frontend only
-API_URL=http://worker:3001
-NEXT_PUBLIC_API_URL=/api
+NEXT_PUBLIC_API_URL=http://YOUR_SERVER_IP:3002
 NEXT_PUBLIC_WS_URL=ws://YOUR_SERVER_IP:3002/ws
 TRUSTED_ORIGINS=http://YOUR_SERVER_IP:3002,http://127.0.0.1:3002
+
 INITIAL_ADMIN_EMAILS=admin@example.com
 USER_ACCOUNT_ACCESS={"admin@example.com":["saikanchi130"]}
-SERVICE_AUTH_TOKENS=[]
 
-# Compatibility-only legacy service auth (optional, migration only)
-PROXY_AUTH_TOKENS=
-API_ROUTE_AUTH_TOKEN=
-
-# Optional proxy for Chrome
-PROXY_URL=
+DATABASE_URL=postgresql://linkedinuser:DB_PASSWORD@postgres:5432/linkedin_db
+POSTGRES_URL=postgresql://linkedinuser:DB_PASSWORD@postgres:5432/linkedin_db
+REDIS_URL=redis://:REDIS_PASSWORD@redis:6379
 ```
 
-Do not use the typoed variable names `NEXT_PUBLIC_API__URL` or `NEXT_PUBLIC_WS__URL`; only `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` are read by the frontend container.
+## Important Env Wiring
+The frontend container must receive:
+- `TRUSTED_ORIGINS`
+- `USER_ACCOUNT_ACCESS`
+- `INITIAL_ADMIN_EMAILS`
+- `NEXT_PUBLIC_API_URL`
+- `NEXT_PUBLIC_WS_URL`
 
-Make sure the **frontend** container also receives `TRUSTED_ORIGINS`, `INITIAL_ADMIN_EMAILS`, and `USER_ACCOUNT_ACCESS`, because the Next.js `/api/*` routes enforce account ownership server-side and validate same-origin mutations there.
+The worker container must receive its runtime values for:
+- `API_SECRET`
+- `SESSION_ENCRYPTION_KEY`
+- `ACCOUNT_IDS`
+- database and Redis connection values
+- optional `PROXY_URL`
 
-### 3. Build and launch
+Legacy typo names are wrong and should not be used:
+- `NEXT_PUBLIC_API__URL`
+- `NEXT_PUBLIC_WS__URL`
 
+## Standard Deployment Flow
+### 1. Update branch
 ```bash
-make deploy
+git checkout feature/ui-polish-2026-04-17
+git pull target feature/ui-polish-2026-04-17
 ```
 
-Docker will:
-1. Start Redis and wait for it to pass its `redis-cli ping` healthcheck
-2. Start the Worker and wait for it to pass its `GET /health` healthcheck
-3. Then start the Frontend
-
----
-
-## Startup Verification
-
+### 2. Stop current containers
 ```bash
-make status
-make logs-worker
-make logs-frontend
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env down
+```
 
-# Verify frontend runtime env propagation (presence only)
-docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env exec frontend sh -lc '
-for key in TRUSTED_ORIGINS USER_ACCOUNT_ACCESS INITIAL_ADMIN_EMAILS NEXT_PUBLIC_API_URL NEXT_PUBLIC_WS_URL; do
-  eval "value=\${$key:-}"
-  if [ -n "$value" ]; then
-    echo "$key=SET"
-  else
-    echo "$key=MISSING"
-  fi
-done
-'
+### 3. Rebuild and start
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build --force-recreate
+```
 
-# Optional raw value inspection
+### 4. Check running services
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env ps
+```
+
+## Health Verification
+### Worker public health
+```bash
+curl -sS http://127.0.0.1:3001/health | python3 -m json.tool
+```
+Expected:
+- `status: ok`
+- `criticalDependencies.redis: true`
+- `criticalDependencies.database: true`
+
+### Frontend startup validation
+```bash
+curl -sS http://127.0.0.1:3002/api/health/startup-validation | python3 -m json.tool
+```
+Expected account access check:
+- `id: account-access-config`
+- `status: pass` or `warn`
+
+### Frontend env propagation check
+```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env exec frontend printenv | grep -E "TRUSTED_ORIGINS|USER_ACCOUNT_ACCESS|INITIAL_ADMIN_EMAILS|NEXT_PUBLIC_API_URL|NEXT_PUBLIC_WS_URL"
 ```
 
-Send a test health request:
-
+## Log Inspection
 ```bash
-curl http://localhost:3001/health
-# → {"status":"ok","ts":"2024-..."}
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env logs --tail=100 frontend
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env logs --tail=100 worker
 ```
 
----
+## Cookie / Session Deployment Tasks
+After a fresh deploy or host migration:
+1. confirm worker health
+2. import cookies for each managed account
+3. verify LinkedIn session
+4. run a controlled sync
 
-## Cookie Import
-
-LinkedIn sessions are imported as raw cookie arrays. Get them from your browser's DevTools (Application → Cookies → linkedin.com). You need at minimum `li_at` and `JSESSIONID`.
-
+Example commands:
 ```bash
-API_SECRET="$(grep -E '^API_SECRET=' .env | cut -d= -f2-)"
+npm run cookies:capture -- --accountId ACCOUNT_ID --browser chrome --captureProfile "Profile 24"
+npm run cookies:import -- --accountId ACCOUNT_ID --cookieFile artifacts/cookies/ACCOUNT_ID/linkedin-cookies-plain.json --baseUrl http://127.0.0.1:3001
 
-# Import cookies for account "alice"
-curl -s -X POST http://127.0.0.1:3001/accounts/alice/session \
-  -H "Content-Type: application/json" \
-  -H "X-Api-Key: $API_SECRET" \
-  -d '[
-    {"name":"li_at","value":"AQE...","domain":".linkedin.com","path":"/","httpOnly":true,"secure":true,"sameSite":"None"},
-    {"name":"JSESSIONID","value":"\"ajax:...\"","domain":".linkedin.com","path":"/","httpOnly":false,"secure":true,"sameSite":"None"}
-  ]'
-
-# Verify session is stored
-curl -s http://127.0.0.1:3001/accounts/alice/session/status \
-  -H "X-Api-Key: $API_SECRET"
-# → {"exists":true,"accountId":"alice","savedAt":1234567890}
+curl -sS -X POST http://127.0.0.1:3001/accounts/ACCOUNT_ID/verify \
+  -H "x-api-key: $API_SECRET_VALUE" | python3 -m json.tool
 ```
 
-> **Tip:** Export all cookies from the browser using any "Copy as JSON" cookie export extension, then pipe the output directly to the curl command.
-
----
-
-## Reverse Proxy Configuration (nginx)
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name dashboard.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/dashboard.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/dashboard.example.com/privkey.pem;
-
-    location / {
-        proxy_pass         http://127.0.0.1:3000;
-        proxy_set_header   Host $host;
-        proxy_set_header   X-Real-IP $remote_addr;
-        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto $scheme;
-    }
-}
-
-# Never expose the worker API (port 3001) publicly
-```
-
-> **Important:** The worker API must NOT be exposed to the public internet. It is only accessible internally between containers via `http://worker:3001`.
-
----
-
-## Updating
-
+## Rebuild / Restart Recipes
+### Rebuild only frontend
 ```bash
-git pull origin main
-make deploy
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build --force-recreate frontend
 ```
 
-Containers will be rebuilt and restarted. Sessions and activity logs persist in Redis across restarts.
-
----
-
-## Monitoring
-
+### Rebuild only worker
 ```bash
-make logs
-make logs-worker
-
-# Check rate limit state for an account
-docker exec -it $(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q redis) \
-  redis-cli -a $REDIS_PASSWORD keys "ratelimit:alice:*"
-
-# Check activity log length
-docker exec -it $(docker compose -f docker-compose.yml -f docker-compose.prod.yml ps -q redis) \
-  redis-cli -a $REDIS_PASSWORD llen activity:log:alice
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build --force-recreate worker
 ```
 
----
-
-## Redis Backup / Restore
-
-**Backup:**
-
+### Restart all without rebuild
 ```bash
-make backup-redis
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env restart
 ```
 
-**Restore:**
+## Rollback
+If a deployment is unhealthy:
+1. identify the last known-good commit
+2. check out that commit or branch revision
+3. rebuild containers from the known-good state
+4. re-run health and auth verification
+5. verify inbox and send/sync behavior before reopening access
 
+Example:
 ```bash
-docker-compose stop redis
-docker cp ./redis-backup.rdb $(docker-compose ps -q redis):/data/dump.rdb
-docker-compose start redis
+git log --oneline -5
+git checkout <KNOWN_GOOD_COMMIT>
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build --force-recreate
 ```
 
----
+## Post-Deploy Smoke Checklist
+- frontend page loads
+- `/api/auth/verify` returns authenticated user after login
+- `/api/health/startup-validation` shows expected account-access config
+- `/api/inbox/unified` loads for an authorized account-scoped user
+- `/api/messages/thread` opens a thread without stale-thread glitches
+- `/api/sync/messages` succeeds for a controlled account
 
-## Production Checklist
+## Troubleshooting Shortcuts
+### API 403: no assigned account access
+- verify `USER_ACCOUNT_ACCESS` and `INITIAL_ADMIN_EMAILS` in the frontend container
+- log out and log in again so the session role/email are current
+- verify `/api/auth/verify` shows the expected email and effective role
 
-- [ ] `SESSION_ENCRYPTION_KEY` is 64 hex chars (generated via `openssl rand -hex 32`)
-- [ ] `API_SECRET` is strong and random (min 24 chars)
-- [ ] `REDIS_PASSWORD` is set — Redis must never run unauthenticated
-- [ ] Port `3001` is NOT exposed in `docker-compose.yml` (it isn't by default — keep it that way)
-- [ ] `PROXY_URL` is configured if operating from a data centre IP
-- [ ] `NODE_ENV=production` is set in the worker environment for sanitized error messages
-- [ ] Nginx (or equivalent) sits in front of port `3000` with TLS
-- [ ] Cookies are re-imported if LinkedIn session expires (every ~2 weeks)
-- [ ] `shm_size: 1gb` is present on the worker service — do not remove it
-- [ ] `INITIAL_ADMIN_EMAILS` is set before first registration, or at least one admin user already exists
-- [ ] `JWT_SECRET` is at least 32 characters (generated via `openssl rand -base64 48`)
+### Forbidden: Invalid Origin
+- verify `TRUSTED_ORIGINS`
+- confirm it exists in the frontend container
+- rebuild frontend if env values changed
 
----
+### Worker DB unhealthy
+- verify `DATABASE_URL` and `POSTGRES_URL`
+- verify `DB_PASSWORD`
+- inspect `postgres` container status and logs
 
-## Ubuntu 24.04 LTS Production Deployment
-
-### Prerequisites
-- Ubuntu 24.04 LTS server with root/sudo access
-- Domain name pointing to server IP
-- Minimum 2GB RAM, 20GB disk, 2 vCPUs
-
-### One-Time Setup
-
-**1. Run automated server setup:**
-```bash
-bash deployment/ubuntu-setup.sh
-```
-
-This script will:
-- Update system packages
-- Install Docker & Docker Compose
-- Install Nginx
-- Install Certbot for Let's Encrypt
-- Install Git
-- Configure firewall rules
-- Create project directory
-
-**2. Log out and log back in** (to apply Docker group permissions)
-
-**3. Clone repository:**
-```bash
-cd ~/linkedin-hyper-v
-git clone https://github.com/your-username/linkedin-hyper-v.git .
-```
-
-**4. Configure environment:**
-```bash
-cp env.example .env
-nano .env
-```
-
-Set all required variables:
-```bash
-# Generate secrets
-JWT_SECRET=$(openssl rand -base64 48)
-SESSION_ENCRYPTION_KEY=$(openssl rand -hex 32)
-API_SECRET=$(openssl rand -hex 24)
-REDIS_PASSWORD=$(openssl rand -hex 16)
-
-# Set account IDs
-ACCOUNT_IDS=alice,bob
-INITIAL_ADMIN_EMAILS=admin@example.com
-
-# WebSocket URL (use your domain)
-NEXT_PUBLIC_WS_URL=wss://your-domain.com/ws
-```
-
-**5. Secure .env file:**
-```bash
-chmod 600 .env
-```
-
-**6. Setup SSL with Let's Encrypt:**
-```bash
-bash deployment/certbot-setup.sh
-```
-
-Enter your domain and email when prompted. The script will:
-- Obtain SSL certificate
-- Configure Nginx
-- Enable HTTPS
-- Setup auto-renewal
-
-**7. Build and start services (production profile):**
-```bash
-make deploy
-```
-
-**8. Verify deployment:**
-```bash
-make status
-```
-
-**9. Access dashboard:**
-Navigate to `https://your-domain.com`, register the bootstrap admin email if needed, and then login with that email + password.
-
-### Post-Deployment
-
-**Import LinkedIn Accounts:**
-1. Navigate to **Accounts** page in the dashboard
-2. Click **Add Account**
-3. Follow the 3-step wizard to import cookies
-4. Verify the session
-
-**Monitor Services:**
-```bash
-make logs
-make logs-frontend
-make logs-worker
-make status
-
-# Nginx logs
-sudo tail -f /var/log/nginx/linkedin-hyper-v-access.log
-sudo tail -f /var/log/nginx/linkedin-hyper-v-error.log
-```
-
-**Updates:**
-```bash
-cd ~/linkedin-hyper-v
-git pull origin main
-make deploy
-make status
-```
-
-**Backup:**
-```bash
-make backup-all
-```
-
-**Rollback:**
-```bash
-make rollback REF=main~1
-```
-
-### Troubleshooting
-
-**Frontend won't start:**
-```bash
-docker-compose logs frontend
-# Check for missing env vars or build errors
-```
-
-**Worker can't connect to Redis:**
-```bash
-docker-compose exec worker ping redis
-# Verify REDIS_PASSWORD matches in .env
-```
-
-**SSL certificate issues:**
-```bash
-# Check certificate
-sudo certbot certificates
-
-# Renew manually
-sudo certbot renew
-
-# Check auto-renewal
-sudo systemctl status certbot.timer
-```
-
-**WebSocket not connecting:**
-- Verify `NEXT_PUBLIC_WS_URL` uses `wss://` (not `ws://`)
-- Check Nginx config has `/ws` location block
-- Verify worker port 3001 is accessible from frontend container
-- Check browser console for WebSocket errors
-
-**Cannot login:**
-- Verify `INITIAL_ADMIN_EMAILS` is set before first registration or an admin account already exists
-- Check `JWT_SECRET` is at least 32 characters
-- Verify Redis is running: `docker-compose ps redis`
-- Check frontend logs: `docker-compose logs frontend`
-
-**Rate limits not showing:**
-- Verify worker has `ACCOUNT_IDS` configured
-- Check account session is imported and verified
-- Check worker logs: `docker-compose logs worker`
+See [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md) and [SECURITY.md](SECURITY.md) for detailed response steps.
