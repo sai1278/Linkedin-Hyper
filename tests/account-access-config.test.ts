@@ -9,25 +9,41 @@ describe('account access configuration helper', () => {
   it('warns when neither admin emails nor user mappings are configured', async () => {
     const { getAccountAccessStartupCheck } = await import('@/lib/auth/account-access-config');
 
-    expect(getAccountAccessStartupCheck()).toEqual(expect.objectContaining({
-      id: 'account-access-config',
-      label: 'account-access-config',
-      title: 'Account access configuration',
-      status: 'warn',
-      accountAccessConfigPresent: false,
-      initialAdminEmailsConfigured: false,
-      initialAdminEmailCount: 0,
-      userAccountAccessConfigured: false,
-      userAccountAccessEntryCount: 0,
-      detail: 'Neither INITIAL_ADMIN_EMAILS nor USER_ACCOUNT_ACCESS is configured in the frontend runtime environment.',
-    }));
+    expect(getAccountAccessStartupCheck()).toEqual(
+      expect.objectContaining({
+        id: 'account-access-config',
+        label: 'account-access-config',
+        title: 'Account access configuration',
+        status: 'warn',
+        accountAccessConfigPresent: false,
+        initialAdminEmailsConfigured: false,
+        initialAdminEmailCount: 0,
+        userAccountAccessConfigured: false,
+        userAccountAccessEntryCount: 0,
+        detail:
+          'Neither INITIAL_ADMIN_EMAILS nor USER_ACCOUNT_ACCESS is configured in the frontend runtime environment.',
+      })
+    );
   });
 
   it('passes when admin emails are configured', async () => {
     vi.stubEnv('INITIAL_ADMIN_EMAILS', 'admin@example.com');
     const { getAccountAccessStartupCheck } = await import('@/lib/auth/account-access-config');
 
-    expect(getAccountAccessStartupCheck().status).toBe('pass');
+    expect(getAccountAccessStartupCheck()).toEqual(
+      expect.objectContaining({
+        id: 'account-access-config',
+        label: 'account-access-config',
+        title: 'Account access configuration',
+        status: 'pass',
+        accountAccessConfigPresent: true,
+        initialAdminEmailsConfigured: true,
+        initialAdminEmailCount: 1,
+        userAccountAccessConfigured: false,
+        userAccountAccessEntryCount: 0,
+        detail: 'Configured admin emails: 1; user account mappings: 0',
+      })
+    );
   });
 
   it('passes when user account mappings are configured', async () => {
@@ -36,6 +52,19 @@ describe('account access configuration helper', () => {
     }));
     const { getAccountAccessStartupCheck } = await import('@/lib/auth/account-access-config');
 
-    expect(getAccountAccessStartupCheck().status).toBe('pass');
+    expect(getAccountAccessStartupCheck()).toEqual(
+      expect.objectContaining({
+        id: 'account-access-config',
+        label: 'account-access-config',
+        title: 'Account access configuration',
+        status: 'pass',
+        accountAccessConfigPresent: true,
+        initialAdminEmailsConfigured: false,
+        initialAdminEmailCount: 0,
+        userAccountAccessConfigured: true,
+        userAccountAccessEntryCount: 1,
+        detail: 'Configured admin emails: 0; user account mappings: 1',
+      })
+    );
   });
 });
