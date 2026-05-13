@@ -4,6 +4,18 @@ Linkedin-Hyper is a production-focused LinkedIn automation and unified inbox pla
 
 The repository currently targets the `feature/ui-polish-2026-04-17` release line.
 
+## Documentation
+The project documentation is organized as an internal engineering documentation set for architecture review, deployment, operations, security, testing, and API reference. Start with the centralized index, then move into the focused guides for the area you are working on.
+
+- Primary documentation hub: [DOCS_INDEX.md](DOCS_INDEX.md)
+- System architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Production deployment: [DEPLOYMENT.md](DEPLOYMENT.md)
+- Operations and runbook: [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md)
+- Security model and controls: [SECURITY.md](SECURITY.md)
+- Test strategy and validation: [TESTING.md](TESTING.md)
+- Swagger/OpenAPI guide: [SWAGGER_API.md](SWAGGER_API.md)
+- OpenAPI specification: [docs/openapi.yaml](docs/openapi.yaml)
+
 ## What The App Does
 - Runs a Next.js dashboard and API gateway for operators.
 - Runs a worker service that owns LinkedIn browser automation, message sync, and send flows.
