@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
@@ -429,28 +429,6 @@ export default function InboxPage() {
     };
   }, [getFallbackMessages]);
 
-  const mergePreviewConversationMessages = useCallback((
-    currentSelected: Conversation,
-    freshConversation: Conversation
-  ): Message[] => {
-    const messageContext = {
-      accountId: freshConversation.accountId,
-      conversationId: freshConversation.conversationId,
-    };
-
-    return mergeMessages(
-      mergeMessages(
-        currentSelected.messages,
-        freshConversation.messages,
-        messageContext,
-        `mergePreviewConversationMessages:thread:${freshConversation.conversationId}`
-      ),
-      getFallbackMessages(freshConversation),
-      messageContext,
-      `mergePreviewConversationMessages:fallback:${freshConversation.conversationId}`
-    );
-  }, [getFallbackMessages]);
-
   const loadAccounts = useCallback(async () => {
     try {
       const { accounts: nextAccounts } = await getAccounts();
@@ -479,7 +457,11 @@ export default function InboxPage() {
           }
 
           const currentSelectionMatches = getConversationSelectionKey(currentSelected) === activeKey;
-          if (isThreadLoadingRef.current && currentSelectionMatches) {
+          if (!currentSelectionMatches) {
+            return currentSelected;
+          }
+
+          if (isThreadLoadingRef.current) {
             return {
               ...currentSelected!,
               unreadCount: freshConversation.unreadCount,
@@ -488,16 +470,12 @@ export default function InboxPage() {
             };
           }
 
-          const baselineConversation = currentSelectionMatches
-            ? currentSelected!
-            : freshConversation;
-
-          const mergedConversation = mergeConversationForDisplay(baselineConversation, {
-            ...freshConversation,
-            messages: mergePreviewConversationMessages(baselineConversation, freshConversation),
-          });
-          logMessageArray(`loadInbox merged selected ${mergedConversation.conversationId}`, mergedConversation.messages);
-          return mergedConversation;
+          return {
+            ...currentSelected!,
+            unreadCount: freshConversation.unreadCount,
+            lastMessage: freshConversation.lastMessage,
+            participant: freshConversation.participant,
+          };
         });
       }
       setError(null);
@@ -513,7 +491,7 @@ export default function InboxPage() {
     } finally {
       setLoading(false);
     }
-  }, [mergeConversationForDisplay, mergePreviewConversationMessages]);
+  }, []);
 
   useEffect(() => {
     void loadAccounts();
@@ -523,25 +501,34 @@ export default function InboxPage() {
     void loadInbox();
   }, [loadInbox]);
 
-  const handleSelect = useCallback(async (conversation: Conversation) => {
+  const loadConversationThread = useCallback(async (
+    conversation: Conversation,
+    options: { mode: 'switch' | 'passive' }
+  ) => {
     const conversationKey = getConversationSelectionKey(conversation);
-    const currentSelected = selectedRef.current;
     const isConversationChange = activeConversationKeyRef.current !== conversationKey;
     const requestToken = threadRequestTokenRef.current + 1;
     threadRequestTokenRef.current = requestToken;
-    setActiveConversationKey(conversationKey);
-
-    const initialConversation = isConversationChange
-      ? { ...conversation, messages: [] }
-      : mergeConversationForDisplay(currentSelected, {
-          ...conversation,
-          messages: getFallbackMessages(conversation),
-        });
 
     if (isConversationChange) {
+      setActiveConversationKey(conversationKey);
       setIsThreadLoading(true);
+      const initialConversation = { ...conversation, messages: [] };
       logMessageArray(`handleSelect before thread fetch ${conversation.conversationId}`, initialConversation.messages);
       setSelected(initialConversation);
+    } else {
+      setSelected((existingConversation) => {
+        if (getConversationSelectionKey(existingConversation) !== conversationKey || !existingConversation) {
+          return existingConversation;
+        }
+
+        return {
+          ...existingConversation,
+          unreadCount: conversation.unreadCount,
+          lastMessage: conversation.lastMessage,
+          participant: conversation.participant,
+        };
+      });
     }
 
     try {
@@ -558,13 +545,19 @@ export default function InboxPage() {
       )) {
         return;
       }
+
       setSelected((currentSelected) => {
         const baselineConversation = areSameConversation(currentSelected, conversation)
           ? currentSelected
-          : initialConversation;
+          : { ...conversation, messages: [] };
+        const nextMessages = hasThreadMessages
+          ? thread.messages
+          : baselineConversation?.messages?.length
+            ? baselineConversation.messages
+            : getFallbackMessages(conversation);
         const mergedConversation = mergeConversationForDisplay(baselineConversation, {
           ...conversation,
-          messages: hasThreadMessages ? thread.messages : getFallbackMessages(conversation),
+          messages: nextMessages,
         });
         logMessageArray(`handleSelect after thread fetch ${conversation.conversationId}`, mergedConversation.messages);
         return mergedConversation;
@@ -578,17 +571,22 @@ export default function InboxPage() {
       )) {
         return;
       }
-      setSelected((currentSelected) => {
-        const baselineConversation = areSameConversation(currentSelected, conversation)
-          ? currentSelected
-          : initialConversation;
-        const mergedConversation = mergeConversationForDisplay(baselineConversation, {
-          ...conversation,
-          messages: getFallbackMessages(conversation),
+
+      if (options.mode === 'switch') {
+        setSelected((nextSelected) => {
+          const baselineConversation = areSameConversation(nextSelected, conversation)
+            ? nextSelected
+            : { ...conversation, messages: [] };
+          const mergedConversation = mergeConversationForDisplay(baselineConversation, {
+            ...conversation,
+            messages: baselineConversation?.messages?.length
+              ? baselineConversation.messages
+              : getFallbackMessages(conversation),
+          });
+          logMessageArray(`handleSelect fallback ${conversation.conversationId}`, mergedConversation.messages);
+          return mergedConversation;
         });
-        logMessageArray(`handleSelect fallback ${conversation.conversationId}`, mergedConversation.messages);
-        return mergedConversation;
-      });
+      }
     } finally {
       if (shouldApplyThreadResponse(
         threadRequestTokenRef.current,
@@ -600,6 +598,10 @@ export default function InboxPage() {
       }
     }
   }, [getFallbackMessages, mergeConversationForDisplay]);
+
+  const handleSelect = useCallback(async (conversation: Conversation) => {
+    await loadConversationThread(conversation, { mode: 'switch' });
+  }, [loadConversationThread]);
 
   const refreshSelectedConversation = useCallback(async (nextConversations: Conversation[]) => {
     const activeKey = activeConversationKeyRef.current;
@@ -615,8 +617,8 @@ export default function InboxPage() {
       return;
     }
 
-    await handleSelect(refreshedConversation);
-  }, [handleSelect]);
+    await loadConversationThread(refreshedConversation, { mode: 'passive' });
+  }, [loadConversationThread]);
 
   useEffect(() => {
     const unsubscribeInboxUpdate = wsClient.on('inbox:updated', () => {
@@ -628,12 +630,12 @@ export default function InboxPage() {
     });
 
     const unsubscribeNewMessage = wsClient.on('inbox:new_message', (data: InboxNewMessagePayload) => {
-      console.debug(
-        `[Inbox][WS] inbox:new_message incomingChatId=${String(data.chatId || '')} selectedChatId=${String(selectedRef.current?.conversationId || '')}`
-      );
       const currentSelected = selectedRef.current;
+      console.debug(
+        `[Inbox][WS] inbox:new_message incomingChatId=${String(data.chatId || '')} selectedChatId=${String(currentSelected?.conversationId || '')}`
+      );
       if (currentSelected && data.chatId === currentSelected.conversationId) {
-        void handleSelect(currentSelected);
+        void loadConversationThread(currentSelected, { mode: 'passive' });
       } else {
         void (async () => {
           const nextConversations = await loadInbox();
@@ -653,7 +655,7 @@ export default function InboxPage() {
       unsubscribeNewMessage();
       unsubscribeStatus();
     };
-  }, [handleSelect, loadInbox, refreshSelectedConversation]);
+  }, [loadConversationThread, loadInbox, refreshSelectedConversation]);
 
   const filteredConversations = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -941,5 +943,6 @@ export default function InboxPage() {
     </div>
   );
 }
+
 
 

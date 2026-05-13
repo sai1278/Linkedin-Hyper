@@ -1,13 +1,18 @@
 ﻿'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Conversation, Message } from '@/types/dashboard';
 import { AlertCircle, ArrowLeft, CheckCheck, LoaderCircle, RotateCcw } from 'lucide-react';
 import { Avatar } from '@/components/ui/Avatar';
 import { AccountBadge } from '@/components/ui/AccountBadge';
 import { ReplyInput } from '@/components/inbox/ReplyInput';
 import { sendMessageNew } from '@/lib/api-client';
-import { getConversationSelectionKey, getThreadAutoScrollBehavior } from '@/lib/inbox-thread-state';
+import {
+  buildThreadSignature,
+  getConversationSelectionKey,
+  getThreadScrollDecision,
+  shouldShowJumpToLatest,
+} from '@/lib/inbox-thread-state';
 import { formatRelativeTime, formatTimestamp } from '@/lib/time-utils';
 import { ExportButton } from '@/components/ui/ExportButton';
 import { MessageThreadSkeleton } from '@/components/ui/SkeletonLoader';
@@ -22,6 +27,15 @@ interface MessageThreadProps {
   onBack?: () => void;
 }
 
+type ScrollMetrics = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+};
+
+const MESSAGE_GROUP_WINDOW_MS = 2 * 60 * 1000;
+const NEAR_BOTTOM_THRESHOLD_PX = 72;
+
 function isPreviewConversationId(conversationId: string): boolean {
   return conversationId.startsWith('activity-') || conversationId.startsWith('fallback-');
 }
@@ -30,33 +44,26 @@ function getConversationProfileUrl(conversation: Conversation): string {
   return conversation.participant.profileUrl?.trim() || '';
 }
 
-const MESSAGE_GROUP_WINDOW_MS = 2 * 60 * 1000;
-
 function logThreadMessages(label: string, messages: Message[]) {
-  console.debug(`[Inbox][Thread] ${label}`, messages.map((message) => ({
-    id: message.id,
-    text: message.text,
-    sentAt: message.sentAt,
-    sentByMe: message.sentByMe,
-    senderName: message.senderName,
-    status: message.status,
-  })));
+  if (process.env.NODE_ENV === 'production') {
+    return;
+  }
+
+  console.debug(
+    `[Inbox][Thread] ${label}`,
+    messages.map((message) => ({
+      id: message.id,
+      text: message.text,
+      sentAt: message.sentAt,
+      sentByMe: message.sentByMe,
+      senderName: message.senderName,
+      status: message.status,
+    }))
+  );
 }
 
 function normalizeThreadMessageText(value: string | undefined | null): string {
   return String(value || '').trim().replace(/\s+/g, ' ');
-}
-
-function getMessageScrollSignature(message: Message | null | undefined): string {
-  if (!message) {
-    return '';
-  }
-
-  return [
-    message.sentByMe ? 'me' : normalizeThreadMessageText(message.senderName).toLowerCase(),
-    normalizeThreadMessageText(message.text).toLowerCase(),
-    String(message.sentAt || 0),
-  ].join(':');
 }
 
 function getRenderableMessageKey(message: Message, accountId: string, conversationId: string): string {
@@ -74,6 +81,26 @@ function getRenderableMessageKey(message: Message, accountId: string, conversati
   ].join(':');
 }
 
+function getScrollMetrics(container: HTMLDivElement | null): ScrollMetrics | null {
+  if (!container) {
+    return null;
+  }
+
+  return {
+    scrollTop: container.scrollTop,
+    scrollHeight: container.scrollHeight,
+    clientHeight: container.clientHeight,
+  };
+}
+
+function isNearBottom(metrics: ScrollMetrics | null): boolean {
+  if (!metrics) {
+    return true;
+  }
+
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= NEAR_BOTTOM_THRESHOLD_PX;
+}
+
 export function MessageThread({
   conversation,
   isLoadingConversation = false,
@@ -84,44 +111,144 @@ export function MessageThread({
 }: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const scrollStateRef = useRef<{ conversationKey: string; lastMessageKey: string; messageCount: number } | null>(null);
-  const [autoScroll, setAutoScroll] = useState(true);
+  const previousSignatureRef = useRef<ReturnType<typeof buildThreadSignature> | null>(null);
+  const lastScrollMetricsRef = useRef<ScrollMetrics | null>(null);
+  const isProgrammaticScrollRef = useRef(false);
+  const isNearBottomRef = useRef(true);
+  const userHasManuallyScrolledRef = useRef(false);
+  const pendingScrollIntentRef = useRef<'send' | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   const conversationKey = getConversationSelectionKey(conversation);
-  const messageCount = conversation?.messages.length ?? 0;
-  const lastMessage = conversation?.messages[messageCount - 1] ?? null;
-  const lastMessageSignature = getMessageScrollSignature(lastMessage);
+  const messages = useMemo(() => conversation?.messages ?? [], [conversation]);
 
-  useEffect(() => {
-    if (!conversationKey) {
-      scrollStateRef.current = null;
-      return;
-    }
+  const updateJumpToLatestVisibility = useCallback((): void => {
+    const nextVisible = shouldShowJumpToLatest(
+      userHasManuallyScrolledRef.current,
+      isNearBottomRef.current
+    );
+    setShowJumpToLatest((currentVisible) => (currentVisible === nextVisible ? currentVisible : nextVisible));
+  }, []);
 
-    const nextScrollState = {
-      conversationKey,
-      lastMessageKey: lastMessageSignature,
-      messageCount,
-    };
-    const previousScrollState = scrollStateRef.current;
-    scrollStateRef.current = nextScrollState;
-
-    const behavior = getThreadAutoScrollBehavior(previousScrollState, nextScrollState, autoScroll);
-    if (!behavior) {
-      return;
-    }
-
+  const finalizeProgrammaticScroll = useCallback((): void => {
     requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
+      requestAnimationFrame(() => {
+        isProgrammaticScrollRef.current = false;
+        const nextMetrics = getScrollMetrics(messagesContainerRef.current);
+        if (!nextMetrics) {
+          return;
+        }
+
+        lastScrollMetricsRef.current = nextMetrics;
+        isNearBottomRef.current = isNearBottom(nextMetrics);
+        if (isNearBottomRef.current) {
+          userHasManuallyScrolledRef.current = false;
+        }
+        updateJumpToLatestVisibility();
+      });
     });
-  }, [autoScroll, conversationKey, lastMessageSignature, messageCount]);
+  }, [updateJumpToLatestVisibility]);
+
+  const performProgrammaticScroll = useCallback((mutator: () => void): void => {
+    isProgrammaticScrollRef.current = true;
+    mutator();
+    finalizeProgrammaticScroll();
+  }, [finalizeProgrammaticScroll]);
+
+  useLayoutEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    if (!conversationKey) {
+      previousSignatureRef.current = null;
+      lastScrollMetricsRef.current = getScrollMetrics(container);
+      isNearBottomRef.current = true;
+      userHasManuallyScrolledRef.current = false;
+      setShowJumpToLatest(false);
+      return;
+    }
+
+    const currentMetrics = getScrollMetrics(container);
+    if (currentMetrics) {
+      lastScrollMetricsRef.current = currentMetrics;
+    }
+
+    if (isLoadingConversation) {
+      return;
+    }
+
+    const nextSignature = buildThreadSignature(conversationKey, messages);
+    const previousSignature = previousSignatureRef.current;
+    const previousMetrics = lastScrollMetricsRef.current;
+    const scrollDecision = getThreadScrollDecision({
+      previousSignature,
+      nextSignature,
+      userHasManuallyScrolled: userHasManuallyScrolledRef.current,
+      isNearBottom: isNearBottomRef.current,
+      forceScrollToLatest: pendingScrollIntentRef.current === 'send',
+    });
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[Inbox][ThreadScroll]', {
+        conversationKey,
+        previousTailSignature: previousSignature?.tailSignature ?? '',
+        nextTailSignature: nextSignature.tailSignature,
+        scrollDecision: scrollDecision.action,
+        reason: scrollDecision.reason,
+      });
+    }
+
+    if (scrollDecision.action === 'scroll-to-latest') {
+      userHasManuallyScrolledRef.current = false;
+      isNearBottomRef.current = true;
+      setShowJumpToLatest(false);
+      performProgrammaticScroll(() => {
+        if (scrollDecision.behavior === 'smooth') {
+          bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          return;
+        }
+
+        container.scrollTop = container.scrollHeight;
+      });
+    } else if (previousMetrics) {
+      const nextMetrics = getScrollMetrics(container);
+      if (nextMetrics) {
+        const shouldUseHeightDelta =
+          Boolean(previousSignature) &&
+          nextSignature.messageCount !== previousSignature!.messageCount &&
+          !scrollDecision.trueTailAppend;
+        const rawScrollTop = shouldUseHeightDelta
+          ? previousMetrics.scrollTop + (nextMetrics.scrollHeight - previousMetrics.scrollHeight)
+          : previousMetrics.scrollTop;
+        const maxScrollTop = Math.max(0, nextMetrics.scrollHeight - nextMetrics.clientHeight);
+        const restoredScrollTop = Math.max(0, Math.min(rawScrollTop, maxScrollTop));
+
+        performProgrammaticScroll(() => {
+          container.scrollTop = restoredScrollTop;
+        });
+      }
+    }
+
+    previousSignatureRef.current = nextSignature;
+    pendingScrollIntentRef.current = null;
+  }, [conversationKey, isLoadingConversation, messages, performProgrammaticScroll]);
 
   const handleScroll = () => {
-    if (!messagesContainerRef.current) return;
+    const nextMetrics = getScrollMetrics(messagesContainerRef.current);
+    if (!nextMetrics) return;
 
-    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
-    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-    setAutoScroll((currentValue) => (currentValue === isNearBottom ? currentValue : isNearBottom));
+    lastScrollMetricsRef.current = nextMetrics;
+    isNearBottomRef.current = isNearBottom(nextMetrics);
+
+    if (!isProgrammaticScrollRef.current) {
+      userHasManuallyScrolledRef.current = !isNearBottomRef.current;
+    } else if (isNearBottomRef.current) {
+      userHasManuallyScrolledRef.current = false;
+    }
+
+    updateJumpToLatestVisibility();
   };
 
   if (!conversation) {
@@ -153,7 +280,7 @@ export function MessageThread({
     );
   }
 
-  const { participant, accountId, messages } = conversation;
+  const { participant, accountId } = conversation;
   const accountLabel = accountLabelById[accountId] ?? accountId;
 
   async function handleSend(text: string, messageId?: string) {
@@ -184,7 +311,7 @@ export function MessageThread({
       lastMessage: { text, sentAt: nextSentAt, sentByMe: true, status: 'sending' },
     };
 
-    setAutoScroll(true);
+    pendingScrollIntentRef.current = 'send';
     logThreadMessages(`before send update ${activeConversation.conversationId}`, activeConversation.messages);
     logThreadMessages(`after optimistic send ${updatedConversation.conversationId}`, updatedConversation.messages);
     onMessageSent(updatedConversation);
@@ -218,6 +345,7 @@ export function MessageThread({
         messages: confirmedMessages,
         lastMessage: { text, sentAt: confirmedAt, sentByMe: true, status: 'sent' },
       };
+      pendingScrollIntentRef.current = 'send';
       logThreadMessages(`after confirmed send ${confirmedConversation.conversationId}`, confirmedConversation.messages);
       onMessageSent(confirmedConversation);
 
@@ -329,12 +457,16 @@ export function MessageThread({
         <div ref={bottomRef} />
       </div>
 
-      {!isLoadingConversation && !autoScroll && (
+      {!isLoadingConversation && showJumpToLatest && (
         <button
           type="button"
           onClick={() => {
-            setAutoScroll(true);
-            bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            userHasManuallyScrolledRef.current = false;
+            isNearBottomRef.current = true;
+            setShowJumpToLatest(false);
+            performProgrammaticScroll(() => {
+              bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            });
           }}
           className="absolute bottom-28 right-8 z-10 rounded-full px-4 py-2 text-sm font-medium shadow-lg transition-colors max-[900px]:right-4"
           style={{ backgroundColor: 'var(--inbox-jump-button-bg)', color: 'var(--inbox-jump-button-text)' }}
@@ -529,4 +661,3 @@ function MessageBubble({
     </div>
   );
 }
-
