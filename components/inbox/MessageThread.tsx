@@ -541,9 +541,9 @@ function MessageGroup({
   onRetry: (text: string, messageId?: string) => Promise<void>;
 }) {
   return (
-    <div className={`mb-8 flex gap-3 ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
+    <div className={`mb-7 flex w-full items-end gap-3 ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
       {!isSentByMe && (
-        <div className="flex-shrink-0 pt-1">
+        <div className="flex-shrink-0 self-end pb-6">
           <Avatar
             name={senderName}
             size="sm"
@@ -552,7 +552,7 @@ function MessageGroup({
         </div>
       )}
 
-      <div className={`flex max-w-[68%] flex-col gap-2.5 max-[1200px]:max-w-[80%] max-[900px]:max-w-[88%] ${isSentByMe ? 'items-end' : 'items-start'}`}>
+      <div className={`flex min-w-0 flex-1 flex-col gap-3 ${isSentByMe ? 'items-end' : 'items-start'}`}>
         {messages.map((message, index) => (
           <MessageBubble
             key={getRenderableMessageKey(message, accountId, conversationId)}
@@ -590,8 +590,8 @@ function MessageBubble({
     : 'message-bubble--incoming';
 
   return (
-    <div className="w-full">
-      <div className={`message-bubble ${bubbleStateClass} inline-block max-w-full px-4 py-3.5 text-[15px] leading-7 ${
+    <div className={`flex w-full min-w-0 flex-col ${isSentByMe ? 'items-end' : 'items-start'}`}>
+      <div className={`message-bubble ${bubbleStateClass} block min-w-[80px] max-w-[min(70%,680px)] px-4 py-3 text-sm leading-6 max-[900px]:max-w-[85%] ${
         isSentByMe ? 'rounded-3xl rounded-br-md' : 'rounded-3xl rounded-bl-md'
       }`}>
         <span className="block whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
@@ -600,7 +600,7 @@ function MessageBubble({
       </div>
 
       {isLast && (
-        <div className={`message-meta mt-2 flex flex-wrap items-center gap-1.5 px-2 text-xs font-medium ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
+        <div className={`message-meta mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1 text-[12px] font-medium leading-5 ${isSentByMe ? 'justify-end text-right' : 'justify-start text-left'}`}>
           <span>
             {formatRelativeTime(message.sentAt)}
           </span>
@@ -654,7 +654,7 @@ function MessageBubble({
       )}
 
       {isSentByMe && message.error && isFailed && (
-        <p className="mt-1 px-2 text-xs leading-5" style={{ color: 'var(--inbox-status-failed)' }}>
+        <p className="mt-1 max-w-[min(70%,680px)] px-1 text-xs leading-5 max-[900px]:max-w-[85%]" style={{ color: 'var(--inbox-status-failed)' }}>
           {message.error}
         </p>
       )}

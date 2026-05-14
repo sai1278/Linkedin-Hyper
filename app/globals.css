@@ -539,9 +539,15 @@ html {
 }
 
 .message-bubble {
+  display: block;
+  width: fit-content;
   border: 1px solid transparent;
   box-shadow: var(--shadow-sm);
+  max-width: min(70%, 680px);
+  min-width: 80px;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
   user-select: text;
   -webkit-user-select: text;
   transition: box-shadow var(--transition-fast), transform var(--transition-fast);
@@ -579,4 +585,10 @@ html {
 
 .message-meta {
   color: var(--text-muted-new, var(--text-muted));
+}
+
+@media (max-width: 900px) {
+  .message-bubble {
+    max-width: 85%;
+  }
 }
