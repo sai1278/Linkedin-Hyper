@@ -10,7 +10,12 @@ import { sendMessageNew } from '@/lib/api-client';
 import {
   buildThreadSignature,
   getConversationSelectionKey,
+  getThreadMessageSource,
   getThreadScrollDecision,
+  isConfirmedThreadMessage,
+  isStaleOptimisticMessage,
+  isSyntheticDemoMessage,
+  sanitizeThreadMessagesForConversation,
   shouldShowJumpToLatest,
 } from '@/lib/inbox-thread-state';
 import { formatRelativeTime, formatTimestamp } from '@/lib/time-utils';
@@ -53,6 +58,11 @@ function logThreadMessages(label: string, messages: Message[]) {
     `[Inbox][Thread] ${label}`,
     messages.map((message) => ({
       id: message.id,
+      source: getThreadMessageSource(message.id),
+      synthetic: isSyntheticDemoMessage(message) || getThreadMessageSource(message.id) !== 'persisted',
+      optimistic: getThreadMessageSource(message.id) === 'optimistic',
+      confirmed: isConfirmedThreadMessage(message),
+      staleOptimistic: isStaleOptimisticMessage(message),
       text: message.text,
       sentAt: message.sentAt,
       sentByMe: message.sentByMe,
@@ -120,7 +130,10 @@ export function MessageThread({
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   const conversationKey = getConversationSelectionKey(conversation);
-  const messages = useMemo(() => conversation?.messages ?? [], [conversation]);
+  const messages = useMemo(
+    () => sanitizeThreadMessagesForConversation(conversation?.conversationId, conversation?.messages ?? []),
+    [conversation]
+  );
 
   const updateJumpToLatestVisibility = useCallback((): void => {
     const nextVisible = shouldShowJumpToLatest(
@@ -300,10 +313,10 @@ export function MessageThread({
     };
 
     const updatedMessages: Message[] = messageId
-      ? activeConversation.messages.map((message) =>
+      ? messages.map((message) =>
           message.id === targetId ? { ...message, ...optimisticMessage } : message
         )
-      : [...activeConversation.messages, optimisticMessage];
+      : [...messages, optimisticMessage];
 
     const updatedConversation: Conversation = {
       ...activeConversation,

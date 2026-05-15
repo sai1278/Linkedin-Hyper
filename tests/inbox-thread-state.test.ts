@@ -4,8 +4,13 @@ import {
   buildThreadSignature,
   filterThreadMessagesForConversation,
   getConversationSelectionKey,
+  isConfirmedThreadMessage,
+  isKnownDemoMessageText,
+  isStaleOptimisticMessage,
+  isSyntheticDemoMessage,
   getThreadMessageSource,
   getThreadScrollDecision,
+  sanitizeThreadMessagesForConversation,
   isSyntheticThreadMessageId,
   shouldApplyThreadResponse,
   shouldShowJumpToLatest,
@@ -41,6 +46,12 @@ describe('inbox thread state helpers', () => {
     expect(isSyntheticThreadMessageId('real-linkedin-message-id')).toBe(false);
   });
 
+  it('recognizes the known demo/test message texts', () => {
+    expect(isKnownDemoMessageText('okay')).toBe(true);
+    expect(isKnownDemoMessageText(' OKAYYY ')).toBe(true);
+    expect(isKnownDemoMessageText('a real production message')).toBe(false);
+  });
+
   it('drops activity preview rows when rendering a stable conversation thread', () => {
     const messages = [
       { id: 'activity-msg-1', text: 'okay', sentAt: 1000, sentByMe: true, senderName: 'acct-1' },
@@ -58,6 +69,45 @@ describe('inbox thread state helpers', () => {
     ];
 
     expect(filterThreadMessagesForConversation('activity-abc123', messages)).toEqual(messages);
+  });
+
+  it('removes stale optimistic rows automatically during thread sanitization', () => {
+    const now = 10 * 60 * 1000;
+    const messages = [
+      { id: 'opt-1', text: 'still pending', sentAt: now - (6 * 60 * 1000), sentByMe: true, senderName: 'acct-1', status: 'sending' as const },
+      { id: 'msg-2', text: 'confirmed', sentAt: now - 1000, sentByMe: false, senderName: 'Alex' },
+    ];
+
+    expect(isStaleOptimisticMessage(messages[0], now)).toBe(true);
+    expect(sanitizeThreadMessagesForConversation('real-thread-123', messages, now)).toEqual([
+      { id: 'msg-2', text: 'confirmed', sentAt: now - 1000, sentByMe: false, senderName: 'Alex' },
+    ]);
+  });
+
+  it('filters synthetic demo rows but preserves confirmed persisted messages', () => {
+    const now = Date.UTC(2026, 4, 15);
+    const syntheticDemo = {
+      id: 'activity-msg-1',
+      text: 'okay',
+      sentAt: now - 1000,
+      sentByMe: true,
+      senderName: 'acct-1',
+      source: 'activity-log',
+    };
+    const confirmedMessage = {
+      id: 'linkedin-123',
+      text: 'okay',
+      sentAt: now - 1000,
+      sentByMe: true,
+      senderName: 'acct-1',
+    };
+
+    expect(isSyntheticDemoMessage(syntheticDemo, now)).toBe(true);
+    expect(isConfirmedThreadMessage(confirmedMessage)).toBe(true);
+    expect(isSyntheticDemoMessage(confirmedMessage, now)).toBe(false);
+    expect(sanitizeThreadMessagesForConversation('real-thread-123', [syntheticDemo, confirmedMessage], now)).toEqual([
+      confirmedMessage,
+    ]);
   });
 
   it('treats reconnect-like same-thread refreshes with changed message bodies as different', () => {

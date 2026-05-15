@@ -25,6 +25,25 @@ export type ThreadScrollDecision = {
 };
 
 type ThreadMessageLike = Pick<Message, 'id' | 'text' | 'sentAt' | 'sentByMe' | 'senderName'>;
+type ThreadMessageMetaLike = ThreadMessageLike & {
+  status?: Message['status'];
+  error?: Message['error'];
+  source?: string | null;
+  synthetic?: boolean | null;
+  fallback?: boolean | null;
+};
+
+const STALE_OPTIMISTIC_TTL_MS = 5 * 60 * 1000;
+const STALE_DEMO_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEMO_MESSAGE_TEXTS = new Set([
+  'eyyyy',
+  'heyyy',
+  'how are you',
+  'kk!',
+  'okay',
+  'okayyy',
+  'text me',
+]);
 
 function normalizeThreadValue(value: string | undefined | null): string {
   return String(value || '').trim();
@@ -78,6 +97,71 @@ export function isSyntheticThreadMessageId(messageId: string | undefined | null)
   return getThreadMessageSource(messageId) !== 'persisted';
 }
 
+export function isKnownDemoMessageText(text: string | undefined | null): boolean {
+  return DEMO_MESSAGE_TEXTS.has(normalizeThreadText(text).toLowerCase());
+}
+
+export function isConfirmedThreadMessage(message: ThreadMessageMetaLike | null | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const explicitSource = normalizeThreadValue(message.source).toLowerCase();
+  const explicitSynthetic = Boolean(message.synthetic || message.fallback);
+
+  return (
+    getThreadMessageSource(message.id) === 'persisted' &&
+    !explicitSynthetic &&
+    explicitSource !== 'activity-log' &&
+    explicitSource !== 'optimistic' &&
+    explicitSource !== 'fallback' &&
+    explicitSource !== 'preview'
+  );
+}
+
+export function isStaleOptimisticMessage(
+  message: ThreadMessageMetaLike | null | undefined,
+  now = Date.now()
+): boolean {
+  if (!message || !message.sentByMe) {
+    return false;
+  }
+
+  return (
+    getThreadMessageSource(message.id) === 'optimistic' &&
+    now - (Number(message.sentAt) || 0) > STALE_OPTIMISTIC_TTL_MS
+  );
+}
+
+export function isSyntheticDemoMessage(
+  message: ThreadMessageMetaLike | null | undefined,
+  now = Date.now()
+): boolean {
+  if (!message) {
+    return false;
+  }
+
+  if (isStaleOptimisticMessage(message, now)) {
+    return true;
+  }
+
+  if (!message.sentByMe || !isKnownDemoMessageText(message.text)) {
+    return false;
+  }
+
+  const explicitSource = normalizeThreadValue(message.source).toLowerCase();
+  const syntheticSource =
+    getThreadMessageSource(message.id) !== 'persisted' ||
+    explicitSource === 'activity-log' ||
+    explicitSource === 'optimistic' ||
+    explicitSource === 'fallback' ||
+    explicitSource === 'preview' ||
+    Boolean(message.synthetic || message.fallback);
+  const olderThanSafeThreshold = now - (Number(message.sentAt) || 0) > STALE_DEMO_MESSAGE_TTL_MS;
+
+  return syntheticSource || !isConfirmedThreadMessage(message) || olderThanSafeThreshold;
+}
+
 export function isStableConversationThread(conversationId: string | undefined | null): boolean {
   const normalizedConversationId = normalizeThreadValue(conversationId).toLowerCase();
   return Boolean(normalizedConversationId)
@@ -85,17 +169,41 @@ export function isStableConversationThread(conversationId: string | undefined | 
     && !normalizedConversationId.startsWith('fallback-');
 }
 
-export function filterThreadMessagesForConversation<T extends ThreadMessageLike>(
+export function sanitizeThreadMessagesForConversation<T extends ThreadMessageMetaLike>(
   conversationId: string | undefined | null,
-  messages: T[] | null | undefined
+  messages: T[] | null | undefined,
+  now = Date.now()
 ): T[] {
   const normalizedMessages = Array.isArray(messages) ? messages : [];
+  const stableConversation = isStableConversationThread(conversationId);
 
-  if (!isStableConversationThread(conversationId)) {
-    return [...normalizedMessages];
-  }
+  return normalizedMessages.filter((message) => {
+    if (!message) {
+      return false;
+    }
 
-  return normalizedMessages.filter((message) => getThreadMessageSource(message?.id) !== 'activity-log');
+    if (isStaleOptimisticMessage(message, now)) {
+      return false;
+    }
+
+    if (stableConversation && getThreadMessageSource(message.id) === 'activity-log') {
+      return false;
+    }
+
+    if (stableConversation && isSyntheticDemoMessage(message, now)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+export function filterThreadMessagesForConversation<T extends ThreadMessageMetaLike>(
+  conversationId: string | undefined | null,
+  messages: T[] | null | undefined,
+  now = Date.now()
+): T[] {
+  return sanitizeThreadMessagesForConversation(conversationId, messages, now);
 }
 
 function getStableThreadMessageId(message: ThreadMessageLike | null | undefined): string {
