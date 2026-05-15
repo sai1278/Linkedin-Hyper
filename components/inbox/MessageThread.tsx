@@ -397,7 +397,7 @@ export function MessageThread({
                 <h2 className="truncate text-xl font-semibold tracking-tight" style={{ color: 'var(--text-primary-new, var(--text-primary))' }}>
                   {participant.name}
                 </h2>
-                <AccountBadge name={accountLabel} />
+                <AccountBadge name={accountLabel} variant="subtle" />
               </div>
               <p className="mt-1 text-sm leading-6" style={{ color: 'var(--text-muted-new, var(--text-muted))' }}>
                 {isLoadingConversation
@@ -441,18 +441,20 @@ export function MessageThread({
             </div>
           </div>
         ) : (
-          groupedMessages.map((group) => (
-            <MessageGroup
-              key={getMessageGroupKey(group)}
-              messages={group.messages}
-              isSentByMe={group.isSentByMe}
-              senderName={group.senderName}
-              accountId={accountId}
-              conversationId={conversation.conversationId}
-              participantAvatarUrl={participant.avatarUrl}
-              onRetry={handleSend}
-            />
-          ))
+          <div className="flex w-full flex-col gap-5">
+            {groupedMessages.map((group) => (
+              <MessageGroup
+                key={getMessageGroupKey(group)}
+                messages={group.messages}
+                isSentByMe={group.isSentByMe}
+                senderName={group.senderName}
+                accountId={accountId}
+                conversationId={conversation.conversationId}
+                participantAvatarUrl={participant.avatarUrl}
+                onRetry={handleSend}
+              />
+            ))}
+          </div>
         )}
         <div ref={bottomRef} />
       </div>
@@ -541,9 +543,9 @@ function MessageGroup({
   onRetry: (text: string, messageId?: string) => Promise<void>;
 }) {
   return (
-    <div className={`mb-7 flex w-full items-end gap-3 ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex w-full items-end gap-3 ${isSentByMe ? 'justify-end' : 'justify-start'}`}>
       {!isSentByMe && (
-        <div className="flex-shrink-0 self-end pb-6">
+        <div className="flex-shrink-0 self-end pb-5">
           <Avatar
             name={senderName}
             size="sm"
@@ -552,7 +554,7 @@ function MessageGroup({
         </div>
       )}
 
-      <div className={`flex min-w-0 flex-1 flex-col gap-3 ${isSentByMe ? 'items-end' : 'items-start'}`}>
+      <div className={`message-lane flex min-w-0 w-full flex-col gap-3 ${isSentByMe ? 'items-end' : 'items-start'}`}>
         {messages.map((message, index) => (
           <MessageBubble
             key={getRenderableMessageKey(message, accountId, conversationId)}
@@ -591,9 +593,12 @@ function MessageBubble({
 
   return (
     <div className={`flex w-full min-w-0 flex-col ${isSentByMe ? 'items-end' : 'items-start'}`}>
-      <div className={`message-bubble ${bubbleStateClass} block min-w-[80px] max-w-[min(70%,680px)] px-4 py-3 text-sm leading-6 max-[900px]:max-w-[85%] ${
+      <div
+        data-message-direction={isSentByMe ? 'outgoing' : 'incoming'}
+        className={`message-bubble ${bubbleStateClass} px-4 py-3 text-sm leading-6 ${
         isSentByMe ? 'rounded-3xl rounded-br-md' : 'rounded-3xl rounded-bl-md'
-      }`}>
+      }`}
+      >
         <span className="block whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
           {message.text}
         </span>
@@ -654,7 +659,7 @@ function MessageBubble({
       )}
 
       {isSentByMe && message.error && isFailed && (
-        <p className="mt-1 max-w-[min(70%,680px)] px-1 text-xs leading-5 max-[900px]:max-w-[85%]" style={{ color: 'var(--inbox-status-failed)' }}>
+        <p className="mt-1 max-w-full px-1 text-xs leading-5" style={{ color: 'var(--inbox-status-failed)' }}>
           {message.error}
         </p>
       )}

@@ -240,7 +240,10 @@ export const ConversationList = memo(function ConversationList({
                     </p>
 
                     <div className="mt-2 flex items-center justify-between gap-2">
-                      <AccountBadge name={accountLabels[conversation.accountId] ?? conversation.accountId} />
+                      <AccountBadge
+                        name={accountLabels[conversation.accountId] ?? conversation.accountId}
+                        variant="subtle"
+                      />
                       {hasUnread && <UnreadBadge count={conversation.unreadCount} />}
                     </div>
                   </div>

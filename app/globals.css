@@ -538,16 +538,21 @@ html {
   box-shadow: 0 18px 30px -22px rgba(37, 99, 235, 0.45);
 }
 
+.message-lane {
+  max-width: min(72%, 680px);
+}
+
 .message-bubble {
-  display: block;
+  display: inline-flex;
+  flex-direction: column;
   width: fit-content;
   border: 1px solid transparent;
   box-shadow: var(--shadow-sm);
-  max-width: min(70%, 680px);
-  min-width: 80px;
+  max-width: 100%;
+  min-width: 96px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-  word-break: break-word;
+  word-break: normal;
   user-select: text;
   -webkit-user-select: text;
   transition: box-shadow var(--transition-fast), transform var(--transition-fast);
@@ -588,7 +593,7 @@ html {
 }
 
 @media (max-width: 900px) {
-  .message-bubble {
+  .message-lane {
     max-width: 85%;
   }
 }

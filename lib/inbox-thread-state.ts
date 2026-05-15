@@ -63,6 +63,20 @@ function getTailSignature(message: ThreadMessageLike | null | undefined): string
   ].join('|');
 }
 
+function getMessageRenderSignature(message: ThreadMessageLike | null | undefined): string {
+  if (!message) {
+    return '';
+  }
+
+  return [
+    getStableThreadMessageId(message),
+    normalizeThreadText(message.text).toLowerCase(),
+    String(Number(message.sentAt) || 0),
+    message.sentByMe ? '1' : '0',
+    normalizeThreadText(message.senderName).toLowerCase(),
+  ].join('|');
+}
+
 export function getConversationSelectionKey(conversation: ConversationIdentity | null | undefined): string {
   if (!conversation) {
     return '';
@@ -87,6 +101,26 @@ export function buildThreadSignature(
     lastMessageCreatedAt: Number(lastMessage?.sentAt) || 0,
     tailSignature: getTailSignature(lastMessage),
   };
+}
+
+export function areThreadMessagesEquivalent(
+  previousMessages: ThreadMessageLike[] | null | undefined,
+  nextMessages: ThreadMessageLike[] | null | undefined
+): boolean {
+  const previous = Array.isArray(previousMessages) ? previousMessages : [];
+  const next = Array.isArray(nextMessages) ? nextMessages : [];
+
+  if (previous.length !== next.length) {
+    return false;
+  }
+
+  for (let index = 0; index < previous.length; index += 1) {
+    if (getMessageRenderSignature(previous[index]) !== getMessageRenderSignature(next[index])) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function isTrueTailAppend(

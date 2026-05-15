@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  areThreadMessagesEquivalent,
   buildThreadSignature,
   getConversationSelectionKey,
   getThreadScrollDecision,
@@ -18,6 +19,32 @@ describe('inbox thread state helpers', () => {
     expect(shouldApplyThreadResponse(5, 5, 'acct-1::conv-3', 'acct-1::conv-2')).toBe(false);
   });
 
+  it('treats same-thread passive refreshes with identical messages as equivalent', () => {
+    const first = [
+      { id: 'msg-1', text: 'hello', sentAt: 1000, sentByMe: false, senderName: 'Alex' },
+      { id: 'msg-2', text: 'there', sentAt: 2000, sentByMe: true, senderName: 'Me' },
+    ];
+    const second = [
+      { id: 'msg-1', text: 'hello', sentAt: 1000, sentByMe: false, senderName: 'Alex' },
+      { id: 'msg-2', text: 'there', sentAt: 2000, sentByMe: true, senderName: 'Me' },
+    ];
+
+    expect(areThreadMessagesEquivalent(first, second)).toBe(true);
+  });
+
+  it('treats reconnect-like same-thread refreshes with changed message bodies as different', () => {
+    const first = [
+      { id: 'msg-1', text: 'hello', sentAt: 1000, sentByMe: false, senderName: 'Alex' },
+      { id: 'msg-2', text: 'there', sentAt: 2000, sentByMe: true, senderName: 'Me' },
+    ];
+    const second = [
+      { id: 'msg-1', text: 'hello', sentAt: 1000, sentByMe: false, senderName: 'Alex' },
+      { id: 'msg-2', text: 'there!', sentAt: 2000, sentByMe: true, senderName: 'Me' },
+    ];
+
+    expect(areThreadMessagesEquivalent(first, second)).toBe(false);
+  });
+
   it('does not auto-scroll on passive refresh when the tail is unchanged', () => {
     const previousSignature = buildThreadSignature('acct-1::conv-2', [
       { id: 'msg-1', text: 'hello', sentAt: 1000, sentByMe: false, senderName: 'Alex' },
@@ -34,6 +61,31 @@ describe('inbox thread state helpers', () => {
         nextSignature,
         userHasManuallyScrolled: false,
         isNearBottom: true,
+      })
+    ).toEqual({
+      action: 'preserve-scroll',
+      behavior: null,
+      reason: 'passive-refresh',
+      trueTailAppend: false,
+    });
+  });
+
+  it('does not auto-scroll on reconnect-style refresh when the active thread content is unchanged', () => {
+    const previousSignature = buildThreadSignature('acct-1::conv-2', [
+      { id: 'msg-1', text: 'hello', sentAt: 1000, sentByMe: false, senderName: 'Alex' },
+      { id: 'msg-5', text: 'latest', sentAt: 5000, sentByMe: true, senderName: 'Me' },
+    ]);
+    const nextSignature = buildThreadSignature('acct-1::conv-2', [
+      { id: 'msg-1', text: 'hello', sentAt: 1000, sentByMe: false, senderName: 'Alex' },
+      { id: 'msg-5', text: 'latest', sentAt: 5000, sentByMe: true, senderName: 'Me' },
+    ]);
+
+    expect(
+      getThreadScrollDecision({
+        previousSignature,
+        nextSignature,
+        userHasManuallyScrolled: false,
+        isNearBottom: false,
       })
     ).toEqual({
       action: 'preserve-scroll',

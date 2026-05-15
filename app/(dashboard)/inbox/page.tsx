@@ -10,6 +10,7 @@ import { ConversationListSkeleton, MessageThreadSkeleton } from '@/components/ui
 import { ErrorState } from '@/components/ui/ErrorState';
 import { wsClient } from '@/lib/websocket-client';
 import {
+  areThreadMessagesEquivalent,
   getConversationSelectionKey,
   shouldApplyThreadResponse,
 } from '@/lib/inbox-thread-state';
@@ -299,7 +300,7 @@ function logMessageArray(label: string, messages: Message[]): void {
 }
 
 export default function InboxPage() {
-  const RECONNECTING_NOTICE_DELAY_MS = 1800;
+  const RECONNECTING_NOTICE_DELAY_MS = 2000;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationKey, setActiveConversationKey] = useState<string | null>(null);
@@ -331,10 +332,7 @@ export default function InboxPage() {
       return;
     }
 
-    if (wsStatus === 'disconnected') {
-      setShowConnectionStatus(true);
-      return;
-    }
+    setShowConnectionStatus(false);
 
     const timer = window.setTimeout(() => {
       setShowConnectionStatus(true);
@@ -417,14 +415,18 @@ export default function InboxPage() {
       messageContext,
       `mergeConversationForDisplay:fallback:${nextConversation.conversationId}`
     );
+    const finalMessages = shouldMergeCurrent && currentConversation?.messages &&
+      areThreadMessagesEquivalent(currentConversation.messages, mergedMessages)
+      ? currentConversation.messages
+      : mergedMessages;
 
     return {
       ...nextConversation,
-      messages: mergedMessages,
+      messages: finalMessages,
       lastMessage: pickLatestLastMessage(
         shouldMergeCurrent ? currentConversation?.lastMessage : undefined,
         nextConversation.lastMessage,
-        mergedMessages
+        finalMessages
       ),
     };
   }, [getFallbackMessages]);
@@ -844,7 +846,7 @@ export default function InboxPage() {
 
           <div className="flex flex-wrap items-center gap-3">
             <div
-              className="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm"
+              className="inline-flex items-center gap-2 rounded-full px-2.5 py-1.5 text-xs"
               title={liveTooltip}
               role="status"
               aria-live="polite"
@@ -869,7 +871,7 @@ export default function InboxPage() {
               type="button"
               onClick={() => void handleReloadInbox()}
               disabled={isReloadingInbox || reloadCooldownRemainingSec > 0}
-              className="button-outline inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium"
+              className="button-outline inline-flex items-center gap-2 rounded-full px-2.5 py-1.5 text-xs font-medium"
             >
               <RefreshCw size={14} className={isReloadingInbox ? 'animate-spin' : ''} />
               {isReloadingInbox
@@ -882,7 +884,7 @@ export default function InboxPage() {
               <button
                 type="button"
                 onClick={() => void handleReconnect()}
-                className="button-outline rounded-full px-3 py-2 text-sm font-medium"
+                className="button-outline rounded-full px-2.5 py-1.5 text-xs font-medium"
               >
                 Reconnect
               </button>
