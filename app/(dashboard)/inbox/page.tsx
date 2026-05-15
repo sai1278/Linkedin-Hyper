@@ -11,7 +11,10 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { wsClient } from '@/lib/websocket-client';
 import {
   areThreadMessagesEquivalent,
+  filterThreadMessagesForConversation,
   getConversationSelectionKey,
+  getThreadMessageSource,
+  isSyntheticThreadMessageId,
   shouldApplyThreadResponse,
 } from '@/lib/inbox-thread-state';
 import { getAccountLabel } from '@/lib/account-label';
@@ -69,16 +72,6 @@ function normalizeMessageText(value: string | undefined | null): string {
 }
 
 const MESSAGE_DEDUP_WINDOW_MS = 60 * 1000;
-
-function isSyntheticMessageId(messageId: string | undefined | null): boolean {
-  const normalizedId = String(messageId || '').trim().toLowerCase();
-  return (
-    normalizedId.startsWith('opt-') ||
-    normalizedId.startsWith('preview-') ||
-    normalizedId.startsWith('live-') ||
-    normalizedId.startsWith('msg:')
-  );
-}
 
 function getMessageTimestamp(message: Message | undefined | null): number {
   return Number(message?.sentAt) || 0;
@@ -138,7 +131,7 @@ function scoreMessage(message: Message): number {
   if (message.status === 'sending') score += 20;
   if (message.status === 'failed') score += 10;
   if (message.error == null) score += 5;
-  if (rawId && !rawId.startsWith('opt-') && !rawId.startsWith('preview-') && !rawId.startsWith('live-')) score += 5;
+  if (rawId && !isSyntheticThreadMessageId(rawId)) score += 5;
   if (normalizeMessageText(message.senderName)) score += 2;
   if (normalizeMessageText(message.text)) score += 2;
 
@@ -150,9 +143,9 @@ function preferMessage(existing: Message, candidate: Message): Message {
   const secondary = preferred === candidate ? existing : candidate;
   const preferredId = String(preferred.id || '').trim();
   const secondaryId = String(secondary.id || '').trim();
-  const stableId = !isSyntheticMessageId(preferredId)
+  const stableId = !isSyntheticThreadMessageId(preferredId)
     ? preferredId
-    : (!isSyntheticMessageId(secondaryId) ? secondaryId : preferredId || secondaryId);
+    : (!isSyntheticThreadMessageId(secondaryId) ? secondaryId : preferredId || secondaryId);
 
   return {
     ...secondary,
@@ -173,7 +166,7 @@ function getMessageDedupKey(
 ): string {
   const normalizedMessage = normalizeMessage(message, context);
   const stableId = String(normalizedMessage.id || '').trim();
-  if (stableId && !isSyntheticMessageId(stableId)) {
+  if (stableId && !isSyntheticThreadMessageId(stableId)) {
     return `id:${stableId}`;
   }
 
@@ -191,15 +184,15 @@ function areProbablySameMessage(left: Message, right: Message): boolean {
   const leftId = String(left.id || '').trim();
   const rightId = String(right.id || '').trim();
 
-  if (leftId && rightId && !isSyntheticMessageId(leftId) && !isSyntheticMessageId(rightId)) {
+  if (leftId && rightId && !isSyntheticThreadMessageId(leftId) && !isSyntheticThreadMessageId(rightId)) {
     return leftId === rightId;
   }
 
   const needsFuzzyMatch =
     !leftId ||
     !rightId ||
-    isSyntheticMessageId(leftId) ||
-    isSyntheticMessageId(rightId);
+    isSyntheticThreadMessageId(leftId) ||
+    isSyntheticThreadMessageId(rightId);
 
   if (!needsFuzzyMatch) {
     return false;
@@ -299,6 +292,30 @@ function logMessageArray(label: string, messages: Message[]): void {
   })));
 }
 
+function logThreadDiagnostics(label: string, conversation: Conversation | null | undefined): void {
+  if (process.env.NODE_ENV === 'production' || !conversation) {
+    return;
+  }
+
+  const sanitizedMessages = filterThreadMessagesForConversation(
+    conversation.conversationId,
+    conversation.messages
+  );
+
+  console.debug(`[Inbox][Diagnostics] ${label}`, {
+    accountId: conversation.accountId,
+    conversationId: conversation.conversationId,
+    messageCount: sanitizedMessages.length,
+    lastMessages: sanitizedMessages.slice(-10).map((message) => ({
+      id: message.id,
+      sentByMe: message.sentByMe,
+      source: getThreadMessageSource(message.id),
+      sentAt: message.sentAt,
+      text: message.text,
+    })),
+  });
+}
+
 export default function InboxPage() {
   const RECONNECTING_NOTICE_DELAY_MS = 2000;
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -375,8 +392,13 @@ export default function InboxPage() {
   );
 
   const getFallbackMessages = useCallback((conversation: Conversation): Message[] => {
-    if (Array.isArray(conversation.messages) && conversation.messages.length > 0) {
-      return conversation.messages;
+    const filteredConversationMessages = filterThreadMessagesForConversation(
+      conversation.conversationId,
+      conversation.messages
+    );
+
+    if (filteredConversationMessages.length > 0) {
+      return filteredConversationMessages;
     }
 
     if (!conversation.lastMessage?.text) {
@@ -399,15 +421,28 @@ export default function InboxPage() {
     nextConversation: Conversation
   ): Conversation => {
     const shouldMergeCurrent = areSameConversation(currentConversation, nextConversation);
-    const fallbackMessages = getFallbackMessages(nextConversation);
+    const nextThreadMessages = filterThreadMessagesForConversation(
+      nextConversation.conversationId,
+      nextConversation.messages
+    );
+    const currentThreadMessages = shouldMergeCurrent
+      ? filterThreadMessagesForConversation(
+          nextConversation.conversationId,
+          currentConversation?.messages
+        )
+      : [];
+    const fallbackMessages = filterThreadMessagesForConversation(
+      nextConversation.conversationId,
+      getFallbackMessages(nextConversation)
+    );
     const messageContext = {
       accountId: nextConversation.accountId,
       conversationId: nextConversation.conversationId,
     };
     const mergedMessages = mergeMessages(
       mergeMessages(
-        shouldMergeCurrent ? currentConversation?.messages : [],
-        nextConversation.messages,
+        currentThreadMessages,
+        nextThreadMessages,
         messageContext,
         `mergeConversationForDisplay:thread:${nextConversation.conversationId}`
       ),
@@ -517,6 +552,7 @@ export default function InboxPage() {
       setIsThreadLoading(true);
       const initialConversation = { ...conversation, messages: [] };
       logMessageArray(`handleSelect before thread fetch ${conversation.conversationId}`, initialConversation.messages);
+      logThreadDiagnostics(`before thread fetch ${conversation.conversationId}`, initialConversation);
       setSelected(initialConversation);
     } else {
       setSelected((existingConversation) => {
@@ -562,6 +598,7 @@ export default function InboxPage() {
           messages: nextMessages,
         });
         logMessageArray(`handleSelect after thread fetch ${conversation.conversationId}`, mergedConversation.messages);
+        logThreadDiagnostics(`after thread fetch ${conversation.conversationId}`, mergedConversation);
         return mergedConversation;
       });
     } catch {
@@ -586,6 +623,7 @@ export default function InboxPage() {
               : getFallbackMessages(conversation),
           });
           logMessageArray(`handleSelect fallback ${conversation.conversationId}`, mergedConversation.messages);
+          logThreadDiagnostics(`fallback thread state ${conversation.conversationId}`, mergedConversation);
           return mergedConversation;
         });
       }

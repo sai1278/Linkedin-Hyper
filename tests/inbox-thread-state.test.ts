@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   areThreadMessagesEquivalent,
   buildThreadSignature,
+  filterThreadMessagesForConversation,
   getConversationSelectionKey,
+  getThreadMessageSource,
   getThreadScrollDecision,
+  isSyntheticThreadMessageId,
   shouldApplyThreadResponse,
   shouldShowJumpToLatest,
 } from '@/lib/inbox-thread-state';
@@ -30,6 +33,31 @@ describe('inbox thread state helpers', () => {
     ];
 
     expect(areThreadMessagesEquivalent(first, second)).toBe(true);
+  });
+
+  it('classifies activity preview messages as synthetic activity-log rows', () => {
+    expect(getThreadMessageSource('activity-msg-1712345678')).toBe('activity-log');
+    expect(isSyntheticThreadMessageId('activity-msg-1712345678')).toBe(true);
+    expect(isSyntheticThreadMessageId('real-linkedin-message-id')).toBe(false);
+  });
+
+  it('drops activity preview rows when rendering a stable conversation thread', () => {
+    const messages = [
+      { id: 'activity-msg-1', text: 'okay', sentAt: 1000, sentByMe: true, senderName: 'acct-1' },
+      { id: 'msg-2', text: 'real reply', sentAt: 2000, sentByMe: false, senderName: 'Alex' },
+    ];
+
+    expect(filterThreadMessagesForConversation('real-thread-123', messages)).toEqual([
+      { id: 'msg-2', text: 'real reply', sentAt: 2000, sentByMe: false, senderName: 'Alex' },
+    ]);
+  });
+
+  it('keeps activity preview rows for activity-only fallback conversations', () => {
+    const messages = [
+      { id: 'activity-msg-1', text: 'okay', sentAt: 1000, sentByMe: true, senderName: 'acct-1' },
+    ];
+
+    expect(filterThreadMessagesForConversation('activity-abc123', messages)).toEqual(messages);
   });
 
   it('treats reconnect-like same-thread refreshes with changed message bodies as different', () => {

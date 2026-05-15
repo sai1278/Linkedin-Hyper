@@ -168,10 +168,27 @@ function createInboxFallbackService(deps) {
     return 3;
   }
 
+  function getConversationThreadKind(conv) {
+    const conversationId = String(conv?.conversationId || '');
+    if (conversationId.startsWith('activity-')) return 'activity';
+    if (conversationId.startsWith('fallback-')) return 'fallback';
+    return 'stable';
+  }
+
   function mergeConversationMessages(previous, current) {
+    const previousKind = getConversationThreadKind(previous);
+    const currentKind = getConversationThreadKind(current);
+    const hasStableConversation = previousKind === 'stable' || currentKind === 'stable';
+    const previousMessages = hasStableConversation && previousKind === 'activity'
+      ? []
+      : (previous?.messages || []);
+    const currentMessages = hasStableConversation && currentKind === 'activity'
+      ? []
+      : (current?.messages || []);
+
     return mergePublicMessages(
-      previous?.messages || [],
-      current?.messages || [],
+      previousMessages,
+      currentMessages,
       {
         accountId: current?.accountId || previous?.accountId || '',
         conversationId: current?.conversationId || previous?.conversationId || '',

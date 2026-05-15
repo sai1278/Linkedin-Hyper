@@ -34,6 +34,70 @@ function normalizeThreadText(value: string | undefined | null): string {
   return normalizeThreadValue(value).replace(/\s+/g, ' ');
 }
 
+export function getThreadMessageSource(messageId: string | undefined | null):
+  | 'optimistic'
+  | 'preview'
+  | 'activity-log'
+  | 'live-fallback'
+  | 'synthetic-fallback'
+  | 'persisted' {
+  const normalizedId = normalizeThreadValue(messageId).toLowerCase();
+
+  if (!normalizedId) {
+    return 'synthetic-fallback';
+  }
+
+  if (normalizedId.startsWith('opt-')) {
+    return 'optimistic';
+  }
+
+  if (normalizedId.startsWith('preview-')) {
+    return 'preview';
+  }
+
+  if (normalizedId.startsWith('activity-msg-')) {
+    return 'activity-log';
+  }
+
+  if (normalizedId.startsWith('live-')) {
+    return 'live-fallback';
+  }
+
+  if (
+    normalizedId.startsWith('msg:') ||
+    normalizedId.startsWith('msg|') ||
+    normalizedId.startsWith('sent-')
+  ) {
+    return 'synthetic-fallback';
+  }
+
+  return 'persisted';
+}
+
+export function isSyntheticThreadMessageId(messageId: string | undefined | null): boolean {
+  return getThreadMessageSource(messageId) !== 'persisted';
+}
+
+export function isStableConversationThread(conversationId: string | undefined | null): boolean {
+  const normalizedConversationId = normalizeThreadValue(conversationId).toLowerCase();
+  return Boolean(normalizedConversationId)
+    && !normalizedConversationId.startsWith('activity-')
+    && !normalizedConversationId.startsWith('fallback-');
+}
+
+export function filterThreadMessagesForConversation<T extends ThreadMessageLike>(
+  conversationId: string | undefined | null,
+  messages: T[] | null | undefined
+): T[] {
+  const normalizedMessages = Array.isArray(messages) ? messages : [];
+
+  if (!isStableConversationThread(conversationId)) {
+    return [...normalizedMessages];
+  }
+
+  return normalizedMessages.filter((message) => getThreadMessageSource(message?.id) !== 'activity-log');
+}
+
 function getStableThreadMessageId(message: ThreadMessageLike | null | undefined): string {
   const stableId = normalizeThreadValue(message?.id);
   if (stableId) {
