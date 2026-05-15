@@ -50,6 +50,9 @@ describe('account access configuration helper', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.unstubAllEnvs();
+    vi.stubEnv('INITIAL_ADMIN_EMAILS', '');
+    vi.stubEnv('USER_ACCOUNT_ACCESS', '');
+    vi.stubEnv('ACCOUNT_ACCESS_MAP', '');
   });
 
   it('warns when neither admin emails nor user mappings are configured', async () => {
