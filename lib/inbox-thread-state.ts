@@ -31,10 +31,16 @@ type ThreadMessageMetaLike = ThreadMessageLike & {
   source?: string | null;
   synthetic?: boolean | null;
   fallback?: boolean | null;
+  syncedAt?: number | string | null;
+  editedAt?: number | string | null;
 };
+type ThreadConversationLike = Pick<Conversation, 'conversationId' | 'messages' | 'lastMessage'>;
 
 const STALE_OPTIMISTIC_TTL_MS = 5 * 60 * 1000;
-const STALE_DEMO_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEMO_MESSAGE_SUPPRESSION_MIN_AGE_MS = 10 * 60 * 1000;
+const RECENT_THREAD_ACTIVITY_WINDOW_MS = 10 * 60 * 1000;
+const RECENT_EDIT_WINDOW_MS = 10 * 60 * 1000;
+const RECENT_SYNC_WINDOW_MS = 10 * 60 * 1000;
 const DEMO_MESSAGE_TEXTS = new Set([
   'eyyyy',
   'heyyy',
@@ -51,6 +57,16 @@ function normalizeThreadValue(value: string | undefined | null): string {
 
 function normalizeThreadText(value: string | undefined | null): string {
   return normalizeThreadValue(value).replace(/\s+/g, ' ');
+}
+
+function getNumericTimestamp(value: number | string | undefined | null): number {
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && numericValue > 0) {
+    return numericValue;
+  }
+
+  const parsed = new Date(String(value || '')).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export function getThreadMessageSource(messageId: string | undefined | null):
@@ -129,7 +145,7 @@ export function isStaleOptimisticMessage(
 
   return (
     getThreadMessageSource(message.id) === 'optimistic' &&
-    now - (Number(message.sentAt) || 0) > STALE_OPTIMISTIC_TTL_MS
+    now - getNumericTimestamp(message.sentAt) > STALE_OPTIMISTIC_TTL_MS
   );
 }
 
@@ -157,7 +173,7 @@ export function isSyntheticDemoMessage(
     explicitSource === 'fallback' ||
     explicitSource === 'preview' ||
     Boolean(message.synthetic || message.fallback);
-  const olderThanSafeThreshold = now - (Number(message.sentAt) || 0) > STALE_DEMO_MESSAGE_TTL_MS;
+  const olderThanSafeThreshold = now - getNumericTimestamp(message.sentAt) > DEMO_MESSAGE_SUPPRESSION_MIN_AGE_MS;
 
   return syntheticSource || !isConfirmedThreadMessage(message) || olderThanSafeThreshold;
 }
@@ -167,6 +183,183 @@ export function isStableConversationThread(conversationId: string | undefined | 
   return Boolean(normalizedConversationId)
     && !normalizedConversationId.startsWith('activity-')
     && !normalizedConversationId.startsWith('fallback-');
+}
+
+function isPendingThreadMessage(message: ThreadMessageMetaLike | null | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const source = getThreadMessageSource(message.id);
+  if (source === 'optimistic') {
+    return true;
+  }
+
+  return message.status === 'sending';
+}
+
+function isFailedThreadMessage(message: ThreadMessageMetaLike | null | undefined): boolean {
+  return message?.status === 'failed';
+}
+
+function getLatestOutgoingMessage(
+  messages: ThreadMessageMetaLike[] | null | undefined
+): ThreadMessageMetaLike | null {
+  const normalizedMessages = Array.isArray(messages) ? messages : [];
+  let latest: ThreadMessageMetaLike | null = null;
+
+  for (const message of normalizedMessages) {
+    if (!message?.sentByMe) {
+      continue;
+    }
+
+    if (!latest || getNumericTimestamp(message.sentAt) >= getNumericTimestamp(latest.sentAt)) {
+      latest = message;
+    }
+  }
+
+  return latest;
+}
+
+function isSameThreadMessage(
+  left: ThreadMessageMetaLike | null | undefined,
+  right: ThreadMessageMetaLike | null | undefined
+): boolean {
+  if (!left || !right) {
+    return false;
+  }
+
+  const leftId = normalizeThreadValue(left.id);
+  const rightId = normalizeThreadValue(right.id);
+  if (leftId && rightId) {
+    return leftId === rightId;
+  }
+
+  return (
+    normalizeThreadText(left.text).toLowerCase() === normalizeThreadText(right.text).toLowerCase() &&
+    getNumericTimestamp(left.sentAt) === getNumericTimestamp(right.sentAt) &&
+    Boolean(left.sentByMe) === Boolean(right.sentByMe)
+  );
+}
+
+function getLatestThreadActivityAt(
+  conversation: ThreadConversationLike | null | undefined,
+  messages: ThreadMessageMetaLike[] | null | undefined
+): number {
+  const normalizedMessages = Array.isArray(messages) ? messages : [];
+  let latest = getNumericTimestamp(conversation?.lastMessage?.sentAt);
+
+  for (const message of normalizedMessages) {
+    const timestamp = getNumericTimestamp(message?.sentAt);
+    if (timestamp > latest) {
+      latest = timestamp;
+    }
+  }
+
+  return latest;
+}
+
+function isRecentlySyncedThreadMessage(
+  message: ThreadMessageMetaLike | null | undefined,
+  now = Date.now()
+): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const syncedAt = getNumericTimestamp(message.syncedAt);
+  return syncedAt > 0 && now - syncedAt <= RECENT_SYNC_WINDOW_MS;
+}
+
+function isRecentlyEditedThreadMessage(
+  message: ThreadMessageMetaLike | null | undefined,
+  now = Date.now()
+): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const editedAt = getNumericTimestamp(message.editedAt);
+  return editedAt > 0 && now - editedAt <= RECENT_EDIT_WINDOW_MS;
+}
+
+function getDemoSuppressionDecision(
+  message: ThreadMessageMetaLike | null | undefined,
+  conversation: ThreadConversationLike | null | undefined,
+  now = Date.now()
+): {
+  suppress: boolean;
+  reason: string;
+  ageMs: number;
+  source: ReturnType<typeof getThreadMessageSource>;
+} {
+  const source = getThreadMessageSource(message?.id);
+  const sentAt = getNumericTimestamp(message?.sentAt);
+  const ageMs = sentAt > 0 ? Math.max(0, now - sentAt) : Number.POSITIVE_INFINITY;
+
+  if (!message) {
+    return { suppress: false, reason: 'missing-message', ageMs: 0, source };
+  }
+
+  if (!message.sentByMe) {
+    return { suppress: false, reason: 'incoming-message', ageMs, source };
+  }
+
+  if (!isKnownDemoMessageText(message.text)) {
+    return { suppress: false, reason: 'non-demo-text', ageMs, source };
+  }
+
+  if (isPendingThreadMessage(message)) {
+    return { suppress: false, reason: 'pending-message', ageMs, source };
+  }
+
+  if (isFailedThreadMessage(message)) {
+    return { suppress: false, reason: 'failed-message', ageMs, source };
+  }
+
+  const latestOutgoing = getLatestOutgoingMessage(conversation?.messages);
+  if (isSameThreadMessage(latestOutgoing, message)) {
+    return { suppress: false, reason: 'latest-outgoing-message', ageMs, source };
+  }
+
+  if (isRecentlyEditedThreadMessage(message, now)) {
+    return { suppress: false, reason: 'recently-edited', ageMs, source };
+  }
+
+  if (isRecentlySyncedThreadMessage(message, now)) {
+    return { suppress: false, reason: 'recently-synced', ageMs, source };
+  }
+
+  const latestThreadActivityAt = getLatestThreadActivityAt(conversation, conversation?.messages);
+  const hasRecentThreadActivity =
+    latestThreadActivityAt > 0 && now - latestThreadActivityAt <= RECENT_THREAD_ACTIVITY_WINDOW_MS;
+
+  if (
+    isConfirmedThreadMessage(message) &&
+    ageMs <= DEMO_MESSAGE_SUPPRESSION_MIN_AGE_MS &&
+    hasRecentThreadActivity
+  ) {
+    return { suppress: false, reason: 'recent-confirmed-message', ageMs, source };
+  }
+
+  if (ageMs <= DEMO_MESSAGE_SUPPRESSION_MIN_AGE_MS) {
+    return { suppress: false, reason: 'too-recent', ageMs, source };
+  }
+
+  return {
+    suppress: true,
+    reason: source === 'persisted' ? 'stale-demo-message' : 'stale-demo-synthetic-message',
+    ageMs,
+    source,
+  };
+}
+
+export function shouldSuppressDemoMessage(
+  message: ThreadMessageMetaLike | null | undefined,
+  conversation: ThreadConversationLike | null | undefined,
+  now = Date.now()
+): boolean {
+  return getDemoSuppressionDecision(message, conversation, now).suppress;
 }
 
 export function sanitizeThreadMessagesForConversation<T extends ThreadMessageMetaLike>(
@@ -198,12 +391,56 @@ export function sanitizeThreadMessagesForConversation<T extends ThreadMessageMet
   });
 }
 
+export function sanitizeConversationMessages<T extends ThreadMessageMetaLike>(
+  conversation: ThreadConversationLike | null | undefined,
+  messages: T[] | null | undefined = conversation?.messages as T[] | null | undefined,
+  now = Date.now()
+): T[] {
+  const normalizedMessages = sanitizeThreadMessagesForConversation(
+    conversation?.conversationId,
+    messages,
+    now
+  );
+  const stableConversation = isStableConversationThread(conversation?.conversationId);
+
+  return normalizedMessages.filter((message) => {
+    if (!stableConversation) {
+      return true;
+    }
+
+    const decision = getDemoSuppressionDecision(message, {
+      conversationId: conversation?.conversationId || '',
+      lastMessage: conversation?.lastMessage || { text: '', sentAt: 0, sentByMe: false },
+      messages: normalizedMessages,
+    }, now);
+
+    if (decision.suppress && process.env.NODE_ENV !== 'production') {
+      console.debug('[Inbox][DemoSuppress]', {
+        messageId: message.id,
+        reason: decision.reason,
+        ageMs: decision.ageMs,
+        source: decision.source,
+      });
+    }
+
+    return !decision.suppress;
+  });
+}
+
 export function filterThreadMessagesForConversation<T extends ThreadMessageMetaLike>(
   conversationId: string | undefined | null,
   messages: T[] | null | undefined,
   now = Date.now()
 ): T[] {
-  return sanitizeThreadMessagesForConversation(conversationId, messages, now);
+  return sanitizeConversationMessages({
+    conversationId: conversationId || '',
+    messages: Array.isArray(messages) ? messages : [],
+    lastMessage: {
+      text: '',
+      sentAt: 0,
+      sentByMe: false,
+    },
+  }, messages, now);
 }
 
 function getStableThreadMessageId(message: ThreadMessageLike | null | undefined): string {

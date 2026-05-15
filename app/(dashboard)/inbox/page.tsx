@@ -11,13 +11,13 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { wsClient } from '@/lib/websocket-client';
 import {
   areThreadMessagesEquivalent,
-  filterThreadMessagesForConversation,
   getConversationSelectionKey,
   isConfirmedThreadMessage,
   isSyntheticDemoMessage,
   isStaleOptimisticMessage,
   getThreadMessageSource,
   isSyntheticThreadMessageId,
+  sanitizeConversationMessages,
   shouldApplyThreadResponse,
 } from '@/lib/inbox-thread-state';
 import { getAccountLabel } from '@/lib/account-label';
@@ -300,10 +300,7 @@ function logThreadDiagnostics(label: string, conversation: Conversation | null |
     return;
   }
 
-  const sanitizedMessages = filterThreadMessagesForConversation(
-    conversation.conversationId,
-    conversation.messages
-  );
+  const sanitizedMessages = sanitizeConversationMessages(conversation, conversation.messages);
 
   console.debug(`[Inbox][Diagnostics] ${label}`, {
     accountId: conversation.accountId,
@@ -399,8 +396,8 @@ export default function InboxPage() {
   );
 
   const getFallbackMessages = useCallback((conversation: Conversation): Message[] => {
-    const filteredConversationMessages = filterThreadMessagesForConversation(
-      conversation.conversationId,
+    const filteredConversationMessages = sanitizeConversationMessages(
+      conversation,
       conversation.messages
     );
 
@@ -428,18 +425,24 @@ export default function InboxPage() {
     nextConversation: Conversation
   ): Conversation => {
     const shouldMergeCurrent = areSameConversation(currentConversation, nextConversation);
-    const nextThreadMessages = filterThreadMessagesForConversation(
-      nextConversation.conversationId,
+    const nextThreadMessages = sanitizeConversationMessages(
+      nextConversation,
       nextConversation.messages
     );
     const currentThreadMessages = shouldMergeCurrent
-      ? filterThreadMessagesForConversation(
-          nextConversation.conversationId,
+      ? sanitizeConversationMessages(
+          {
+            ...nextConversation,
+            messages: currentConversation?.messages || [],
+          },
           currentConversation?.messages
         )
       : [];
-    const fallbackMessages = filterThreadMessagesForConversation(
-      nextConversation.conversationId,
+    const fallbackMessages = sanitizeConversationMessages(
+      {
+        ...nextConversation,
+        messages: getFallbackMessages(nextConversation),
+      },
       getFallbackMessages(nextConversation)
     );
     const messageContext = {

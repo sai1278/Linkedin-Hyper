@@ -15,7 +15,7 @@ import {
   isConfirmedThreadMessage,
   isStaleOptimisticMessage,
   isSyntheticDemoMessage,
-  sanitizeThreadMessagesForConversation,
+  sanitizeConversationMessages,
   shouldShowJumpToLatest,
 } from '@/lib/inbox-thread-state';
 import { formatRelativeTime, formatTimestamp } from '@/lib/time-utils';
@@ -131,7 +131,7 @@ export function MessageThread({
 
   const conversationKey = getConversationSelectionKey(conversation);
   const messages = useMemo(
-    () => sanitizeThreadMessagesForConversation(conversation?.conversationId, conversation?.messages ?? []),
+    () => sanitizeConversationMessages(conversation, conversation?.messages ?? []),
     [conversation]
   );
 

@@ -10,8 +10,10 @@ import {
   isSyntheticDemoMessage,
   getThreadMessageSource,
   getThreadScrollDecision,
+  sanitizeConversationMessages,
   sanitizeThreadMessagesForConversation,
   isSyntheticThreadMessageId,
+  shouldSuppressDemoMessage,
   shouldApplyThreadResponse,
   shouldShowJumpToLatest,
 } from '@/lib/inbox-thread-state';
@@ -108,6 +110,146 @@ describe('inbox thread state helpers', () => {
     expect(sanitizeThreadMessagesForConversation('real-thread-123', [syntheticDemo, confirmedMessage], now)).toEqual([
       confirmedMessage,
     ]);
+  });
+
+  it('suppresses known stale demo messages when they are old and not the latest outgoing row', () => {
+    const now = Date.UTC(2026, 4, 15, 12, 0, 0);
+    const staleDemo = {
+      id: 'linkedin-demo-1',
+      text: 'okay',
+      sentAt: now - (30 * 60 * 1000),
+      sentByMe: true,
+      senderName: 'acct-1',
+      status: 'sent' as const,
+    };
+    const latestOutgoing = {
+      id: 'linkedin-real-2',
+      text: 'real latest update',
+      sentAt: now - (2 * 60 * 1000),
+      sentByMe: true,
+      senderName: 'acct-1',
+      status: 'sent' as const,
+    };
+    const conversation = {
+      conversationId: 'real-thread-123',
+      lastMessage: {
+        text: latestOutgoing.text,
+        sentAt: latestOutgoing.sentAt,
+        sentByMe: true,
+      },
+      messages: [staleDemo, latestOutgoing],
+    };
+
+    expect(shouldSuppressDemoMessage(staleDemo, conversation, now)).toBe(true);
+    expect(sanitizeConversationMessages(conversation, conversation.messages, now)).toEqual([latestOutgoing]);
+  });
+
+  it('does not suppress recent confirmed real outgoing demo-text messages', () => {
+    const now = Date.UTC(2026, 4, 15, 12, 0, 0);
+    const recentOutgoing = {
+      id: 'linkedin-real-3',
+      text: 'okay',
+      sentAt: now - (5 * 60 * 1000),
+      sentByMe: true,
+      senderName: 'acct-1',
+      status: 'sent' as const,
+    };
+    const incoming = {
+      id: 'linkedin-in-1',
+      text: 'got it',
+      sentAt: now - (2 * 60 * 1000),
+      sentByMe: false,
+      senderName: 'Alex',
+    };
+    const conversation = {
+      conversationId: 'real-thread-123',
+      lastMessage: {
+        text: incoming.text,
+        sentAt: incoming.sentAt,
+        sentByMe: false,
+      },
+      messages: [recentOutgoing, incoming],
+    };
+
+    expect(shouldSuppressDemoMessage(recentOutgoing, conversation, now)).toBe(false);
+  });
+
+  it('does not suppress pending demo-text outgoing messages', () => {
+    const now = Date.UTC(2026, 4, 15, 12, 0, 0);
+    const pendingMessage = {
+      id: 'opt-123',
+      text: 'okay',
+      sentAt: now - (20 * 60 * 1000),
+      sentByMe: true,
+      senderName: 'acct-1',
+      status: 'sending' as const,
+    };
+    const conversation = {
+      conversationId: 'real-thread-123',
+      lastMessage: {
+        text: pendingMessage.text,
+        sentAt: pendingMessage.sentAt,
+        sentByMe: true,
+      },
+      messages: [pendingMessage],
+    };
+
+    expect(shouldSuppressDemoMessage(pendingMessage, conversation, now)).toBe(false);
+  });
+
+  it('does not suppress the latest outgoing demo-text message in the thread', () => {
+    const now = Date.UTC(2026, 4, 15, 12, 0, 0);
+    const latestOutgoing = {
+      id: 'linkedin-real-4',
+      text: 'text me',
+      sentAt: now - (20 * 60 * 1000),
+      sentByMe: true,
+      senderName: 'acct-1',
+      status: 'sent' as const,
+    };
+    const olderOutgoing = {
+      id: 'linkedin-real-5',
+      text: 'real older message',
+      sentAt: now - (25 * 60 * 1000),
+      sentByMe: true,
+      senderName: 'acct-1',
+      status: 'sent' as const,
+    };
+    const conversation = {
+      conversationId: 'real-thread-123',
+      lastMessage: {
+        text: latestOutgoing.text,
+        sentAt: latestOutgoing.sentAt,
+        sentByMe: true,
+      },
+      messages: [olderOutgoing, latestOutgoing],
+    };
+
+    expect(shouldSuppressDemoMessage(latestOutgoing, conversation, now)).toBe(false);
+  });
+
+  it('does not suppress unrelated outgoing history', () => {
+    const now = Date.UTC(2026, 4, 15, 12, 0, 0);
+    const normalOutgoing = {
+      id: 'linkedin-real-6',
+      text: 'See you tomorrow at 5',
+      sentAt: now - (60 * 60 * 1000),
+      sentByMe: true,
+      senderName: 'acct-1',
+      status: 'sent' as const,
+    };
+    const conversation = {
+      conversationId: 'real-thread-123',
+      lastMessage: {
+        text: normalOutgoing.text,
+        sentAt: normalOutgoing.sentAt,
+        sentByMe: true,
+      },
+      messages: [normalOutgoing],
+    };
+
+    expect(shouldSuppressDemoMessage(normalOutgoing, conversation, now)).toBe(false);
+    expect(sanitizeConversationMessages(conversation, conversation.messages, now)).toEqual([normalOutgoing]);
   });
 
   it('treats reconnect-like same-thread refreshes with changed message bodies as different', () => {
