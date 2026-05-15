@@ -48,6 +48,30 @@ set_if_missing() {
   fi
 }
 
+generate_hex() {
+  local bytes="$1"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex "$bytes"
+    return
+  fi
+  python3 - <<PY
+import secrets
+print(secrets.token_hex($bytes))
+PY
+}
+
+generate_urlsafe() {
+  local bytes="$1"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 "$bytes" | tr -d '\n' | tr '/+' '_-' | tr -d '='
+    return
+  fi
+  python3 - <<PY
+import secrets
+print(secrets.token_urlsafe($bytes))
+PY
+}
+
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 if [[ -z "$PUBLIC_HOST" ]]; then
   PUBLIC_HOST="$(curl -4 -fsS ifconfig.me 2>/dev/null || true)"
@@ -56,13 +80,14 @@ if [[ -z "$PUBLIC_HOST" ]]; then
   PUBLIC_HOST="127.0.0.1"
 fi
 
-set_if_missing DB_PASSWORD "dev-db-pass-123"
+set_if_missing DB_PASSWORD "$(generate_urlsafe 18)"
 set_if_missing ACCOUNT_IDS "$ACCOUNTS_DEFAULT"
-set_if_missing API_SECRET "dev-api-secret-key-change-in-production"
-set_if_missing REDIS_PASSWORD "dev-redis-pass-123"
-set_if_missing SESSION_ENCRYPTION_KEY "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
-set_if_missing DASHBOARD_PASSWORD "ChangeMeNow123!"
-set_if_missing JWT_SECRET "mK9pL2qR8vX4nZ6wA1bC3dE5fG7hJ0kM9pL2qR8vX4nZ6wA1bC3dE5fG7hJ0kM"
+set_if_missing API_SECRET "$(generate_hex 32)"
+set_if_missing API_ROUTE_AUTH_TOKEN "$(generate_urlsafe 32)"
+set_if_missing REDIS_PASSWORD "$(generate_urlsafe 18)"
+set_if_missing SESSION_ENCRYPTION_KEY "$(generate_hex 32)"
+set_if_missing DASHBOARD_PASSWORD "$(generate_urlsafe 18)"
+set_if_missing JWT_SECRET "$(generate_urlsafe 48)"
 set_if_missing SESSION_MAX_AGE "86400"
 
 upsert FRONTEND_HOST_BIND "0.0.0.0"

@@ -1,18 +1,17 @@
 import { NextRequest } from 'next/server';
-import { authenticateCaller, forwardToBackend } from '@/lib/server/backend-api';
+import { authorizeAccountAccess } from '@/lib/auth/account-access';
+import { forwardToBackend } from '@/lib/server/backend-api';
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authError = authenticateCaller(req);
-  if (authError) return authError;
-
   const { id: accountId } = await params;
+  const access = await authorizeAccountAccess(req, accountId, { allowApiSecret: true });
+  if (access.response) return access.response;
 
   return forwardToBackend({
     method: 'GET',
-    path: `/accounts/${accountId}/session/status`,
+    path: `/accounts/${access.accountId}/session/status`,
   });
 }
-

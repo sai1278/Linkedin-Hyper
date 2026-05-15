@@ -45,7 +45,7 @@ set_if_missing() {
 # Core required env defaults.
 set_if_missing DB_PASSWORD "dev-db-pass-123"
 set_if_missing REDIS_PASSWORD "dev-redis-pass-123"
-set_if_missing API_SECRET "q1W2e3R4t5Y6u7I8o9P0a1S2d3F4g5H6j7K8l9Z0x1C2v3B4"
+set_if_missing API_SECRET "$(openssl rand -hex 32)"
 set_if_missing SESSION_ENCRYPTION_KEY "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
 set_if_missing DASHBOARD_PASSWORD "NewPassword123!"
 set_if_missing JWT_SECRET "mK9pL2qR8vX4nZ6wA1bC3dE5fG7hJ0kM9pL2qR8vX4nZ6wA1bC3dE5fG7hJ0kM"
@@ -118,3 +118,4 @@ curl -fsS http://127.0.0.1:3001/health && echo
 
 echo
 echo "Self-heal completed."
+

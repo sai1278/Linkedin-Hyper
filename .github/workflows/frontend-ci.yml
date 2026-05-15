@@ -13,7 +13,6 @@ on:
       - 'tsconfig.json'
       - 'package.json'
       - '.github/workflows/frontend-ci.yml'
-      # Tracker frontend
       - 'linkedin-chat-tracker/**'
   pull_request:
     branches: [main]
@@ -29,29 +28,33 @@ on:
       - '.github/workflows/frontend-ci.yml'
       - 'linkedin-chat-tracker/**'
 
+permissions:
+  contents: read
+
 jobs:
-  # ─── Blog frontend (linkedin-automation root) ─────────────────────────────
   blog-frontend:
-    name: Blog Frontend — Type-check & Lint
+    name: Frontend CI
     runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_API_URL: /api
     defaults:
       run:
         working-directory: .
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --include=dev
 
-      - name: TypeScript — no-emit check
-        run: npx tsc --noEmit
+      - name: TypeScript no-emit check
+        run: npx tsc --noEmit --pretty false
 
       - name: ESLint
-        run: npx eslint . --ext .ts,.tsx --max-warnings 0
+        run: npm run lint

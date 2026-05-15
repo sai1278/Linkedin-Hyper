@@ -34,6 +34,7 @@ async function readMessagesInternal({
   accountId,
   proxyUrl,
   limit,
+  refreshSessionCookies = true,
   __attempt = 1,
   forceCookieReload = false,
 }) {
@@ -129,6 +130,29 @@ async function readMessagesInternal({
         }
         return '';
       };
+      const looksGenericLabel = (value) => {
+        const normalized = normalizeText(value).toLowerCase();
+        if (!normalized) return true;
+        return [
+          'unknown',
+          'linkedin member',
+          'member',
+          'message',
+          'messaging',
+          'messages',
+          'conversation',
+          'view profile',
+        ].includes(normalized);
+      };
+      const deriveNameFromProfileUrl = (href) => {
+        const match = String(href || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
+        if (!match?.[1]) return '';
+        return normalizeText(
+          decodeURIComponent(match[1])
+            .replace(/[-_]+/g, ' ')
+            .replace(/\b\d+\b/g, '')
+        );
+      };
       const extractThreadId = (thread, href, participantName, profileUrl, idx) => {
         const candidates = [
           href || '',
@@ -180,12 +204,20 @@ async function readMessagesInternal({
           const ariaLabel = thread.getAttribute('aria-label') || linkEl?.getAttribute('aria-label') || '';
 
           const href = linkEl?.href || '';
-          const profileUrl = toAbsoluteLinkedInUrl(profileLinkEl?.getAttribute('href') || '');
+          const profileUrl = toAbsoluteLinkedInUrl(
+            profileLinkEl?.getAttribute('href') || (href.includes('/in/') ? href : '')
+          );
           const nameFromAria = extractNameFromAriaLabel(ariaLabel);
-          const rawName =
-            normalizeText(nameEl?.textContent) ||
-            normalizeText(profileLinkEl?.textContent) ||
-            nameFromAria;
+          const rawName = [
+            nameEl?.textContent,
+            profileLinkEl?.textContent,
+            avatarEl?.getAttribute('alt'),
+            thread.querySelector('[title]')?.getAttribute('title'),
+            nameFromAria,
+            deriveNameFromProfileUrl(profileUrl),
+          ]
+            .map(normalizeText)
+            .find((candidate) => candidate && !looksGenericLabel(candidate)) || '';
           const participantName = rawName || 'Unknown';
           const chatId = extractThreadId(thread, href, participantName, profileUrl, idx);
 
@@ -224,7 +256,11 @@ async function readMessagesInternal({
       chat.accountId = accountId;
     });
 
-    if (process.env.REFRESH_SESSION_COOKIES === '1') {
+    console.log(
+      `[readMessages:${accountId}] fetched conversations=${chats.length} limit=${limit} refreshSessionCookies=${refreshSessionCookies ? 1 : 0}`
+    );
+
+    if (refreshSessionCookies && process.env.REFRESH_SESSION_COOKIES === '1') {
       await saveCookies(accountId, await context.cookies(), {
         skipIfMissingAuthCookies: true,
         source: 'readMessages',
@@ -236,13 +272,14 @@ async function readMessagesInternal({
     if (__attempt < 2 && isRecoverableBrowserError(err)) {
       await cleanupContext(accountId).catch(() => {});
       await delay(250, 500);
-      return readMessagesInternal({
-        accountId,
-        proxyUrl,
-        limit,
-        __attempt: __attempt + 1,
-        forceCookieReload: true,
-      });
+        return readMessagesInternal({
+          accountId,
+          proxyUrl,
+          limit,
+          refreshSessionCookies,
+          __attempt: __attempt + 1,
+          forceCookieReload: true,
+        });
     }
     throw err;
   } finally {
@@ -250,10 +287,17 @@ async function readMessagesInternal({
   }
 }
 
-async function readMessages({ accountId, proxyUrl, limit = 20 }) {
+async function readMessages({ accountId, proxyUrl, limit = 20, refreshSessionCookies = true }) {
   return withAccountLock(accountId, async () => {
     await checkAndIncrement(accountId, 'inboxReads');
-    return readMessagesInternal({ accountId, proxyUrl, limit, __attempt: 1, forceCookieReload: false });
+    return readMessagesInternal({
+      accountId,
+      proxyUrl,
+      limit,
+      refreshSessionCookies,
+      __attempt: 1,
+      forceCookieReload: false,
+    });
   });
 }
 

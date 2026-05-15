@@ -1,0 +1,1502 @@
+openapi: 3.0.3
+info:
+  title: Linkedin-Hyper API
+  version: 1.0.0
+  description: >-
+    Browser-facing Next.js BFF API for Linkedin-Hyper. This spec documents the
+    operator dashboard routes, account/session flows, inbox APIs, send/sync APIs,
+    health endpoints, export endpoints, and supporting account/stats endpoints.
+servers:
+  - url: /
+    description: Same-origin frontend deployment
+  - url: http://127.0.0.1:3002
+    description: Local frontend container or dev server
+  - url: http://localhost:3000
+    description: Local Next.js dev server
+
+tags:
+  - name: Auth
+  - name: Accounts
+  - name: Sessions/Cookies
+  - name: Messages
+  - name: Inbox
+  - name: Sync
+  - name: Connections
+  - name: Stats
+  - name: Health
+  - name: Export
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in to the dashboard
+      description: >-
+        Validates email/password, applies login throttling, and sets the
+        HTTP-only app_session cookie on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Missing email/password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid email or password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many login attempts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a dashboard user
+      description: >-
+        Creates a dashboard user, assigns admin role if the email appears in
+        INITIAL_ADMIN_EMAILS, and sets the app_session cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/verify:
+    get:
+      tags: [Auth]
+      summary: Verify current dashboard session
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Session is authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthVerifyResponse'
+        '401':
+          description: No valid dashboard session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthVerifyUnauthenticated'
+        '503':
+          description: Session re-hydration failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/accounts:
+    get:
+      tags: [Accounts]
+      summary: List configured and known accounts
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      responses:
+        '200':
+          description: Accounts returned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/accounts/{id}/session:
+    post:
+      tags: [Sessions/Cookies]
+      summary: Import LinkedIn session cookies for an account
+      description: >-
+        Accepts a non-empty cookie array, validates required LinkedIn auth
+        cookies, and forwards the import to the worker.
+      security:
+        - cookieAuth: []
+        - apiKeyAuth: []
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/CookieObject'
+      responses:
+        '200':
+          description: Cookies imported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CookieImportResponse'
+        '400':
+          description: Invalid cookie payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      tags: [Sessions/Cookies]
+      summary: Delete imported session cookies for an account
+      security:
+        - cookieAuth: []
+        - apiKeyAuth: []
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+      responses:
+        '204':
+          description: Session deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/accounts/{id}/session/status:
+    get:
+      tags: [Sessions/Cookies]
+      summary: Get stored session status for an account
+      security:
+        - cookieAuth: []
+        - apiKeyAuth: []
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+      responses:
+        '200':
+          description: Session exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatusResponse'
+        '404':
+          description: No stored session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [exists]
+                properties:
+                  exists:
+                    type: boolean
+                    enum: [false]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/accounts/{id}/verify:
+    post:
+      tags: [Accounts]
+      summary: Verify LinkedIn session for an account
+      description: >-
+        Launches the worker verification flow. This can take several seconds.
+      security:
+        - cookieAuth: []
+        - apiKeyAuth: []
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+        - name: fresh
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional verify freshness hint forwarded to the worker.
+      responses:
+        '200':
+          description: Verification completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyAccountResponse'
+        '400':
+          description: Verification failed with safe public code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '504':
+          description: Verification timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/accounts/{id}/limits:
+    get:
+      tags: [Accounts]
+      summary: Get rate limit state for an account
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPath'
+      responses:
+        '200':
+          description: Limit counters returned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/inbox/unified:
+    get:
+      tags: [Inbox]
+      summary: Get the unified inbox
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '200':
+          description: Unified inbox payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboxUnifiedResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '502':
+          description: Backend unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/messages/send:
+    post:
+      tags: [Messages]
+      summary: Deprecated send route
+      deprecated: true
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      responses:
+        '410':
+          description: Deprecated route
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeprecatedRouteResponse'
+
+  /api/messages/send-new:
+    post:
+      tags: [Messages]
+      summary: Send a LinkedIn message
+      description: >-
+        Sends a controlled message through the worker. Requires account access,
+        message text, and either profileUrl or chatId.
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendNewRequest'
+      responses:
+        '200':
+          description: Message send accepted/completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendNewResponse'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: Cooldown or rate limit applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationErrorResponse'
+
+  /api/messages/thread:
+    get:
+      tags: [Messages]
+      summary: Get a single conversation thread
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: chatId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['1']
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+      responses:
+        '200':
+          description: Thread returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreadResponse'
+        '400':
+          description: Missing or invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/sync/messages:
+    post:
+      tags: [Sync]
+      summary: Trigger message sync
+      description: >-
+        Runs a controlled sync for one account or, for admins, all configured
+        accounts. Non-admin multi-account sync requires an explicit accountId.
+      security:
+        - cookieAuth: []
+        - apiKeyAuth: []
+        - serviceToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncMessagesRequest'
+      responses:
+        '200':
+          description: Sync started or completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncMessagesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: Retry window applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationErrorResponse'
+
+  /api/connections/unified:
+    get:
+      tags: [Connections]
+      summary: Get unified connections data
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      responses:
+        '200':
+          description: Connections payload returned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/connections/send:
+    post:
+      tags: [Connections]
+      summary: Send a connection request
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountId, profileUrl]
+              properties:
+                accountId:
+                  type: string
+                profileUrl:
+                  type: string
+                note:
+                  type: string
+                  maxLength: 300
+      responses:
+        '200':
+          description: Connection request forwarded to worker
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/people/search:
+    get:
+      tags: [Connections]
+      summary: Search people through the worker
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results returned
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/export/messages:
+    post:
+      tags: [Export]
+      summary: Export messages as CSV or JSON
+      description: >-
+        Export is implemented as POST so account/conversation filters can be
+        supplied in a typed JSON body.
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportMessagesRequest'
+      responses:
+        '200':
+          description: Export generated
+          content:
+            text/csv:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportMessagesJsonResponse'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/export/activity:
+    post:
+      tags: [Export]
+      summary: Export recent activity as CSV or JSON
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportActivityRequest'
+      responses:
+        '200':
+          description: Activity export generated
+          content:
+            text/csv:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportActivityJsonResponse'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/health/startup-validation:
+    get:
+      tags: [Health]
+      summary: Get startup validation report
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      responses:
+        '200':
+          description: Startup validation report returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartupValidationReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: Worker backend unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/health/summary:
+    get:
+      tags: [Health]
+      summary: Get health summary
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      responses:
+        '200':
+          description: Health summary returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stats/{accountId}/activity:
+    get:
+      tags: [Stats]
+      summary: Get paginated activity entries for one account
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      parameters:
+        - $ref: '#/components/parameters/AccountIdPathStats'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Activity entries returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsActivityResponse'
+        '400':
+          description: Invalid paging or account identifier
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/stats/all/summary:
+    get:
+      tags: [Stats]
+      summary: Get aggregate activity summary across configured accounts
+      security:
+        - cookieAuth: []
+        - serviceToken: []
+      responses:
+        '200':
+          description: Aggregate stats returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsAllSummaryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: app_session
+      description: Dashboard session cookie.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Controlled operator path for specific worker/admin recovery routes only.
+    serviceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Compatibility-only service bearer token path for operator automation.
+
+  parameters:
+    AccountIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Managed LinkedIn account identifier.
+    AccountIdPathStats:
+      name: accountId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Managed LinkedIn account identifier.
+
+  responses:
+    Unauthorized:
+      description: Request is not authenticated
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Request is authenticated but not authorized or same-origin checks failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          nullable: true
+        retryAfterSec:
+          type: integer
+          nullable: true
+
+    User:
+      type: object
+      required: [id, name, email, role]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, user]
+        authMode:
+          type: string
+          nullable: true
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+        rememberMe:
+          type: boolean
+          default: false
+
+    LoginResponse:
+      type: object
+      required: [ok, message, user]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+
+    RegisterResponse:
+      type: object
+      required: [ok, user]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        user:
+          $ref: '#/components/schemas/User'
+
+    AuthVerifyUnauthenticated:
+      type: object
+      required: [authenticated]
+      properties:
+        authenticated:
+          type: boolean
+          enum: [false]
+
+    AuthVerifyResponse:
+      type: object
+      required: [authenticated, user, diagnostics]
+      properties:
+        authenticated:
+          type: boolean
+          enum: [true]
+        user:
+          $ref: '#/components/schemas/User'
+        diagnostics:
+          type: object
+          required: [session, accountAccess]
+          properties:
+            session:
+              type: object
+              properties:
+                email:
+                  type: string
+                  nullable: true
+                role:
+                  type: string
+                  nullable: true
+                authMode:
+                  type: string
+                  nullable: true
+            accountAccess:
+              type: object
+              required:
+                - accountAccessConfigPresent
+                - initialAdminEmailsConfigured
+                - userAccountAccessConfigured
+                - initialAdminEmailCount
+                - userAccountAccessEntryCount
+                - mappedAccountIds
+                - effectiveRole
+              properties:
+                accountAccessConfigPresent:
+                  type: boolean
+                initialAdminEmailsConfigured:
+                  type: boolean
+                userAccountAccessConfigured:
+                  type: boolean
+                initialAdminEmailCount:
+                  type: integer
+                userAccountAccessEntryCount:
+                  type: integer
+                mappedAccountIds:
+                  type: array
+                  items:
+                    type: string
+                effectiveRole:
+                  type: string
+                  enum: [admin, user]
+
+    Account:
+      type: object
+      required: [id, displayName, isActive]
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        isActive:
+          type: boolean
+        lastSeen:
+          type: string
+          nullable: true
+
+    CookieObject:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+        domain:
+          type: string
+        path:
+          type: string
+        expires:
+          type: number
+        secure:
+          type: boolean
+        httpOnly:
+          type: boolean
+        sameSite:
+          type: string
+      additionalProperties: true
+
+    CookieImportResponse:
+      type: object
+      required: [success, accountId, cookieCount, message]
+      properties:
+        success:
+          type: boolean
+        accountId:
+          type: string
+        cookieCount:
+          type: integer
+        message:
+          type: string
+
+    SessionStatusResponse:
+      type: object
+      required: [exists]
+      properties:
+        exists:
+          type: boolean
+        savedAt:
+          type: string
+          nullable: true
+        cookieCount:
+          type: integer
+          nullable: true
+        requiredCookiesPresent:
+          type: boolean
+          nullable: true
+      additionalProperties: true
+
+    VerifyAccountResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        accountId:
+          type: string
+        message:
+          type: string
+      additionalProperties: true
+
+    Message:
+      type: object
+      required: [id, text, sentAt, sentByMe, senderName]
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        sentAt:
+          type: integer
+          format: int64
+        sentByMe:
+          type: boolean
+        senderName:
+          type: string
+        status:
+          type: string
+          enum: [sending, sent, failed]
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
+    ConversationParticipant:
+      type: object
+      required: [name, profileUrl]
+      properties:
+        name:
+          type: string
+        profileUrl:
+          type: string
+        avatarUrl:
+          type: string
+          nullable: true
+
+    ConversationLastMessage:
+      type: object
+      required: [text, sentAt, sentByMe]
+      properties:
+        text:
+          type: string
+        sentAt:
+          type: integer
+          format: int64
+        sentByMe:
+          type: boolean
+        status:
+          type: string
+          enum: [sending, sent, failed]
+          nullable: true
+
+    Conversation:
+      type: object
+      required: [conversationId, accountId, participant, lastMessage, unreadCount, messages]
+      properties:
+        conversationId:
+          type: string
+        accountId:
+          type: string
+        participant:
+          $ref: '#/components/schemas/ConversationParticipant'
+        lastMessage:
+          $ref: '#/components/schemas/ConversationLastMessage'
+        unreadCount:
+          type: integer
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+
+    InboxUnifiedResponse:
+      type: object
+      required: [conversations]
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conversation'
+        stale:
+          type: boolean
+          nullable: true
+        degraded:
+          type: boolean
+          nullable: true
+
+    DeprecatedRouteResponse:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [SEND_ROUTE_DEPRECATED]
+
+    SendNewRequest:
+      type: object
+      required: [accountId, text]
+      properties:
+        accountId:
+          type: string
+        profileUrl:
+          type: string
+          description: LinkedIn profile URL. Required if chatId is not provided.
+        chatId:
+          type: string
+          description: Existing conversation/thread identifier. Required if profileUrl is not provided.
+        text:
+          type: string
+          minLength: 1
+          maxLength: 3000
+
+    SendNewResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          nullable: true
+        chatId:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
+      additionalProperties: true
+
+    ThreadMessage:
+      type: object
+      properties:
+        id:
+          type: string
+        chatId:
+          type: string
+        senderId:
+          type: string
+        senderName:
+          type: string
+        text:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        sentAt:
+          type: string
+          format: date-time
+          nullable: true
+        isSentByMe:
+          type: boolean
+          nullable: true
+        hasExactTimestamp:
+          type: boolean
+          nullable: true
+      additionalProperties: true
+
+    ThreadResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ThreadMessage'
+        cursor:
+          type: string
+          nullable: true
+        hasMore:
+          type: boolean
+
+    SyncMessagesRequest:
+      type: object
+      properties:
+        accountId:
+          type: string
+          description: Required for non-admin multi-account sync.
+
+    SyncMessagesResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        accountId:
+          type: string
+          nullable: true
+        completed:
+          type: boolean
+          nullable: true
+        stats:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+
+    OperationErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            retryAfterSec:
+              type: integer
+              nullable: true
+
+    ExportMessagesRequest:
+      type: object
+      properties:
+        format:
+          type: string
+          enum: [csv, json]
+          default: csv
+        accountId:
+          type: string
+        conversationId:
+          type: string
+        chatId:
+          type: string
+          description: Backward-compatible alias for conversationId.
+
+    ExportMessagesJsonResponse:
+      type: object
+      properties:
+        exportedAt:
+          type: string
+          format: date-time
+        totalMessages:
+          type: integer
+        accounts:
+          type: array
+          items:
+            type: string
+        messages:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    ExportActivityRequest:
+      type: object
+      properties:
+        format:
+          type: string
+          enum: [csv, json]
+          default: csv
+        accountId:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 5000
+          default: 1000
+
+    ExportActivityJsonResponse:
+      type: object
+      properties:
+        exportedAt:
+          type: string
+          format: date-time
+        totalEntries:
+          type: integer
+        accounts:
+          type: array
+          items:
+            type: string
+        activity:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    HealthAlert:
+      type: object
+      required: [id, severity, kind, title, message]
+      properties:
+        id:
+          type: string
+        severity:
+          type: string
+          enum: [critical, warning]
+        kind:
+          type: string
+          enum: [session, sync]
+        accountId:
+          type: string
+          nullable: true
+        title:
+          type: string
+        message:
+          type: string
+
+    HealthAccountStatus:
+      type: object
+      required: [accountId, displayName, hasSession, lastSyncStatus, severity]
+      properties:
+        accountId:
+          type: string
+        displayName:
+          type: string
+        hasSession:
+          type: boolean
+        lastSessionSavedAt:
+          type: integer
+          format: int64
+          nullable: true
+        sessionAgeSeconds:
+          type: integer
+          nullable: true
+        lastSyncedAt:
+          type: integer
+          format: int64
+          nullable: true
+        lastSyncStatus:
+          type: string
+          enum: [idle, running, success, warning, failed]
+        lastSyncSource:
+          type: string
+          nullable: true
+        lastSyncStartedAt:
+          type: integer
+          format: int64
+          nullable: true
+        lastSyncCompletedAt:
+          type: integer
+          format: int64
+          nullable: true
+        lastSyncError:
+          type: string
+          nullable: true
+        severity:
+          type: string
+          enum: [healthy, warning, critical]
+      additionalProperties: true
+
+    HealthSummary:
+      type: object
+      required: [status, generatedAt, syncIntervalMinutes, totals, alerts, accounts, bulkSync]
+      properties:
+        status:
+          type: string
+          enum: [healthy, warning, critical]
+        generatedAt:
+          type: integer
+          format: int64
+        syncIntervalMinutes:
+          type: integer
+        totals:
+          type: object
+          properties:
+            totalAccounts:
+              type: integer
+            accountsWithSession:
+              type: integer
+            accountsNeedingAttention:
+              type: integer
+            criticalAlerts:
+              type: integer
+            warningAlerts:
+              type: integer
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthAlert'
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthAccountStatus'
+        bulkSync:
+          type: object
+          additionalProperties: true
+
+    StartupValidationCheck:
+      type: object
+      required:
+        - id
+        - label
+        - title
+        - status
+        - detail
+        - accountAccessConfigPresent
+        - initialAdminEmailsConfigured
+        - userAccountAccessConfigured
+        - initialAdminEmailCount
+        - userAccountAccessEntryCount
+      properties:
+        id:
+          type: string
+          enum: [account-access-config]
+        label:
+          type: string
+          enum: [account-access-config]
+        title:
+          type: string
+          enum: ['Account access configuration']
+        status:
+          type: string
+          enum: [pass, warn, fail]
+        detail:
+          type: string
+        accountAccessConfigPresent:
+          type: boolean
+        initialAdminEmailsConfigured:
+          type: boolean
+        userAccountAccessConfigured:
+          type: boolean
+        initialAdminEmailCount:
+          type: integer
+        userAccountAccessEntryCount:
+          type: integer
+      additionalProperties: true
+
+    StartupValidationReport:
+      type: object
+      required: [status, generatedAt, checks, healthSummary]
+      properties:
+        status:
+          type: string
+          enum: [pass, warn, fail]
+        generatedAt:
+          type: integer
+          format: int64
+        checks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        healthSummary:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [healthy, warning, critical]
+            criticalAlerts:
+              type: integer
+            warningAlerts:
+              type: integer
+            accountsNeedingAttention:
+              type: integer
+      example:
+        status: pass
+        generatedAt: 1747094400000
+        checks:
+          - id: account-access-config
+            label: account-access-config
+            title: Account access configuration
+            status: pass
+            detail: Account access config is present.
+            accountAccessConfigPresent: true
+            initialAdminEmailsConfigured: true
+            userAccountAccessConfigured: true
+            initialAdminEmailCount: 1
+            userAccountAccessEntryCount: 1
+        healthSummary:
+          status: healthy
+          criticalAlerts: 0
+          warningAlerts: 0
+          accountsNeedingAttention: 0
+
+    ActivityEntry:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [messageSent, connectionSent, profileViewed, sync]
+        accountId:
+          type: string
+        targetName:
+          type: string
+        targetProfileUrl:
+          type: string
+        message:
+          type: string
+          nullable: true
+        timestamp:
+          type: integer
+          format: int64
+      additionalProperties: true
+
+    StatsActivityResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActivityEntry'
+        total:
+          type: integer
+
+    StatsAllSummaryResponse:
+      type: object
+      properties:
+        accounts:
+          type: object
+          additionalProperties: true
+        totalMessages:
+          type: integer
+        totalConnections:
+          type: integer
+        totalActivity:
+          type: integer
+        recentActivity:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActivityEntry'

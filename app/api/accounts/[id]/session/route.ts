@@ -1,6 +1,7 @@
 // FILE: app/api/accounts/[id]/session/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateCaller, forwardToBackend, badRequest } from '@/lib/server/backend-api';
+import { authorizeAccountAccess } from '@/lib/auth/account-access';
+import { forwardToBackend, badRequest } from '@/lib/server/backend-api';
 import { validateLinkedInCookies } from '@/lib/validators/cookie-validator';
 
 // POST - Import session cookies
@@ -8,18 +9,12 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authError = authenticateCaller(req);
-  if (authError) return authError;
-  
   try {
     const { id: accountId } = await params;
+    const access = await authorizeAccountAccess(req, accountId, { allowApiSecret: true });
+    if (access.response) return access.response;
     const cookies = await req.json();
-    
-    // Validate account ID format
-    if (!/^[a-z0-9_-]+$/i.test(accountId)) {
-      return badRequest(new Error('Invalid account ID format'));
-    }
-    
+
     // Validate cookies
     const validation = validateLinkedInCookies(cookies);
     if (!validation.isValid) {
@@ -36,7 +31,7 @@ export async function POST(
     // Forward to worker
     return forwardToBackend({
       method: 'POST',
-      path: `/accounts/${accountId}/session`,
+      path: `/accounts/${access.accountId}/session`,
       body: cookies,
     });
   } catch (err) {
@@ -49,13 +44,12 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const authError = authenticateCaller(req);
-  if (authError) return authError;
-  
   const { id: accountId } = await params;
-  
+  const access = await authorizeAccountAccess(req, accountId, { allowApiSecret: true });
+  if (access.response) return access.response;
+
   return forwardToBackend({
     method: 'DELETE',
-    path: `/accounts/${accountId}/session`,
+    path: `/accounts/${access.accountId}/session`,
   });
 }

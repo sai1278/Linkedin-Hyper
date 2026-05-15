@@ -14,6 +14,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Ignore worker and scaffold/phase scripts
     "worker/**",
+    "artifacts/**",
     "scaffold.js",
     "scaffold2.js",
     "phase2.js"

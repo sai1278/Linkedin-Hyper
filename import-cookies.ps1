@@ -7,7 +7,7 @@ param(
   [int]$CaptureTimeoutSec = 240,
   [int]$CapturePort = 9229,
   [string]$CaptureProfile = "",
-  [string]$ApiKey = "dev-api-secret-key-change-in-production",
+  [string]$ApiKey = "",
   [string]$RouteAuthToken = "",
   [string]$BaseUrl = "http://localhost:3001"
 )
@@ -15,6 +15,43 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+function Get-ConfigValue {
+  param([Parameter(Mandatory = $true)][string]$Key)
+
+  $envValue = [Environment]::GetEnvironmentVariable($Key)
+  if (-not [string]::IsNullOrWhiteSpace($envValue)) {
+    return $envValue.Trim()
+  }
+
+  $envFile = Join-Path $repoRoot ".env"
+  if (-not (Test-Path -LiteralPath $envFile)) {
+    return ""
+  }
+
+  $pattern = "^\s*$([regex]::Escape($Key))=(.*)$"
+  $line = Get-Content -LiteralPath $envFile | Where-Object { $_ -match $pattern } | Select-Object -Last 1
+  if (-not $line) {
+    return ""
+  }
+
+  return ($line -replace $pattern, '$1').Trim().Trim('"').Trim("'")
+}
+
+if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+  $ApiKey = Get-ConfigValue -Key "API_SECRET"
+}
+if ([string]::IsNullOrWhiteSpace($RouteAuthToken)) {
+  $RouteAuthToken = Get-ConfigValue -Key "API_ROUTE_AUTH_TOKEN"
+}
+
+$isFrontendApi = $BaseUrl -match '/api/?$'
+if ($isFrontendApi -and [string]::IsNullOrWhiteSpace($RouteAuthToken)) {
+  throw "BaseUrl points to the public /api BFF. Provide -RouteAuthToken or set API_ROUTE_AUTH_TOKEN in .env/environment."
+}
+if ((-not $isFrontendApi) -and [string]::IsNullOrWhiteSpace($ApiKey)) {
+  throw "Missing API key. Provide -ApiKey or set API_SECRET in .env/environment."
+}
 
 function Get-BrowserUserDataRoot {
   param([Parameter(Mandatory = $true)][string]$BrowserName)
@@ -157,7 +194,8 @@ function Validate-CookieShape {
 function Invoke-AutoCapture {
   param(
     [Parameter(Mandatory = $true)][string]$OutputFile,
-    [switch]$ForceLiveProfile
+    [switch]$ForceLiveProfile,
+    [switch]$ForceTempProfileCopy
   )
 
   $captureScript = Join-Path $repoRoot "scripts\\capture-linkedin-cookies.mjs"
@@ -277,7 +315,7 @@ function Invoke-AutoCapture {
   }
   $browserCandidates = $browserCandidates | Select-Object -Unique
 
-  $effectiveUseLiveProfile = $UseLiveProfile -or $ForceLiveProfile
+  $effectiveUseLiveProfile = ($UseLiveProfile -or $ForceLiveProfile) -and (-not $ForceTempProfileCopy)
 
   foreach ($browserName in $browserCandidates) {
     if ($browserName -ne $Browser) {
@@ -338,8 +376,14 @@ function Invoke-ImportAndVerify {
 
   Write-Host ""
   Write-Host "Verifying session..."
-  $verify = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify" -Headers $headers
+  $verify = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify?fresh=1" -Headers $headers
   $verify | ConvertTo-Json -Depth 6 | Write-Host
+
+  Write-Host ""
+  Write-Host "Re-verifying persisted session..."
+  Start-Sleep -Seconds 5
+  $verifyPersisted = Invoke-RestMethod -Method Post -Uri "$BaseUrl/accounts/$AccountId/verify?fresh=1" -Headers $headers
+  $verifyPersisted | ConvertTo-Json -Depth 6 | Write-Host
 
   Write-Host ""
   Write-Host "Done."
@@ -356,7 +400,22 @@ function Should-RetryWithLiveProfile {
   if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Message) {
     $text += "`n" + [string]$ErrorRecord.Exception.Message
   }
-  return ($text -match 'SESSION_EXPIRED|Session expired')
+  return ($text -match 'SESSION_EXPIRED|Session expired|AUTHENTICATED_STATE_NOT_REACHED|LOGIN_NOT_FINISHED|COOKIES_MISSING')
+}
+
+function Should-RetryWithoutLiveProfile {
+  param([Parameter(Mandatory = $true)]$ErrorRecord)
+
+  if (-not $ErrorRecord) { return $false }
+  $text = ""
+  if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+    $text += [string]$ErrorRecord.ErrorDetails.Message
+  }
+  if ($ErrorRecord.Exception -and $ErrorRecord.Exception.Message) {
+    $text += "`n" + [string]$ErrorRecord.Exception.Message
+  }
+
+  return ($text -match 'Timed out waiting for DevTools endpoint|Timed out waiting for a LinkedIn page target in DevTools|CDP capture failed')
 }
 
 try {
@@ -368,7 +427,16 @@ try {
     } else {
       Join-Path $repoRoot "linkedin-cookies-plain.json"
     }
-    Invoke-AutoCapture -OutputFile $capturedPath
+    try {
+      Invoke-AutoCapture -OutputFile $capturedPath
+    } catch {
+      if ($UseLiveProfile -and (Should-RetryWithoutLiveProfile -ErrorRecord $_)) {
+        Write-Warning "Live-profile capture could not attach to Chrome DevTools. Retrying automatically with temp-profile-copy mode..."
+        Invoke-AutoCapture -OutputFile $capturedPath -ForceTempProfileCopy
+      } else {
+        throw
+      }
+    }
     $selected = Try-LoadCookiesFromFile -Path $capturedPath
   }
 

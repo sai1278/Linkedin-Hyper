@@ -1,0 +1,12 @@
+RUN_SEND_DEBUG_REBUILD=0
+
+ Container linkedin-hyper-postgres-1 Running 
+ Container linkedin-hyper-redis-1 Running 
+ Container linkedin-hyper-worker-1 Running 
+ Container linkedin-hyper-frontend-1 Running 
+ Container linkedin-hyper-postgres-1 Waiting 
+ Container linkedin-hyper-redis-1 Waiting 
+ Container linkedin-hyper-postgres-1 Healthy 
+ Container linkedin-hyper-redis-1 Healthy 
+ Container linkedin-hyper-worker-1 Waiting 
+ Container linkedin-hyper-worker-1 Healthy 

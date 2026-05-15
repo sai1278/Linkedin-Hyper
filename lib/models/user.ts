@@ -1,5 +1,6 @@
 import { query } from '../db';
 import { randomUUID } from 'crypto';
+import { getConfiguredAdminEmails } from '../auth/account-access-config';
 
 export interface User {
   id: string;
@@ -16,11 +17,26 @@ export interface User {
 
 export type CreateUserDTO = Pick<User, 'name' | 'email' | 'password_hash'> & Partial<Pick<User, 'role'>>;
 
+export function getEffectiveUserRole(
+  role: User['role'] | string | undefined,
+  email: string | undefined
+): User['role'] {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (String(role || '').trim().toLowerCase() === 'admin') {
+    return 'admin';
+  }
+  if (normalizedEmail && getConfiguredAdminEmails().has(normalizedEmail)) {
+    return 'admin';
+  }
+  return 'user';
+}
+
 function mapUser(row: Record<string, unknown>): User {
   const user = row as unknown as User;
   const createdAt = user.created_at ? new Date(String(user.created_at)) : undefined;
   return {
     ...user,
+    role: getEffectiveUserRole(user.role, user.email),
     ...(createdAt ? { createdAt } : {}),
   };
 }

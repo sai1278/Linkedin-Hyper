@@ -420,7 +420,7 @@ This tool is for educational and personal use only. Use of automated tools may v
 
 ---
 
-## 📞 Support
+##  Support
 
 - **Issues**: [GitHub Issues](https://github.com/your-username/linkedin-hyper-v/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/your-username/linkedin-hyper-v/discussions)
@@ -430,8 +430,8 @@ This tool is for educational and personal use only. Use of automated tools may v
 
 <div align="center">
 
-**Built with ❤️ by developers who value privacy and control**
+**Built with by developers who value privacy and control**
 
-[⭐ Star this repo](https://github.com/your-username/linkedin-hyper-v) • [🐛 Report Bug](https://github.com/your-username/linkedin-hyper-v/issues) • [💡 Request Feature](https://github.com/your-username/linkedin-hyper-v/issues)
+[ Star this repo](https://github.com/your-username/linkedin-hyper-v) • [🐛 Report Bug](https://github.com/your-username/linkedin-hyper-v/issues) • [💡 Request Feature](https://github.com/your-username/linkedin-hyper-v/issues)
 
 </div>

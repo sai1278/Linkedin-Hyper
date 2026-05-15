@@ -1,7 +1,27 @@
+import { timingSafeEqual } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { getSession } from '@/lib/auth/session';
+import { isStaticServiceTokenAllowed } from '@/lib/auth/runtime';
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3001';
 const API_SECRET = process.env.API_SECRET ?? '';
+const BACKEND_NETWORK_RETRY_COUNT = 1;
+const BACKEND_NETWORK_RETRY_DELAY_MS = 250;
+let serviceTokenWarningShown = false;
+let apiSecretOperatorWarningShown = false;
+
+interface AuthenticateCallerOptions {
+  allowApiSecret?: boolean;
+}
+
+export interface AuthenticatedActor {
+  authenticated: true;
+  kind: 'api-secret' | 'service-token' | 'user-session';
+  role: 'admin' | 'user';
+  userId?: string;
+  email?: string;
+  name?: string;
+}
 
 function applyPrivateNoStore(headers: Headers): void {
   headers.set('Cache-Control', 'private, no-store, max-age=0, must-revalidate');
@@ -32,54 +52,179 @@ function buildAllowedOrigins(req: NextRequest): Set<string> {
   return origins;
 }
 
-/**
- * Authenticate incoming requests to the BFF.
- * Enforces Same-Origin and optional API_ROUTE_AUTH_TOKEN.
- * Supports TRUSTED_ORIGINS for reverse-proxy setups.
- */
-export function authenticateCaller(req: NextRequest): NextResponse | null {
-  const hasSessionCookie = Boolean(req.cookies.get('app_session')?.value);
+function extractOrigin(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
 
-  // 1. Origin check - skip if no origin header (SSR/server calls have none)
-  // Also skip strict Origin validation when user has a dashboard session cookie.
-  const origin = req.headers.get('origin');
-  if (origin && !hasSessionCookie) {
-    const allowedOrigins = buildAllowedOrigins(req);
-    const trustedOrigins = (process.env.TRUSTED_ORIGINS ?? '')
-      .split(',')
-      .map((o) => o.trim())
-      .filter(Boolean);
+function isTrustedOrigin(req: NextRequest, candidate: string): boolean {
+  const allowedOrigins = buildAllowedOrigins(req);
+  const trustedOrigins = (process.env.TRUSTED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
 
-    const isTrusted = allowedOrigins.has(origin) || trustedOrigins.includes(origin);
-    if (!isTrusted) {
-      return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
-    }
+  return allowedOrigins.has(candidate) || trustedOrigins.includes(candidate);
+}
+
+function isMutationMethod(method: string): boolean {
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
+}
+
+export function enforceMutationProtection(req: NextRequest): NextResponse | null {
+  if (!isMutationMethod(req.method)) {
+    return null;
   }
 
-  // 2. Sec-Fetch-Site present -> must be same-origin, same-site, or none
-  // Skip this strict check for authenticated dashboard session cookie traffic.
   const secFetchSite = req.headers.get('sec-fetch-site');
-  if (
-    secFetchSite &&
-    !hasSessionCookie &&
-    !['same-origin', 'same-site', 'none'].includes(secFetchSite)
-  ) {
+  if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
     return NextResponse.json({ error: 'Forbidden: Invalid Sec-Fetch-Site' }, { status: 403 });
   }
 
-  // 3. API_ROUTE_AUTH_TOKEN if set:
-  // Allow either a matching bearer token (service calls) OR a session cookie (browser UI).
-  const expectedToken = process.env.API_ROUTE_AUTH_TOKEN?.trim();
-  if (expectedToken) {
-    const authHeader = req.headers.get('authorization');
-    const hasValidBearer = authHeader === `Bearer ${expectedToken}`;
+  const origin = extractOrigin(req.headers.get('origin'));
+  if (origin) {
+    if (!isTrustedOrigin(req, origin)) {
+      return NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 });
+    }
+    return null;
+  }
 
-    if (!hasValidBearer && !hasSessionCookie) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const refererOrigin = extractOrigin(req.headers.get('referer'));
+  if (refererOrigin) {
+    if (!isTrustedOrigin(req, refererOrigin)) {
+      return NextResponse.json({ error: 'Forbidden: Invalid Referer' }, { status: 403 });
+    }
+    return null;
+  }
+
+  return NextResponse.json({ error: 'Forbidden: Missing same-origin proof' }, { status: 403 });
+}
+
+function secretsMatch(actual: string | null, expected: string): boolean {
+  if (!actual || !expected) return false;
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+
+  if (actualBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+/**
+ * Authenticate incoming requests to the BFF.
+ * Requires either a valid dashboard session cookie or API_ROUTE_AUTH_TOKEN bearer token.
+ * Enforces same-origin checks for cookie-authenticated mutation requests.
+ */
+export async function authenticateCaller(
+  req: NextRequest,
+  options: AuthenticateCallerOptions = {}
+): Promise<NextResponse | null> {
+  const { response } = await getAuthenticatedActor(req, options);
+  return response;
+}
+
+export async function getAuthenticatedActor(
+  req: NextRequest,
+  options: AuthenticateCallerOptions = {}
+): Promise<{ actor: AuthenticatedActor | null; response: NextResponse | null }> {
+  const { allowApiSecret = false } = options;
+  const apiSecretHeader = req.headers.get('x-api-key');
+  if (allowApiSecret && secretsMatch(apiSecretHeader, API_SECRET)) {
+    if (!apiSecretOperatorWarningShown) {
+      apiSecretOperatorWarningShown = true;
+      console.warn('[backend-api] API_SECRET operator access used through BFF allowlist. This path is limited to cookie/session recovery endpoints.');
+    }
+    return {
+      actor: {
+        authenticated: true,
+        kind: 'api-secret',
+        role: 'admin',
+      },
+      response: null,
+    };
+  }
+
+  const expectedToken = process.env.API_ROUTE_AUTH_TOKEN?.trim();
+  const authHeader = req.headers.get('authorization');
+  const bearerMatches = Boolean(expectedToken && authHeader === `Bearer ${expectedToken}`);
+  const hasValidBearer = bearerMatches && isStaticServiceTokenAllowed();
+
+  if (hasValidBearer) {
+    if (!serviceTokenWarningShown) {
+      serviceTokenWarningShown = true;
+      console.warn('[backend-api] Static service bearer token used for BFF access. Prefer DB-backed session auth for interactive operators.');
+    }
+    return {
+      actor: {
+        authenticated: true,
+        kind: 'service-token',
+        role: 'admin',
+      },
+      response: null,
+    };
+  }
+
+  if (bearerMatches && !hasValidBearer) {
+    return {
+      actor: null,
+      response: NextResponse.json(
+        { error: 'Static service bearer tokens are disabled in production' },
+        { status: 403 }
+      ),
+    };
+  }
+
+  const session = await getSession(req);
+  const hasDbBackedSession = Boolean(
+    session?.authenticated &&
+    session.userId &&
+    (session.role === 'admin' || session.role === 'user')
+  );
+
+  if (!hasDbBackedSession) {
+    return {
+      actor: null,
+      response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+    };
+  }
+
+  const origin = extractOrigin(req.headers.get('origin'));
+  if (origin && !isTrustedOrigin(req, origin)) {
+    return {
+      actor: null,
+      response: NextResponse.json({ error: 'Forbidden: Invalid Origin' }, { status: 403 }),
+    };
+  }
+
+  if (isMutationMethod(req.method)) {
+    const csrfError = enforceMutationProtection(req);
+    if (csrfError) {
+      return {
+        actor: null,
+        response: csrfError,
+      };
     }
   }
 
-  return null;
+  const authenticatedSession = session as NonNullable<typeof session>;
+
+  return {
+    actor: {
+      authenticated: true,
+      kind: 'user-session',
+      role: authenticatedSession.role as 'admin' | 'user',
+      userId: authenticatedSession.userId,
+      email: authenticatedSession.email,
+      name: authenticatedSession.name,
+    },
+    response: null,
+  };
 }
 
 interface ForwardOptions {
@@ -96,24 +241,8 @@ interface ForwardOptions {
  * Includes a default 120-second AbortSignal timeout (override via timeoutMs).
  */
 export async function forwardToBackend(opts: ForwardOptions): Promise<NextResponse> {
-  const { method, path, query, body, timeoutMs } = opts;
-  const qs = query ? `?${query.toString()}` : '';
-  const url = `${API_URL}${path}${qs}`;
-  const parsedTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : NaN;
-  const effectiveTimeoutMs = Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
-    ? parsedTimeoutMs
-    : 120_000;
-
   try {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key': API_SECRET,
-      },
-      body: body != null ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(effectiveTimeoutMs),
-    });
+    const res = await fetchBackendResponse(opts);
 
     const data = await res.text();
     const isNoContentStatus = res.status === 204 || res.status === 205 || res.status === 304;
@@ -131,11 +260,54 @@ export async function forwardToBackend(opts: ForwardOptions): Promise<NextRespon
     // 204/205/304 must not include a response body.
     return new NextResponse(null, { status: res.status, headers });
   } catch (err) {
-    const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+    const isTimeout = isTimeoutError(err);
     return NextResponse.json(
       { error: isTimeout ? 'Backend request timed out' : 'Backend unreachable' },
       { status: 502 }
     );
+  }
+}
+
+export async function fetchBackendResponse(opts: ForwardOptions): Promise<Response> {
+  const { method, path, query, body, timeoutMs } = opts;
+  const qs = query ? `?${query.toString()}` : '';
+  const url = `${API_URL}${path}${qs}`;
+  const parsedTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : NaN;
+  const effectiveTimeoutMs = Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
+    ? parsedTimeoutMs
+    : 120_000;
+
+  const requestInit: RequestInit = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Api-Key': API_SECRET,
+    },
+    body: body != null ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(effectiveTimeoutMs),
+  };
+
+  return fetchBackendWithRetry(url, requestInit);
+}
+
+function isTimeoutError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'TimeoutError';
+}
+
+async function fetchBackendWithRetry(
+  url: string,
+  init: RequestInit,
+  retriesLeft: number = BACKEND_NETWORK_RETRY_COUNT
+): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    if (isTimeoutError(err) || retriesLeft <= 0) {
+      throw err;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, BACKEND_NETWORK_RETRY_DELAY_MS));
+    return fetchBackendWithRetry(url, init, retriesLeft - 1);
   }
 }
 

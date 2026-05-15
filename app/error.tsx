@@ -43,28 +43,15 @@ export default function Error({
         </div>
         <div className="mt-8 space-y-4 flex flex-col items-center">
           <button
+            type="button"
             onClick={() => reset()}
-            className="w-full flex justify-center py-3 px-4 rounded-lg text-sm font-medium text-white transition-colors"
-            style={{ background: 'var(--accent)' }}
-            onMouseEnter={(e) =>
-              ((e.currentTarget as HTMLButtonElement).style.background =
-                'var(--accent-hover)')
-            }
-            onMouseLeave={(e) =>
-              ((e.currentTarget as HTMLButtonElement).style.background =
-                'var(--accent)')
-            }
+            className="button-primary w-full flex justify-center py-3 px-4 rounded-lg text-sm font-medium"
           >
             Try Again
           </button>
           <Link
             href="/"
-            className="w-full flex justify-center py-3 px-4 rounded-lg text-sm font-medium transition-colors"
-            style={{
-              background: 'var(--bg-card)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
+            className="button-secondary w-full flex justify-center py-3 px-4 rounded-lg text-sm font-medium"
           >
             Go Home
           </Link>

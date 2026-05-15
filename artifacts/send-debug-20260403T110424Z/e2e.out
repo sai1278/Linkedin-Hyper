@@ -1,0 +1,7 @@
+1) Health
+{"status":"ok","ts":"2026-04-03T11:04:26.686Z"}
+
+2) Verify session for account: kanchidhyanasai
+{"error":"Session expired for account kanchidhyanasai. Re-import cookies.","code":"SESSION_EXPIRED"}
+
+E2E blocked: session is not active. Re-import LinkedIn cookies, then retry.

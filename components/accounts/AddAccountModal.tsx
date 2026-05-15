@@ -151,12 +151,17 @@ export function AddAccountModal({ open, onClose, onSuccess, existingAccounts, in
     }
   };
 
+  const modalTitle = initialAccountId ? `Refresh Cookies for ${initialAccountId}` : 'Add LinkedIn Account';
+  const modalDescription = initialAccountId
+    ? 'Paste or upload fresh LinkedIn cookies for this account. The dashboard will import and verify them automatically.'
+    : 'Import a new LinkedIn account by providing cookies from your browser.';
+
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="max-h-[90vh] overflow-y-auto">
-        <DialogTitle>Add LinkedIn Account</DialogTitle>
+        <DialogTitle>{modalTitle}</DialogTitle>
         <DialogDescription>
-          Import a new LinkedIn account by providing cookies from your browser.
+          {modalDescription}
         </DialogDescription>
 
         {/* Step Indicator */}

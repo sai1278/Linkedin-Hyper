@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isStaticServiceTokenAllowed } from '@/lib/auth/runtime';
 
 type Role = 'user' | 'admin';
-type AuthContext = { role: Role };
+type AuthContext = { role: Role; authMode: 'static-token' | 'cookie-token' };
 
 type RouteRule = {
   pattern: RegExp;
@@ -13,13 +14,19 @@ type RouteRule = {
 const BACKEND          = process.env.API_URL              ?? 'http://localhost:3001';
 const SECRET           = process.env.API_SECRET           ?? '';
 const AUTH_COOKIE_NAME = process.env.PROXY_AUTH_COOKIE_NAME ?? 'proxy_session';
+let staticProxyTokenWarningShown = false;
 
 /**
- * TOKEN_ROLE_MAP — loaded from PROXY_AUTH_TOKENS env var at module initialisation.
+ * TOKEN_ROLE_MAP â€” loaded from PROXY_AUTH_TOKENS env var at module initialisation.
  * Shape: { "<token>": "user" | "admin", ... }
  * Generate tokens: openssl rand -hex 32
  */
 const TOKEN_ROLE_MAP: Readonly<Record<string, Role>> = (() => {
+  if (!isStaticServiceTokenAllowed()) {
+    console.warn('[proxy] Static PROXY_AUTH_TOKENS are disabled in production. Use session-backed auth or explicitly set ALLOW_STATIC_SERVICE_TOKENS=true.');
+    return {};
+  }
+
   const raw = process.env.PROXY_AUTH_TOKENS;
   if (!raw) return {};
   try {
@@ -32,18 +39,18 @@ const TOKEN_ROLE_MAP: Readonly<Record<string, Role>> = (() => {
     }
     return valid;
   } catch {
-    console.error('[proxy] PROXY_AUTH_TOKENS is not valid JSON — no tokens loaded.');
+    console.error('[proxy] PROXY_AUTH_TOKENS is not valid JSON â€” no tokens loaded.');
     return {};
   }
 })();
 
 /**
- * ALLOWLIST — the only routes this proxy will forward.
+ * ALLOWLIST â€” the only routes this proxy will forward.
  *
  * Security notes:
  * - stats/:accountId pattern uses [a-zA-Z0-9_-]+ intentionally.
  *   This prevents path injection via the accountId segment.
- * - messages/send is admin-only because it is a write action.
+ * - messages/send-new is admin-only because it is a write action.
  */
 const ALLOWLIST: readonly RouteRule[] = [
   {
@@ -71,9 +78,9 @@ const ALLOWLIST: readonly RouteRule[] = [
     injectApiKey: true,
   },
   {
-    pattern:      /^messages\/send$/,
+    pattern:      /^messages\/send-new$/,
     methods:      new Set(['POST']),
-    roles:        new Set(['admin']),   // write action — admin only
+    roles:        new Set(['admin']),   // write action â€” admin only
     injectApiKey: true,
   },
   {
@@ -90,7 +97,7 @@ const ALLOWLIST: readonly RouteRule[] = [
   },
 ] as const;
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function jsonError(status: number, message: string): NextResponse {
   return new NextResponse(JSON.stringify({ error: message }), {
@@ -112,14 +119,16 @@ function getBearerToken(req: NextRequest): string | null {
 }
 
 function authenticate(req: NextRequest): AuthContext | null {
-  const token =
-    getBearerToken(req) ??
-    req.cookies.get(AUTH_COOKIE_NAME)?.value ??
-    null;
+  const bearerToken = getBearerToken(req);
+  const cookieToken = req.cookies.get(AUTH_COOKIE_NAME)?.value ?? null;
+  const token = bearerToken ?? cookieToken ?? null;
   if (!token) return null;
   const role = TOKEN_ROLE_MAP[token];
   if (!role) return null;
-  return { role };
+  return {
+    role,
+    authMode: bearerToken ? 'static-token' : 'cookie-token',
+  };
 }
 
 function resolveRule(pathStr: string, method: string): RouteRule | null {
@@ -133,7 +142,7 @@ function resolveRule(pathStr: string, method: string): RouteRule | null {
 
 /**
  * Build and validate the final backend URL.
- * Returns null if the constructed URL origin does not match BACKEND — SSRF guard.
+ * Returns null if the constructed URL origin does not match BACKEND â€” SSRF guard.
  * Validation happens BEFORE fetch(), not in a try/catch after.
  */
 function buildBackendUrl(pathStr: string, search: string): URL | null {
@@ -149,15 +158,21 @@ function buildBackendUrl(pathStr: string, search: string): URL | null {
   }
 }
 
-// ── Main handler ───────────────────────────────────────────────────────────────
+// â”€â”€ Main handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function handler(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ): Promise<NextResponse> {
-  // 1. Authenticate — Bearer token or session cookie
+  // 1. Authenticate â€” Bearer token or session cookie
   const auth = authenticate(req);
   if (!auth) return jsonError(401, 'Unauthorized');
+  if (auth.authMode === 'static-token') {
+    if (!staticProxyTokenWarningShown) {
+      staticProxyTokenWarningShown = true;
+      console.warn('[proxy] Static proxy token used. Prefer session-backed auth for interactive operator access.');
+    }
+  }
 
   // Enforce CSRF protection for POST/write methods
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -184,14 +199,14 @@ async function handler(
     }
   }
 
-  // 2. Normalise path — reject traversal sequences
+  // 2. Normalise path â€” reject traversal sequences
   const { path } = await params;
   const pathStr = path.join('/');
   if (pathStr.includes('..') || pathStr.toLowerCase().includes('%2e')) {
     return jsonError(400, 'Invalid path');
   }
 
-  // 3. Allowlist check — method + pattern must match
+  // 3. Allowlist check â€” method + pattern must match
   const rule = resolveRule(pathStr, req.method);
   if (!rule) return jsonError(403, 'Forbidden route or method');
 

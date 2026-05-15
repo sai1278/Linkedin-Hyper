@@ -10,10 +10,12 @@ const SESSION_TTL_DAYS = Math.max(1, parseInt(process.env.SESSION_TTL_DAYS || '3
 const SESSION_TTL = 86400 * SESSION_TTL_DAYS;
 const META_TTL = 86400 * SESSION_TTL_DAYS;
 const REDIS_SESSION_OP_TIMEOUT_MS = parseInt(process.env.REDIS_SESSION_TIMEOUT_MS || '2500', 10);
+const VERIFY_SUCCESS_TTL_SECONDS = Math.max(30, parseInt(process.env.VERIFY_SUCCESS_TTL_SECONDS || '120', 10) || 120);
 
 // Local fallback when Redis is unavailable (dev convenience).
 const memorySessions = new Map();
 const memoryMeta = new Map();
+const memoryVerify = new Map();
 const knownAccountIds = new Set(
   (process.env.ACCOUNT_IDS ?? '')
     .split(',')
@@ -151,6 +153,29 @@ function deleteSessionFromDisk(accountId) {
   }
 }
 
+function rememberVerifyInMemory(accountId, payload) {
+  const now = Date.now();
+  memoryVerify.set(accountId, {
+    ...payload,
+    verifiedAt: payload?.verifiedAt || now,
+    expiresAt: now + (VERIFY_SUCCESS_TTL_SECONDS * 1000),
+  });
+}
+
+function getRecentVerifyFromMemory(accountId) {
+  const entry = memoryVerify.get(accountId);
+  if (!entry) return null;
+  if (Number(entry.expiresAt || 0) <= Date.now()) {
+    memoryVerify.delete(accountId);
+    return null;
+  }
+  return entry;
+}
+
+function clearRecentVerifyFromMemory(accountId) {
+  memoryVerify.delete(accountId);
+}
+
 function listAccountIdsFromDisk() {
   if (!useDiskSessionStore()) return [];
   try {
@@ -198,10 +223,24 @@ function decrypt(payload) {
 }
 
 /** Normalise sameSite values to what Playwright accepts */
+function normalizeCookieDomain(domain) {
+  const raw = String(domain || '').trim();
+  if (!raw) return raw;
+
+  const lower = raw.toLowerCase();
+  if (lower === 'linkedin.com') {
+    return '.linkedin.com';
+  }
+
+  return raw;
+}
+
 function normaliseCookies(cookies) {
-  const normalizedList = cookies.map((c) => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const normalizedList = cookies.flatMap((c) => {
     const normalized = {
       ...c,
+      domain: normalizeCookieDomain(c.domain),
       sameSite: (() => {
         const v = (c.sameSite || '').toLowerCase();
         if (v === 'strict') return 'Strict';
@@ -215,9 +254,11 @@ function normaliseCookies(cookies) {
     const exp = Number(normalized.expires);
     if (!Number.isFinite(exp) || exp <= 0) {
       delete normalized.expires;
+    } else if (exp <= nowSeconds) {
+      return [];
     }
 
-    return normalized;
+    return [normalized];
   });
 
   const deduped = [];
@@ -235,21 +276,25 @@ function normaliseCookies(cookies) {
     addUnique(cookie);
   }
 
-  // Harden LinkedIn auth cookie domain coverage to survive redirect/domain hops.
-  for (const cookie of normalizedList) {
-    const name = String(cookie?.name || '');
-    if (name !== 'li_at' && name !== 'JSESSIONID') continue;
-    const domain = String(cookie?.domain || '').toLowerCase();
-    if (!domain.includes('linkedin.com')) continue;
+  return deduped;
+}
 
-    if (domain.includes('www.linkedin.com')) {
-      addUnique({ ...cookie, domain: '.linkedin.com' });
-    } else if (domain === '.linkedin.com' || domain === 'linkedin.com') {
-      addUnique({ ...cookie, domain: '.www.linkedin.com' });
-    }
+function cookieIdentity(cookie) {
+  return `${String(cookie?.name || '')}|${String(cookie?.domain || '')}|${String(cookie?.path || '')}`;
+}
+
+function mergeCookiesPreferNew(existingCookies, freshCookies) {
+  const merged = new Map();
+
+  for (const cookie of Array.isArray(existingCookies) ? existingCookies : []) {
+    merged.set(cookieIdentity(cookie), cookie);
   }
 
-  return deduped;
+  for (const cookie of Array.isArray(freshCookies) ? freshCookies : []) {
+    merged.set(cookieIdentity(cookie), cookie);
+  }
+
+  return Array.from(merged.values());
 }
 
 function getLinkedInCookieFlags(cookies) {
@@ -271,6 +316,7 @@ async function saveCookies(accountId, cookies, options = {}) {
   const {
     requireAuthCookies = false,
     skipIfMissingAuthCookies = false,
+    mergeExisting = true,
     source = 'unknown',
   } = options || {};
 
@@ -290,10 +336,19 @@ async function saveCookies(accountId, cookies, options = {}) {
     return false;
   }
 
-  const normalised = normaliseCookies(cookies);
+  let normalised = normaliseCookies(cookies);
+  if (skipIfMissingAuthCookies && mergeExisting) {
+    const existingCookies = await loadCookies(accountId).catch(() => null);
+    if (existingCookies?.length) {
+      normalised = normaliseCookies(mergeCookiesPreferNew(existingCookies, normalised));
+    }
+  }
   const now        = Date.now();
   knownAccountIds.add(accountId);
   saveSessionToDisk(accountId, normalised, now);
+  if (source !== 'verifySession') {
+    clearRecentVerifyFromMemory(accountId);
+  }
 
   try {
     const redis = getRedis();
@@ -302,6 +357,9 @@ async function saveCookies(accountId, cookies, options = {}) {
       redis.set(`session:${accountId}`, encrypted, 'EX', SESSION_TTL),
       redis.set(`session:meta:${accountId}`, JSON.stringify({ savedAt: now }), 'EX', META_TTL),
       redis.sadd('session:accounts', accountId),
+      source === 'verifySession'
+        ? Promise.resolve('skip-clear-verify')
+        : redis.del(`session:verify:${accountId}`),
     ]), 'saveCookies');
 
     // Keep memory store hot for local dev even when Redis is reachable.
@@ -371,6 +429,7 @@ async function deleteSession(accountId) {
     const redis = getRedis();
     await withRedisTimeout(Promise.all([
       redis.del(`session:${accountId}`, `session:meta:${accountId}`),
+      redis.del(`session:verify:${accountId}`),
       redis.srem('session:accounts', accountId),
     ]), 'deleteSession');
   } catch (err) {
@@ -378,8 +437,52 @@ async function deleteSession(accountId) {
   }
   memorySessions.delete(accountId);
   memoryMeta.delete(accountId);
+  clearRecentVerifyFromMemory(accountId);
   knownAccountIds.delete(accountId);
   deleteSessionFromDisk(accountId);
+}
+
+async function rememberRecentVerify(accountId, payload = {}) {
+  const now = Date.now();
+  const entry = {
+    ok: true,
+    url: payload.url || '',
+    via: payload.via || 'cached',
+    verifiedAt: now,
+  };
+
+  rememberVerifyInMemory(accountId, entry);
+
+  try {
+    const redis = getRedis();
+    await withRedisTimeout(
+      redis.set(
+        `session:verify:${accountId}`,
+        JSON.stringify(entry),
+        'EX',
+        VERIFY_SUCCESS_TTL_SECONDS
+      ),
+      'rememberRecentVerify'
+    );
+  } catch (err) {
+    warnRedisFallback(err);
+  }
+}
+
+async function getRecentVerify(accountId) {
+  try {
+    const redis = getRedis();
+    const raw = await withRedisTimeout(redis.get(`session:verify:${accountId}`), 'getRecentVerify');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      rememberVerifyInMemory(accountId, parsed);
+      return parsed;
+    }
+  } catch (err) {
+    warnRedisFallback(err);
+  }
+
+  return getRecentVerifyFromMemory(accountId);
 }
 
 async function listKnownAccountIds() {
@@ -409,6 +512,8 @@ module.exports = {
   loadCookies,
   sessionMeta,
   deleteSession,
+  rememberRecentVerify,
+  getRecentVerify,
   listKnownAccountIds,
   hasRequiredLinkedInSessionCookies,
   getLinkedInCookieFlags,

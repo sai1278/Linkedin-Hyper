@@ -27,16 +27,7 @@ export default function NotFound() {
         </p>
         <Link
           href="/"
-          className="inline-flex items-center px-6 py-3 rounded-lg text-sm font-medium text-white transition-colors"
-          style={{ background: 'var(--accent)' }}
-          onMouseEnter={(e) =>
-            ((e.currentTarget as HTMLAnchorElement).style.background =
-              'var(--accent-hover)')
-          }
-          onMouseLeave={(e) =>
-            ((e.currentTarget as HTMLAnchorElement).style.background =
-              'var(--accent)')
-          }
+          className="button-primary inline-flex items-center px-6 py-3 rounded-lg text-sm font-medium"
         >
           Return Home
         </Link>

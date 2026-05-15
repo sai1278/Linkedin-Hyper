@@ -1,0 +1,5 @@
+NAME                        IMAGE                     COMMAND                  SERVICE    CREATED          STATUS                   PORTS
+linkedin-hyper-frontend-1   linkedin-hyper-frontend   "docker-entrypoint.s…"   frontend   37 minutes ago   Up 36 minutes            0.0.0.0:3000->3000/tcp
+linkedin-hyper-postgres-1   postgres:16-alpine        "docker-entrypoint.s…"   postgres   41 hours ago     Up 41 hours (healthy)    0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp
+linkedin-hyper-redis-1      redis:alpine              "docker-entrypoint.s…"   redis      41 hours ago     Up 41 hours (healthy)    0.0.0.0:6379->6379/tcp, [::]:6379->6379/tcp
+linkedin-hyper-worker-1     linkedin-hyper-worker     "./entrypoint.sh"        worker     4 minutes ago    Up 4 minutes (healthy)   127.0.0.1:3001->3001/tcp

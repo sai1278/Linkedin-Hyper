@@ -1,6 +1,8 @@
 'use strict';
 
-const ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
+// LinkedIn thread ids can include base64 padding (for example trailing "=="),
+// so allow "=" in otherwise strict identifier validation.
+const ID_PATTERN = /^[A-Za-z0-9._:=-]+$/;
 const LINKEDIN_HOST_PATTERN = /(^|\.)linkedin\.com$/i;
 
 function toNormalizedString(value) {

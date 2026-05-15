@@ -4,9 +4,22 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "docs:openapi:validate": "node scripts/validate-openapi.mjs",
+    "cookies:capture": "node scripts/cookies-operator.mjs capture",
+    "cookies:capture-interactive": "node scripts/cookies-operator.mjs capture-interactive",
+    "cookies:refresh-direct": "node scripts/cookies-operator.mjs refresh-direct",
+    "cookies:import": "node scripts/cookies-operator.mjs import",
+    "cookies:verify": "node scripts/cookies-operator.mjs verify",
+    "cookies:status": "node scripts/cookies-operator.mjs status",
+    "cleanup:demo-messages": "node scripts/cleanup-demo-messages.mjs",
+    "test:security:message-session": "vitest run tests/message-session.security.test.ts",
+    "test:e2e:preflight": "node scripts/e2e-preflight.mjs",
+    "test:e2e:linkedin-message": "node scripts/e2e-linkedin-message.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -40,6 +53,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4",
+    "yaml": "^2.9.0"
   }
 }

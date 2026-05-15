@@ -4,6 +4,7 @@
 const { Server } = require('socket.io');
 const crypto = require('crypto');
 const { listKnownAccountIds } = require('../session');
+const { logger } = require('./logger');
 
 let io = null;
 let knownAccountCache = { ids: new Set(), expiresAt: 0 };
@@ -112,7 +113,7 @@ function initializeWebSocket(httpServer) {
   io.on('connection', (socket) => {
     const cookies = parseCookies(socket.handshake?.headers?.cookie || '');
     const payload = verifySocketJwt(cookies.app_session);
-    if (!payload || payload.role !== 'admin') {
+    if (!payload || !payload.role || !['admin', 'user'].includes(String(payload.role))) {
       socket.emit('auth:error', { error: 'Unauthorized socket session' });
       socket.disconnect(true);
       return;
@@ -120,7 +121,7 @@ function initializeWebSocket(httpServer) {
 
     socket.data.authenticated = true;
     socket.data.authPayload = payload;
-    console.log('[WebSocket] Client connected:', socket.id);
+    logger.info('websocket.client_connected', { socketId: socket.id });
 
     // Handle client joining account-specific rooms
     socket.on('join:account', async (accountId) => {
@@ -136,20 +137,20 @@ function initializeWebSocket(httpServer) {
       }
 
       socket.join(`account:${accountId}`);
-      console.log(`[WebSocket] Client ${socket.id} joined room: account:${accountId}`);
+      logger.debug('websocket.join_account_room', { socketId: socket.id, accountId });
     });
 
     // Handle client leaving account rooms
     socket.on('leave:account', (accountId) => {
       if (accountId) {
         socket.leave(`account:${accountId}`);
-        console.log(`[WebSocket] Client ${socket.id} left room: account:${accountId}`);
+        logger.debug('websocket.leave_account_room', { socketId: socket.id, accountId });
       }
     });
 
     // Handle disconnection
     socket.on('disconnect', () => {
-      console.log('[WebSocket] Client disconnected:', socket.id);
+      logger.info('websocket.client_disconnected', { socketId: socket.id });
     });
 
     // Send welcome message
@@ -159,7 +160,7 @@ function initializeWebSocket(httpServer) {
     });
   });
 
-  console.log('[WebSocket] Server initialized');
+  logger.info('websocket.server_initialized');
   return io;
 }
 
@@ -169,7 +170,7 @@ function initializeWebSocket(httpServer) {
  */
 function getIO() {
   if (!io) {
-    console.warn('[WebSocket] Socket.IO not initialized');
+    logger.warn('websocket.not_initialized');
   }
   return io;
 }
@@ -186,7 +187,7 @@ function broadcastEvent(event, data) {
       ...data,
       timestamp: new Date().toISOString(),
     });
-    console.log(`[WebSocket] Broadcast event: ${event}`);
+    logger.debug('websocket.broadcast', { event });
   }
 }
 
@@ -204,7 +205,7 @@ function emitToAccount(accountId, event, data) {
       accountId,
       timestamp: new Date().toISOString(),
     });
-    console.log(`[WebSocket] Emit to account:${accountId} - ${event}`);
+    logger.debug('websocket.emit_to_account', { accountId, event });
   }
 }
 

@@ -1,0 +1,10 @@
+1) Health
+{"status":"ok","ts":"2026-04-04T06:12:35.581Z"}
+
+2) Verify session for account: kanchidhyanasai
+{"ok":true,"url":"https://www.linkedin.com/messaging/","via":"feed+messaging"}
+
+3) Send message to: https://www.linkedin.com/in/pasala-jaswanth-kumar-reddy/
+{"error":"Message was not found in thread after send confirmation. Message may not be delivered.","code":"SEND_NOT_CONFIRMED"}
+
+Message send failed. Check error above (connection status / messageability / session).

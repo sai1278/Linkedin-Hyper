@@ -1,0 +1,2 @@
+worker-1  | [API] Worker API listening on port 3001
+worker-1  | [Prisma] Database client initialized

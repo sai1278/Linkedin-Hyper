@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const { chromium } = require('rebrowser-playwright');
+const { logger } = require('./utils/logger');
+const { setGauge } = require('./utils/metrics');
 
 const CHROME_ARGS = [
   '--no-sandbox',
@@ -22,13 +24,22 @@ const CHROME_ARGS = [
   '--disable-renderer-backgrounding',
 ];
 
-/**
- * Launch a stealth Chrome browser instance.
- * @param {string|undefined} proxyUrl Optional proxy e.g. "http://user:pass@host:port"
- */
+const MAX_ACTIVE_CONTEXTS = Math.max(3, parseInt(process.env.BROWSER_CONTEXT_CACHE_LIMIT || '5', 10) || 5);
+const CONTEXT_IDLE_TTL_MS = Math.max(60_000, parseInt(process.env.BROWSER_CONTEXT_IDLE_TTL_MS || String(5 * 60 * 1000), 10) || (5 * 60 * 1000));
+const SHUTDOWN_WAIT_MS = Math.max(5_000, parseInt(process.env.BROWSER_SHUTDOWN_WAIT_MS || '15000', 10) || 15_000);
+
+const activeContexts = new Map();
+const accountLocks = new Map();
+let shutdownRequested = false;
+let shutdownPromise = null;
+
+function syncActiveContextGauge() {
+  setGauge('browser.activeContexts', activeContexts.size);
+}
+
+syncActiveContextGauge();
+
 function resolveChromeExecutablePath() {
-  // Default to bundled Playwright browser for protocol compatibility.
-  // Set BROWSER_USE_SYSTEM_CHROME=1 only when you explicitly need system Chrome.
   if (process.env.BROWSER_USE_SYSTEM_CHROME !== '1') {
     return null;
   }
@@ -47,7 +58,7 @@ function resolveChromeExecutablePath() {
         : null,
     ].filter(Boolean);
 
-    return candidates.find((p) => fs.existsSync(p)) || null;
+    return candidates.find((candidate) => fs.existsSync(candidate)) || null;
   }
 
   return null;
@@ -69,10 +80,6 @@ async function createBrowser(proxyUrl) {
   return chromium.launch(opts);
 }
 
-/**
- * Create a browser context with full fingerprint spoofing.
- * Must be called before any page navigation.
- */
 async function createContext(browser) {
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -87,11 +94,9 @@ async function createContext(browser) {
     permissions: ['notifications'],
   });
 
-  // Keep actions bounded to avoid stuck playwright calls.
-  context.setDefaultTimeout(60000);
-  context.setDefaultNavigationTimeout(60000);
+  context.setDefaultTimeout(60_000);
+  context.setDefaultNavigationTimeout(60_000);
 
-  // Patch automation fingerprint vectors before any navigation.
   await context.addInitScript(() => {
     try {
       delete Object.getPrototypeOf(navigator).webdriver;
@@ -114,29 +119,53 @@ async function createContext(browser) {
     Object.defineProperty(screen, 'availHeight', { get: () => 728 });
   });
 
-  // Block heavy assets and analytics to speed up navigation.
-  await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,woff,woff2}', (r) => r.abort());
-  await context.route('**/li/track**', (r) => r.abort());
-  await context.route('**/beacon**', (r) => r.abort());
-  await context.route('**/analytics**', (r) => r.abort());
+  await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,mp4,woff,woff2}', (route) => route.abort());
+  await context.route('**/li/track**', (route) => route.abort());
+  await context.route('**/beacon**', (route) => route.abort());
+  await context.route('**/analytics**', (route) => route.abort());
 
   return context;
 }
 
-const activeContexts = new Map();
-const accountLocks = new Map();
-
-async function withAccountLock(accountId, fn) {
+function getOrCreateAccountLock(accountId) {
   const key = String(accountId || 'default').trim() || 'default';
   let lock = accountLocks.get(key);
   if (!lock) {
-    lock = { locked: false, queue: [] };
+    lock = { locked: false, queue: [], activeCount: 0 };
     accountLocks.set(key, lock);
   }
+  return { key, lock };
+}
+
+function isAccountBusy(accountId) {
+  const key = String(accountId || 'default').trim() || 'default';
+  const lock = accountLocks.get(key);
+  return Boolean(lock?.locked || (lock?.activeCount || 0) > 0);
+}
+
+function scheduleCleanup(accountId, delayMs = CONTEXT_IDLE_TTL_MS) {
+  const entry = activeContexts.get(accountId);
+  if (!entry || entry.isClosing) return;
+  clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => {
+    void cleanupContext(accountId, { reason: 'idle-timeout' });
+  }, delayMs);
+}
+
+async function withAccountLock(accountId, fn) {
+  if (shutdownRequested) {
+    const err = new Error('Worker is shutting down. Please retry shortly.');
+    err.code = 'SERVICE_SHUTTING_DOWN';
+    err.status = 503;
+    throw err;
+  }
+
+  const { key, lock } = getOrCreateAccountLock(accountId);
 
   await new Promise((resolve) => {
     if (!lock.locked) {
       lock.locked = true;
+      lock.activeCount += 1;
       resolve();
       return;
     }
@@ -146,12 +175,20 @@ async function withAccountLock(accountId, fn) {
   try {
     return await fn();
   } finally {
+    lock.activeCount = Math.max(0, lock.activeCount - 1);
+    const existingEntry = activeContexts.get(key);
+    if (existingEntry && !existingEntry.isClosing) {
+      existingEntry.lastUsed = Date.now();
+      scheduleCleanup(key);
+    }
+
     const next = lock.queue.shift();
     if (next) {
+      lock.activeCount += 1;
       next();
     } else {
       lock.locked = false;
-      if (lock.queue.length === 0) {
+      if (lock.activeCount === 0 && lock.queue.length === 0) {
         accountLocks.delete(key);
       }
     }
@@ -164,47 +201,76 @@ function evictContext(accountId, expectedEntry) {
   if (expectedEntry && current !== expectedEntry) return;
   clearTimeout(current.timer);
   activeContexts.delete(accountId);
+  syncActiveContextGauge();
+}
+
+function getBrowserStats() {
+  return {
+    activeContexts: activeContexts.size,
+    maxContexts: MAX_ACTIVE_CONTEXTS,
+    shuttingDown: shutdownRequested,
+    busyAccounts: Array.from(accountLocks.entries())
+      .filter(([, lock]) => lock.locked || lock.activeCount > 0)
+      .map(([accountId]) => accountId),
+  };
+}
+
+function isBrowserManagerReady() {
+  return !shutdownRequested;
 }
 
 async function getAccountContext(accountId, proxyUrl) {
-  const existing = activeContexts.get(accountId);
+  const key = String(accountId || 'default').trim() || 'default';
+  const existing = activeContexts.get(key);
   if (existing) {
-    if (!existing.browser?.isConnected()) {
-      await cleanupContext(accountId);
+    if (!existing.browser?.isConnected() || existing.isClosing) {
+      await cleanupContext(key, { force: true, reason: 'stale-context' });
     } else {
-      // Rebrowser/Playwright sessions can become half-closed while browser still reports connected.
-      // Probe a lightweight page; recycle context immediately on protocol/session failures.
       try {
         const probePage = await existing.context.newPage();
         await probePage.close().catch(() => {});
       } catch (probeErr) {
-        const message = probeErr instanceof Error ? probeErr.message : String(probeErr);
-        console.warn(`[Browser] Recycling stale context for ${accountId}: ${message}`);
-        await cleanupContext(accountId);
+        logger.warn('browser.context_recycle', {
+          accountId: key,
+          errorCode: 'STALE_CONTEXT',
+          detail: probeErr instanceof Error ? probeErr.message : String(probeErr),
+        });
+        await cleanupContext(key, { force: true, reason: 'stale-context' });
       }
     }
   }
 
-  const refreshed = activeContexts.get(accountId);
+  const refreshed = activeContexts.get(key);
   if (refreshed) {
-      clearTimeout(refreshed.timer);
-      refreshed.lastUsed = Date.now();
-      refreshed.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
-      return { browser: refreshed.browser, context: refreshed.context, cookiesLoaded: true };
+    clearTimeout(refreshed.timer);
+    refreshed.lastUsed = Date.now();
+    scheduleCleanup(key);
+    logger.debug('browser.context_reuse', { accountId: key });
+    return { browser: refreshed.browser, context: refreshed.context, cookiesLoaded: true };
   }
 
-  // LRU cache cap of 5 active contexts.
-  if (activeContexts.size >= 5) {
-    let oldestId = null;
-    let oldestTime = Infinity;
-    for (const [id, ctx] of activeContexts.entries()) {
-      if (ctx.lastUsed < oldestTime) {
-        oldestTime = ctx.lastUsed;
-        oldestId = id;
+  if (activeContexts.size >= MAX_ACTIVE_CONTEXTS) {
+    let oldestEvictableId = null;
+    let oldestEvictableTime = Infinity;
+    for (const [candidateId, ctx] of activeContexts.entries()) {
+      if (ctx.isClosing || isAccountBusy(candidateId)) {
+        continue;
+      }
+      if (ctx.lastUsed < oldestEvictableTime) {
+        oldestEvictableTime = ctx.lastUsed;
+        oldestEvictableId = candidateId;
       }
     }
-    if (oldestId) {
-      await cleanupContext(oldestId);
+
+    if (oldestEvictableId) {
+      logger.info('browser.context_evict', { accountId: oldestEvictableId, reason: 'lru-cap' });
+      await cleanupContext(oldestEvictableId, { force: true, reason: 'lru-cap' });
+    } else {
+      logger.warn('browser.context_cap_exceeded', {
+        accountId: key,
+        activeContexts: activeContexts.size,
+        maxContexts: MAX_ACTIVE_CONTEXTS,
+      });
     }
   }
 
@@ -216,41 +282,131 @@ async function getAccountContext(accountId, proxyUrl) {
     context,
     lastUsed: Date.now(),
     timer: null,
+    isClosing: false,
   };
-  entry.timer = setTimeout(() => cleanupContext(accountId), 5 * 60 * 1000);
 
-  browser.on('disconnected', () => evictContext(accountId, entry));
-  context.on('close', () => evictContext(accountId, entry));
+  browser.on('disconnected', () => evictContext(key, entry));
+  context.on('close', () => evictContext(key, entry));
 
-  activeContexts.set(accountId, entry);
+  activeContexts.set(key, entry);
+  syncActiveContextGauge();
+  scheduleCleanup(key);
+
+  logger.info('browser.context_created', {
+    accountId: key,
+    activeContexts: activeContexts.size,
+  });
 
   return { browser, context, cookiesLoaded: false };
 }
 
-async function cleanupContext(accountId) {
-  const existing = activeContexts.get(accountId);
-  if (existing) {
-    clearTimeout(existing.timer);
-    activeContexts.delete(accountId);
+async function cleanupContext(accountId, options = {}) {
+  const key = String(accountId || 'default').trim() || 'default';
+  const existing = activeContexts.get(key);
+  if (!existing) {
+    return false;
+  }
+
+  const force = options.force === true;
+  if (!force && isAccountBusy(key)) {
+    logger.debug('browser.context_cleanup_deferred', {
+      accountId: key,
+      reason: options.reason || 'busy',
+    });
+    scheduleCleanup(key, 30_000);
+    return false;
+  }
+
+  if (existing.isClosing) {
+    return false;
+  }
+
+  existing.isClosing = true;
+  clearTimeout(existing.timer);
+  activeContexts.delete(key);
+  syncActiveContextGauge();
+
+  try {
     await existing.context.close().catch(() => {});
     await existing.browser.close().catch(() => {});
+    logger.info('browser.context_closed', {
+      accountId: key,
+      reason: options.reason || 'manual',
+    });
+    return true;
+  } finally {
+    existing.isClosing = false;
   }
 }
 
-async function cleanupAllContexts() {
-  for (const accountId of activeContexts.keys()) {
-    await cleanupContext(accountId);
+async function waitForActiveActions(timeoutMs = SHUTDOWN_WAIT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const activeCount = Array.from(accountLocks.values()).reduce(
+      (sum, lock) => sum + (lock.locked || lock.activeCount > 0 ? 1 : 0),
+      0
+    );
+    if (activeCount === 0) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  return false;
+}
+
+async function cleanupAllContexts(options = {}) {
+  for (const accountId of Array.from(activeContexts.keys())) {
+    await cleanupContext(accountId, {
+      force: options.force === true,
+      reason: options.reason || 'bulk-cleanup',
+    });
+  }
+}
+
+async function shutdownBrowserManager(signal) {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+
+  shutdownRequested = true;
+  logger.warn('browser.shutdown_started', {
+    signal,
+    activeContexts: activeContexts.size,
+  });
+
+  shutdownPromise = (async () => {
+    const drained = await waitForActiveActions();
+    if (!drained) {
+      logger.warn('browser.shutdown_forcing_cleanup', {
+        activeContexts: activeContexts.size,
+      });
+    }
+
+    await cleanupAllContexts({ force: true, reason: 'shutdown' });
+    logger.info('browser.shutdown_completed', { signal });
+  })();
+
+  return shutdownPromise;
 }
 
 process.on('SIGTERM', async () => {
-  await cleanupAllContexts();
+  await shutdownBrowserManager('SIGTERM');
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
-  await cleanupAllContexts();
+  await shutdownBrowserManager('SIGINT');
   process.exit(0);
 });
 
-module.exports = { createBrowser, createContext, getAccountContext, cleanupContext, cleanupAllContexts, withAccountLock };
+module.exports = {
+  cleanupAllContexts,
+  cleanupContext,
+  createBrowser,
+  createContext,
+  getAccountContext,
+  getBrowserStats,
+  isBrowserManagerReady,
+  shutdownBrowserManager,
+  withAccountLock,
+};

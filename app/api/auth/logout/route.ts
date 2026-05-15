@@ -2,8 +2,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, blacklistToken } from '@/lib/auth/session';
 import { shouldUseSecureCookie } from '@/lib/auth/cookie';
+import { enforceMutationProtection } from '@/lib/server/backend-api';
 
 export async function POST(req: NextRequest) {
+  const csrfError = enforceMutationProtection(req);
+  if (csrfError) {
+    return csrfError;
+  }
+
   try {
     const session = await getSession(req);
     

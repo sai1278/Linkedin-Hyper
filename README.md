@@ -1,199 +1,200 @@
-# LinkedIn Hyper-V
+﻿# Linkedin-Hyper
 
-> Self-hosted, multi-account LinkedIn automation dashboard — no third-party SaaS, no LinkedIn API.  
-> Real Google Chrome instances run inside Docker, driven by Playwright exactly like a human.
+Linkedin-Hyper is a production-focused LinkedIn automation and unified inbox platform. It manages LinkedIn account sessions, verifies account health, syncs conversations into a searchable inbox, sends controlled messages through a worker service, and surfaces operational status through a Next.js dashboard.
 
----
+The repository currently targets the `feature/ui-polish-2026-04-17` release line.
 
-## What It Does
+## Documentation
+The project documentation is organized as an internal engineering documentation set for architecture review, deployment, operations, security, testing, and API reference. Start with the centralized index, then move into the focused guides for the area you are working on.
 
-| Feature | Details |
-|---|---|
-| **Unified Inbox** | Reads all messages from every LinkedIn account into one feed |
-| **Send Messages** | Send to existing threads or open new conversations via profile URL |
-| **Connection Requests** | Send requests with optional note, per-account rate limited |
-| **Activity Feed** | Browse sent messages, connection requests, and profile views |
-| **Session Cookies** | Import LinkedIn session cookies via curl — no password stored |
-| **Rate Limiting** | Atomic per-account, per-action Redis counters with TTL |
-| **Secure Proxy** | Role-based RBAC reverse proxy for external API access |
+- Primary documentation hub: [DOCS_INDEX.md](DOCS_INDEX.md)
+- System architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Production deployment: [DEPLOYMENT.md](DEPLOYMENT.md)
+- Operations and runbook: [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md)
+- Security model and controls: [SECURITY.md](SECURITY.md)
+- Test strategy and validation: [TESTING.md](TESTING.md)
+- Swagger/OpenAPI guide: [SWAGGER_API.md](SWAGGER_API.md)
+- OpenAPI specification: [docs/openapi.yaml](docs/openapi.yaml)
 
-## Stack
+## What The App Does
+- Runs a Next.js dashboard and API gateway for operators.
+- Runs a worker service that owns LinkedIn browser automation, message sync, and send flows.
+- Persists message and account state in PostgreSQL.
+- Uses Redis for sessions, rate limits, caches, activity logs, and live inbox signaling.
+- Streams inbox updates over WebSocket.
+- Enforces dashboard auth, account ownership, same-origin mutation protection, and rate limiting.
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 15, Tailwind CSS |
-| Worker API | Node.js + Express |
-| Browser Automation | Playwright + Google Chrome Stable |
-| Job Queue | BullMQ on Redis |
-| Session Store | Redis (AES-256-GCM encrypted cookies) |
-| Orchestration | Docker Compose |
+## Core Capabilities
+- Email/password dashboard login with bcrypt password validation.
+- Admin and account-scoped operator access.
+- LinkedIn cookie capture, import, verification, and session status checks.
+- Unified inbox backed by database state with worker fallback when needed.
+- Controlled message send flow using `/api/messages/send-new`.
+- Conversation/thread export and activity export.
+- Startup validation, health summary, metrics, and CI coverage.
 
----
+## Tech Stack
+- Frontend: Next.js App Router, React, TypeScript
+- Worker: Node.js, Express, Playwright/Chromium
+- Data: PostgreSQL, Redis
+- Realtime: WebSocket
+- Deployment: Docker Compose
+- CI: GitHub Actions
+- Tests: Vitest
 
-## Quick Start (5 Steps)
-
-### 1. Clone and configure
-
-```bash
-git clone https://github.com/<your-username>/Linkedin-Hyper-V.git
-cd Linkedin-Hyper-V
-cp env.example .env
+## Repository Layout
+```text
+app/                      Next.js routes, dashboard pages, BFF API routes
+components/               Inbox UI and shared components
+lib/                      Auth, account access, DB access, backend forwarding, helpers
+worker/                   Express worker, Playwright automation, queue, metrics, health
+scripts/                  Cookie tooling, E2E helpers, OpenAPI validation
+tests/                    Unit and security tests
+docs/                     OpenAPI spec and focused operational docs
+.github/workflows/        CI workflows
 ```
 
-Edit `.env` — minimum required:
+## Quick Start
+### 1. Install dependencies
+```bash
+npm ci
+```
 
+### 2. Create your local env file
+Copy `env.example` to `.env.local` for the frontend and `.env` for Compose-based local runs. Use placeholders only until you are ready to test with managed accounts.
+
+Key placeholders:
 ```env
-SESSION_ENCRYPTION_KEY=   # openssl rand -hex 32
-API_SECRET=               # any long random string
-REDIS_PASSWORD=           # any long random string
-ACCOUNT_IDS=              # comma-separated IDs e.g. alice,bob
+API_SECRET=change-me
+JWT_SECRET=change-me
+SESSION_ENCRYPTION_KEY=change-me
+API_ROUTE_AUTH_TOKEN=change-me
+REDIS_PASSWORD=change-me
+DB_PASSWORD=change-me
+
+ACCOUNT_IDS=saikanchi130
+MESSAGE_SYNC_DISABLED_ACCOUNT_IDS=optional-account-id
+
+NEXT_PUBLIC_API_URL=http://YOUR_SERVER_IP:3002
+NEXT_PUBLIC_WS_URL=ws://YOUR_SERVER_IP:3002/ws
+TRUSTED_ORIGINS=http://YOUR_SERVER_IP:3002,http://127.0.0.1:3002
+
+INITIAL_ADMIN_EMAILS=admin@example.com
+USER_ACCOUNT_ACCESS={"admin@example.com":["saikanchi130"]}
+
+DATABASE_URL=postgresql://linkedinuser:DB_PASSWORD@postgres:5432/linkedin_db
+POSTGRES_URL=postgresql://linkedinuser:DB_PASSWORD@postgres:5432/linkedin_db
+REDIS_URL=redis://:REDIS_PASSWORD@redis:6379
 ```
 
-### 2. Build and start
-
+### 3. Start local dependencies
 ```bash
-docker-compose up -d --build
+docker compose up -d postgres redis
 ```
 
-### 3. Verify services are healthy
+### 4. Start the worker and frontend
+Use the repo helper scripts or separate terminals.
 
+Frontend:
 ```bash
-docker-compose ps       # all should show "healthy"
-docker-compose logs -f worker
+npm run dev
 ```
 
-### 4. Import LinkedIn cookies
-
-For each account (replace `alice` and your cookies):
-
+Worker:
 ```bash
-curl -s -X POST http://localhost:3001/accounts/alice/session \
+cd worker
+npm install
+npm start
+```
+
+If you use the project startup helpers, see [DEPLOYMENT.md](DEPLOYMENT.md) and [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md).
+
+## Common Validation Commands
+```bash
+npm run lint
+npx tsc --noEmit --pretty false
+npm run build
+npm test
+npm run docs:openapi:validate
+```
+
+## Useful Runtime Commands
+### Docker deployment
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env down
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build --force-recreate
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env ps
+```
+
+### Logs
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env logs --tail=100 frontend
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env logs --tail=100 worker
+```
+
+### Health
+```bash
+curl -sS http://127.0.0.1:3001/health | python3 -m json.tool
+curl -sS http://127.0.0.1:3002/api/health/startup-validation | python3 -m json.tool
+```
+
+### Env verification
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env exec frontend printenv | grep -E "TRUSTED_ORIGINS|USER_ACCOUNT_ACCESS|INITIAL_ADMIN_EMAILS|NEXT_PUBLIC_API_URL|NEXT_PUBLIC_WS_URL"
+```
+
+### Cookie capture/import
+```bash
+npm run cookies:capture -- --accountId ACCOUNT_ID --browser chrome --captureProfile "Profile 24"
+npm run cookies:import -- --accountId ACCOUNT_ID --cookieFile artifacts/cookies/ACCOUNT_ID/linkedin-cookies-plain.json --baseUrl http://127.0.0.1:3001
+```
+
+### Account verify and sync
+```bash
+curl -sS -X POST http://127.0.0.1:3001/accounts/ACCOUNT_ID/verify \
+  -H "x-api-key: $API_SECRET_VALUE" | python3 -m json.tool
+
+curl -sS -X POST http://127.0.0.1:3001/sync/messages \
+  -H "x-api-key: $API_SECRET_VALUE" \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: $API_SECRET" \
-  -d '[{"name":"li_at","value":"AQE...","domain":".linkedin.com","path":"/","httpOnly":true,"secure":true},{"name":"JSESSIONID","value":"\"ajax:...\"","domain":".linkedin.com","path":"/","httpOnly":false,"secure":true}]'
+  --data-binary '{"accountId":"ACCOUNT_ID"}' | python3 -m json.tool
 ```
 
-Confirm:
+## Local Development Notes
+- The preferred browser-facing API base is `/api`.
+- The preferred browser-facing WebSocket URL ends with `/ws`.
+- Legacy typos are wrong and should not be used:
+  - `NEXT_PUBLIC_API__URL`
+  - `NEXT_PUBLIC_WS__URL`
+- Real LinkedIn E2E testing is disabled by default.
+- Use only test or owned LinkedIn accounts.
 
-```bash
-curl -s http://localhost:3001/accounts/alice/session/status \
-  -H "X-Api-Key: $API_SECRET"
-# → {"exists":true,"accountId":"alice","savedAt":...}
-```
+## Production Deployment Summary
+Production is expected to run with:
+- `frontend` container on port `3002`
+- `worker` container on port `3001`
+- reverse proxy or direct access configured for the frontend origin
+- Docker Compose env propagation for `TRUSTED_ORIGINS`, `INITIAL_ADMIN_EMAILS`, `USER_ACCOUNT_ACCESS`, `NEXT_PUBLIC_API_URL`, and `NEXT_PUBLIC_WS_URL`
 
-### 5. Open the dashboard
+See [DEPLOYMENT.md](DEPLOYMENT.md) for step-by-step deployment and [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md) for live operations.
 
-Navigate to [http://localhost:3000](http://localhost:3000) →  
-redirects to `/inbox` automatically.
+## API And Swagger
+- Main API documentation: [SWAGGER_API.md](SWAGGER_API.md)
+- OpenAPI spec: [docs/openapi.yaml](docs/openapi.yaml)
 
----
+## Additional Documentation
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [DEPLOYMENT.md](DEPLOYMENT.md)
+- [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md)
+- [SECURITY.md](SECURITY.md)
+- [TESTING.md](TESTING.md)
+- [SECURITY_ROTATION.md](SECURITY_ROTATION.md)
+- [MIGRATION_STATIC_TOKENS.md](MIGRATION_STATIC_TOKENS.md)
+- [docs/LOCAL_LINKEDIN_E2E_TESTING.md](docs/LOCAL_LINKEDIN_E2E_TESTING.md)
+- [docs/COOKIE_REFRESH.md](docs/COOKIE_REFRESH.md)
 
-## Environment Variables
-
-### Frontend (`.env`)
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `API_SECRET` | ✅ | — | Shared secret between frontend and worker |
-| `API_URL` | ✅ | `http://localhost:3001` | Internal URL of the worker API |
-| `NEXT_PUBLIC_API_URL` | ✅ | `http://localhost:3001` | Client-side base URL |
-| `PROXY_AUTH_TOKENS` | ✅ for proxy | — | JSON: `{"<token>":"user","<token>":"admin"}` |
-| `API_ROUTE_AUTH_TOKEN` | ❌ | — | Bearer token to protect Next.js API routes |
-| `PROXY_AUTH_COOKIE_NAME` | ❌ | `proxy_session` | Cookie name for proxy session |
-
-### Worker (`.env`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `SESSION_ENCRYPTION_KEY` | ✅ | 64 hex chars (AES-256-GCM key). Generate: `openssl rand -hex 32` |
-| `API_SECRET` | ✅ | Must match frontend `API_SECRET` |
-| `ACCOUNT_IDS` | ✅ | Comma-separated account IDs |
-| `REDIS_HOST` | ✅ | Redis hostname (`redis` in Docker) |
-| `REDIS_PORT` | ✅ | Redis port (default `6379`) |
-| `REDIS_PASSWORD` | ✅ | Redis auth password |
-| `PROXY_URL` | ❌ | HTTP proxy for Chrome: `http://user:pass@host:port` |
-
----
-
-## Rate Limits (default)
-
-| Action | Limit | Window |
-|---|---|---|
-| Messages sent | 20 / account | 24h |
-| Connection requests | 15 / account | 24h |
-| Inbox reads | 30 / account | 1h |
-| Profile views | 40 / account | 24h |
-
-Limits are enforced atomically in Redis before any browser action.
-
----
-
-## Session Management
-
-- Cookies are encrypted with **AES-256-GCM** with a fresh random IV per save.
-- Cookies are re-saved after every successful action to extend their lifetime.
-- Sessions are stored in Redis under `session:<accountId>` (encrypted).
-- Delete a session: `DELETE /accounts/:accountId/session` with `X-Api-Key`.
-
----
-
-## Proxy Layer
-
-The Next.js frontend exposes `/api/proxy/[...path]` as an authenticated reverse proxy for external callers. Supports:
-
-- **Bearer token** auth via `Authorization` header (token defined in `PROXY_AUTH_TOKENS`)
-- **Cookie** auth via `PROXY_AUTH_COOKIE_NAME`
-- **Role-based access control**: `user` can access read routes; `admin` can access all routes
-- An allowlist of safe paths — requests outside the allowlist return 403
-
----
-
-## Architecture
-
-```
-Browser
-  └─ Next.js Frontend :3000
-        ├─ /api/* → BFF route handlers
-        └─ /api/proxy/* → RBAC reverse proxy
-
-BFF routes
-  └─ Worker Express API :3001
-        ├─ BullMQ job → worker.js dispatcher
-        │     ├─ verifySession / readMessages / readThread
-        │     ├─ sendMessage / sendMessageNew
-        │     ├─ sendConnectionRequest / searchPeople
-        │     └─ humanBehavior (mouse, typing, scroll)
-        └─ browser.js (Chrome Pool via Playwright)
-              └─ Google Chrome Stable (headless=false + Xvfb)
-
-Redis :6379
-  ├─ BullMQ queues
-  ├─ Rate limit counters  (INCR + TTL)
-  ├─ Session cookies      (AES-256-GCM)
-  └─ Activity logs        (LPUSH, capped at 1000)
-```
-
----
-
-## Hard Constraints
-
-| Rule | Reason |
-|---|---|
-| **BullMQ concurrency = 1** | Parallel sessions trigger LinkedIn bans |
-| **headless = false + Xvfb** | Headless Chrome is fingerprinted and blocked |
-| **Google Chrome Stable only** | Chromium lacks the fingerprint of a real user browser |
-| **AES-256-GCM with fresh IV** | Never store cookies in plaintext |
-| **Rate limit before any action** | Ensures limits are atomic and can't be raced |
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| Chrome crashes on startup | `shm_size: 1gb` must be set in compose; check with `docker inspect` |
-| Xvfb fails | Ensure worker entrypoint sets `DISPLAY=:99` before node |
-| `NO_SESSION` error | Cookie is missing or expired — re-import with curl |
-| `RATE_LIMIT` error | Account hit its daily action cap — wait for TTL to expire |
-| `Backend unreachable` in UI | Worker container not healthy — `docker-compose logs worker` |
-| Redis auth errors | Verify `REDIS_PASSWORD` matches `--requirepass` in compose |
+## Safety Rules
+- Never commit `.env`, raw cookies, or tokens.
+- Never log `li_at`, `JSESSIONID`, `API_SECRET`, `Authorization`, `x-api-key`, or full private message content.
+- Do not bypass LinkedIn checkpoint, captcha, or login protections.
+- Respect cooldowns, daily/hourly limits, and one-message E2E rules.

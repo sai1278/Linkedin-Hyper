@@ -3,7 +3,7 @@
 
 export function ConversationSkeleton() {
   return (
-    <div className="flex gap-3 p-4 border-b animate-pulse" style={{ borderColor: 'var(--border-color)' }}>
+    <div className="flex gap-3 p-4 border-b animate-pulse" style={{ borderColor: 'var(--border)' }}>
       {/* Avatar */}
       <div 
         className="w-12 h-12 rounded-full flex-shrink-0" 
@@ -192,5 +192,39 @@ export function TableSkeleton({ rows = 5 }: { rows?: number }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+export function DashboardOverviewSkeleton() {
+  return (
+    <div className="mx-auto max-w-7xl space-y-8 p-8">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-3">
+          <div className="h-4 w-40 animate-pulse rounded" style={{ backgroundColor: 'var(--color-gray-200)' }} />
+          <div className="h-10 w-56 animate-pulse rounded" style={{ backgroundColor: 'var(--color-gray-200)' }} />
+          <div className="h-4 w-80 animate-pulse rounded" style={{ backgroundColor: 'var(--color-gray-200)' }} />
+        </div>
+        <div className="w-full max-w-sm rounded-xl border p-4" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border)' }}>
+          <div className="space-y-2">
+            <div className="h-4 w-40 animate-pulse rounded" style={{ backgroundColor: 'var(--color-gray-200)' }} />
+            <div className="h-3 w-full animate-pulse rounded" style={{ backgroundColor: 'var(--color-gray-200)' }} />
+            <div className="h-3 w-4/5 animate-pulse rounded" style={{ backgroundColor: 'var(--color-gray-200)' }} />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <StatCardSkeleton key={index} />
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.7fr,1fr]">
+        <CardSkeleton />
+        <CardSkeleton />
+      </div>
+
+      <CardSkeleton />
+    </div>
   );
 }
